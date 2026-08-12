@@ -1,0 +1,36 @@
+name: Build
+
+on: push
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Project Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
+      - name: Go Tidy Check
+        run: go mod tidy && git diff --exit-code
+
+      - name: Go Mod Verify
+        run: go mod verify
+
+      - name: Run golangci-lint
+        run: go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run ./...
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest -test ./...
+
+      - name: Run Tests
+        run: go test -v ./...
+
+      - name: Project Build
+        run: make build

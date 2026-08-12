@@ -28,13 +28,15 @@ var archiveExtensions = map[string]string{
 	".gz":   "gz",
 	".bz2":  "bz2",
 	".tbz2": "tbz2",
+	".rar":  "rar",
+	".7z":   "7z",
 }
 
 // IsArchiveFormat reports whether format is a container that needs to be
 // unpacked before its ebooks can be parsed.
 func IsArchiveFormat(format string) bool {
 	switch format {
-	case "zip", "tar", "tgz", "gz", "bz2", "tbz2":
+	case "zip", "tar", "tgz", "gz", "bz2", "tbz2", "rar", "7z":
 		return true
 	}
 	return false

@@ -23,8 +23,8 @@ var scanCmd = &cobra.Command{
 	Short: "Scan a directory for ebook files",
 	Long: `Recursively scans the given directory and reads the author
 and title metadata of every ebook found. Ebooks are also searched
-inside zip, tar, gz and bz2 archives (nested archives are unpacked
-up to the depth given with --archive-depth).`,
+inside zip, tar, gz, bz2, rar and 7z archives (nested archives are
+unpacked up to the depth given with --archive-depth).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := processor.DefaultConfig()
@@ -44,7 +44,7 @@ up to the depth given with --archive-depth).`,
 func init() {
 	scanCmd.Flags().IntVar(&scanWorkers, "workers", 0, "number of worker goroutines (default: number of CPUs)")
 	scanCmd.Flags().IntVar(&archiveDepth, "archive-depth", 2, "maximum archive nesting depth to unpack")
-	scanCmd.Flags().StringVar(&archivePassword, "archive-password", "", "password for encrypted archives (reserved, not yet supported)")
+	scanCmd.Flags().StringVar(&archivePassword, "archive-password", "", "password for encrypted rar and 7z archives")
 	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
 	rootCmd.AddCommand(scanCmd)
 }

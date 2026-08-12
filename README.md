@@ -57,6 +57,8 @@ Archives (searched for ebooks inside):
 - `.gz`
 - `.bz2`
 - `.tbz2` / `.tar.bz2`
+- `.rar`
+- `.7z`
 
 Ebooks nested inside archives are handled in place — they are read from the
 archive without being extracted to disk. Archives may be nested inside other
@@ -70,7 +72,7 @@ archives, up to the depth given by `--archive-depth`.
 | --- | --- | --- | --- |
 | `--workers` | `int` | number of CPUs | Number of worker goroutines used for scanning and parsing. |
 | `--archive-depth` | `int` | `2` | Maximum archive nesting depth to unpack. |
-| `--archive-password` | `string` | `""` | Password for encrypted archives. **Reserved, not yet supported.** |
+| `--archive-password` | `string` | `""` | Password for encrypted rar and 7z archives. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
 | `-h`, `--help` | | | Show help. |
 
@@ -89,9 +91,9 @@ limit, the scan records it as a failure.
 
 ### `--archive-password`
 
-Reserved for future encrypted-archive support. It is currently **not**
-implemented: the standard library cannot decrypt RAR or AES-encrypted zip
-files. Password-protected zip members are reported as failures.
+Supplies the password for encrypted **rar** and **7z** archives. Both formats
+are supported: members are decrypted in memory while being read. AES-encrypted
+**zip** members are not supported yet; they are reported as failures.
 
 ### `--failures-out`
 
@@ -182,4 +184,10 @@ Write the failures report to a custom location:
 
 ```sh
 margaret-tools scan ./books --failures-out /tmp/failures.json
+```
+
+Unpack password-protected rar and 7z archives:
+
+```sh
+margaret-tools scan ./books --archive-password letmein
 ```

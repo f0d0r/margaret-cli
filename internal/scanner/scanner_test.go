@@ -151,7 +151,7 @@ func TestScanReportsUnreadableDir(t *testing.T) {
 	if err := os.Chmod(sub, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(sub, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
 
 	errCount, err := New(DefaultConfig()).Scan(context.Background(), dir)
 	if err != nil {
@@ -175,8 +175,9 @@ func TestFormatOf(t *testing.T) {
 		{"e.tar.bz2", "tbz2", true},
 		{"f.tbz2", "tbz2", true},
 		{"g.zip", "zip", true},
-		{"h.7z", "", false},
-		{"i.txt", "", false},
+		{"h.7z", "7z", true},
+		{"i.rar", "rar", true},
+		{"j.txt", "", false},
 		{"noext", "", false},
 	}
 	for _, c := range cases {
