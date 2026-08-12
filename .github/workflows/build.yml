@@ -23,15 +23,11 @@ jobs:
       - name: Go Mod Verify
         run: go mod verify
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      - name: Run golangci-lint
+        run: go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run ./...
 
-      - name: Install & Run govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck -test ./...
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest -test ./...
 
       - name: Run Tests
         run: go test -v ./...
