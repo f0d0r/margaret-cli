@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/f0d0r/margaret-tools/internal/scanner"
+	"github.com/mholt/archives"
 )
 
 // processArchive unpacks an archive and processes every ebook and nested
@@ -71,17 +73,23 @@ func (p *Processor) processArchiveStream(ctx context.Context, format string, r i
 		p.processSingleStream(ctx, gz, dropSuffix(displayPath), depth+1)
 	case "bz2":
 		p.processSingleStream(ctx, bzip2.NewReader(r), dropSuffix(displayPath), depth+1)
+	case "rar":
+		rar := archives.Rar{Password: p.cfg.Password}
+		if err := rar.Extract(ctx, r, p.handleArchiveFile(displayPath, depth)); err != nil {
+			p.fail(displayPath, err)
+			p.report()
+		}
+	case "7z":
+		p.processSevenZipStream(ctx, r, displayPath, depth)
 	default:
 		p.fail(displayPath, fmt.Errorf("unsupported archive format %q", format))
 		p.report()
 	}
 }
 
-// processZipStream reads a zip archive from r. The zip format needs random
-// access, so a stream that is not already an *os.File is first spooled to a
-// temporary file.
+// processZipStream reads a zip archive from r.
 func (p *Processor) processZipStream(ctx context.Context, r io.Reader, displayPath string, depth int) {
-	if f, ok := r.(*os.File); ok {
+	p.withReaderAt(r, displayPath, func(f *os.File) {
 		fi, err := f.Stat()
 		if err != nil {
 			p.fail(displayPath, err)
@@ -89,9 +97,18 @@ func (p *Processor) processZipStream(ctx context.Context, r io.Reader, displayPa
 			return
 		}
 		p.processZip(ctx, f, fi.Size(), displayPath, depth)
+	})
+}
+
+// withReaderAt calls fn with r as a seekable random-access file. Formats such
+// as zip and 7z need random access, so a stream that is not already an
+// *os.File is first spooled to a temporary file.
+func (p *Processor) withReaderAt(r io.Reader, displayPath string, fn func(*os.File)) {
+	if f, ok := r.(*os.File); ok {
+		fn(f)
 		return
 	}
-	tmp, err := os.CreateTemp("", "margaret-archive-*.zip")
+	tmp, err := os.CreateTemp("", "margaret-archive-*")
 	if err != nil {
 		p.fail(displayPath, err)
 		p.report()
@@ -106,13 +123,50 @@ func (p *Processor) processZipStream(ctx context.Context, r io.Reader, displayPa
 		p.report()
 		return
 	}
-	fi, err := tmp.Stat()
-	if err != nil {
+	fn(tmp)
+}
+
+// processSevenZipStream reads a 7z archive from r.
+func (p *Processor) processSevenZipStream(ctx context.Context, r io.Reader, displayPath string, depth int) {
+	p.withReaderAt(r, displayPath, func(f *os.File) {
+		p.processSevenZip(ctx, f, displayPath, depth)
+	})
+}
+
+// processSevenZip reads a 7z archive from a random-access file.
+func (p *Processor) processSevenZip(ctx context.Context, f *os.File, displayPath string, depth int) {
+	sz := archives.SevenZip{Password: p.cfg.Password}
+	if err := sz.Extract(ctx, f, p.handleArchiveFile(displayPath, depth)); err != nil {
 		p.fail(displayPath, err)
 		p.report()
-		return
 	}
-	p.processZip(ctx, tmp, fi.Size(), displayPath, depth)
+}
+
+// handleArchiveFile returns a handler for archives.Extract that processes each
+// member of a rar or 7z archive, mirroring how zip and tar members are
+// handled: ebooks are parsed and nested archives unpacked, while member-level
+// errors are reported individually without stopping the walk.
+func (p *Processor) handleArchiveFile(displayPath string, depth int) func(context.Context, archives.FileInfo) error {
+	return func(ctx context.Context, f archives.FileInfo) error {
+		if ctx.Err() != nil {
+			return fs.SkipAll
+		}
+		if f.IsDir() {
+    		return nil
+		}
+		if _, ok := scanner.FormatOf(f.NameInArchive); !ok {
+			return nil
+		}
+		opened, err := f.Open()
+		if err != nil {
+			p.fail(displayPath+"!"+f.NameInArchive, err)
+			p.report()
+			return nil
+		}
+		p.handleMember(ctx, f.NameInArchive, opened, displayPath, depth+1)
+		_ = opened.Close()
+		return nil
+	}
 }
 
 func (p *Processor) processZip(ctx context.Context, ra io.ReaderAt, size int64, displayPath string, depth int) {

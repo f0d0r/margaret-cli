@@ -52,9 +52,9 @@ type Config struct {
 	// Depth 0 means the archive itself; an ebook inside is depth 1.
 	MaxDepth int
 
-	// Password is reserved for encrypted archives. It is not used yet
-	// because the standard library cannot decrypt RAR or AES-encrypted
-	// zip files.
+	// Password decrypts password-protected rar and 7z archives. The
+	// standard library cannot decrypt AES-encrypted zip members, so those
+	// are still reported as failures.
 	Password string
 
 	// OnResult is invoked for every successfully parsed ebook.

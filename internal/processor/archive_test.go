@@ -20,6 +20,11 @@ import (
 
 func collectResults(t *testing.T, cfg Config, dir string) ([]Result, []Failure) {
 	t.Helper()
+	return collectResultsWithParser(t, cfg, dir, parser.Dummy{})
+}
+
+func collectResultsWithParser(t *testing.T, cfg Config, dir string, p parser.Parser) ([]Result, []Failure) {
+	t.Helper()
 	var (
 		mu      sync.Mutex
 		results []Result
@@ -29,7 +34,7 @@ func collectResults(t *testing.T, cfg Config, dir string) ([]Result, []Failure) 
 		results = append(results, r)
 		mu.Unlock()
 	}
-	failures, err := New(parser.Dummy{}, cfg).Process(context.Background(), dir)
+	failures, err := New(p, cfg).Process(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +74,21 @@ func zipBytes(t *testing.T, members map[string]string) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+// stageFixture copies a binary fixture from testdata into dir and returns the
+// path of the copy.
+func stageFixture(t *testing.T, dir, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestProcessZip(t *testing.T) {
@@ -173,7 +193,7 @@ func TestProcessTar(t *testing.T) {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	defer func () {
+	defer func() {
 		_ = f.Close()
 	}()
 
@@ -257,6 +277,140 @@ func TestProcessGzSingleFile(t *testing.T) {
 	}
 }
 
+func TestProcessRar(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "bundle.rar")
+
+	results, failures := collectResults(t, DefaultConfig(), dir)
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	got := pathsOf(results)
+	want := []string{
+		path + "!a.epub",
+		path + "!sub/b.mobi",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d results, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("expected path %q, got %q", w, got[i])
+		}
+	}
+}
+
+func TestProcess7z(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "bundle.7z")
+
+	results, failures := collectResults(t, DefaultConfig(), dir)
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	got := pathsOf(results)
+	want := []string{
+		path + "!a.epub",
+		path + "!sub/b.mobi",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d results, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("expected path %q, got %q", w, got[i])
+		}
+	}
+}
+
+func TestProcessRarInside7z(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "outer.7z")
+
+	results, failures := collectResults(t, DefaultConfig(), dir)
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	got := pathsOf(results)
+	want := []string{path + "!inner.rar!c.epub"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d results, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("expected path %q, got %q", w, got[i])
+		}
+	}
+}
+
+func TestProcessTarContainingRar(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "tar-outer-rar.tar")
+
+	results, failures := collectResults(t, DefaultConfig(), dir)
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	got := pathsOf(results)
+	want := []string{path + "!inner.rar!c.epub"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d results, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("expected path %q, got %q", w, got[i])
+		}
+	}
+}
+
+func TestProcessPasswordProtectedRar(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "secret.rar")
+
+	cfg := DefaultConfig()
+	cfg.Password = "letmein"
+	results, failures := collectResultsWithParser(t, cfg, dir, readingParser{})
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	got := pathsOf(results)
+	if len(got) != 1 || got[0] != path+"!a.epub" {
+		t.Fatalf("expected 1 result from password-protected rar, got %v", got)
+	}
+}
+
+func TestProcessPasswordProtected7z(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "secret.7z")
+
+	cfg := DefaultConfig()
+	cfg.Password = "letmein"
+	results, failures := collectResultsWithParser(t, cfg, dir, readingParser{})
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	got := pathsOf(results)
+	if len(got) != 1 || got[0] != path+"!a.epub" {
+		t.Fatalf("expected 1 result from password-protected 7z, got %v", got)
+	}
+}
+
+func TestProcessEncryptedRarWithoutPassword(t *testing.T) {
+	dir := t.TempDir()
+	path := stageFixture(t, dir, "secret.rar")
+
+	results, failures := collectResultsWithParser(t, DefaultConfig(), dir, readingParser{})
+	if len(results) != 0 {
+		t.Fatalf("expected no results, got %v", pathsOf(results))
+	}
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 failure, got %d: %v", len(failures), failures)
+	}
+	if failures[0].Path != path+"!a.epub" {
+		t.Errorf("expected failure path %q, got %q", path+"!a.epub", failures[0].Path)
+	}
+}
+
 func TestProcessFailuresReported(t *testing.T) {
 	dir := t.TempDir()
 	writeZip(t, filepath.Join(dir, "bad.zip"), map[string]string{
@@ -301,4 +455,13 @@ func (p readerParser) Parse(_ context.Context, r io.Reader, _ string) (parser.Me
 		return parser.Metadata{}, errors.New("boom")
 	}
 	return parser.Metadata{}, nil
+}
+
+// readingParser consumes the whole input, so decryption errors in encrypted
+// archive members surface during parsing.
+type readingParser struct{}
+
+func (readingParser) Parse(_ context.Context, r io.Reader, _ string) (parser.Metadata, error) {
+	_, err := io.Copy(io.Discard, r)
+	return parser.Metadata{}, err
 }

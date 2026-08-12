@@ -57,6 +57,8 @@ Archives (searched for ebooks inside):
 - `.gz`
 - `.bz2`
 - `.tbz2` / `.tar.bz2`
+- `.rar`
+- `.7z`
 
 Ebooks nested inside archives are handled in place — they are read from the
 archive without being extracted to disk. Archives may be nested inside other
@@ -70,7 +72,7 @@ archives, up to the depth given by `--archive-depth`.
 | --- | --- | --- | --- |
 | `--workers` | `int` | number of CPUs | Number of worker goroutines used for scanning and parsing. |
 | `--archive-depth` | `int` | `2` | Maximum archive nesting depth to unpack. |
-| `--archive-password` | `string` | `""` | Password for encrypted archives. **Reserved, not yet supported.** |
+| `--archive-password` | `string` | `""` | Password for encrypted rar and 7z archives. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
 | `-h`, `--help` | | | Show help. |
 
