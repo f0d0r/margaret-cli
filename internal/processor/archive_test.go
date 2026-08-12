@@ -323,6 +323,40 @@ func TestProcess7z(t *testing.T) {
 	}
 }
 
+func TestNoTempFilesLeaked(t *testing.T) {
+	before, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leakedBefore := map[string]bool{}
+	for _, e := range before {
+		leakedBefore[e.Name()] = true
+	}
+
+	dir := t.TempDir()
+	writeZip(t, filepath.Join(dir, "bundle.zip"), map[string]string{"a.epub": "a"})
+	stageFixture(t, dir, "bundle.rar")
+	stageFixture(t, dir, "bundle.7z")
+
+	results, failures := collectResults(t, DefaultConfig(), dir)
+	if len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d: %v", len(results), pathsOf(results))
+	}
+
+	after, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range after {
+		if strings.HasPrefix(e.Name(), "margaret-archive-") && !leakedBefore[e.Name()] {
+			t.Errorf("temporary file leaked into %s: %s", os.TempDir(), e.Name())
+		}
+	}
+}
+
 func TestProcessRarInside7z(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "outer.7z")

@@ -91,9 +91,9 @@ limit, the scan records it as a failure.
 
 ### `--archive-password`
 
-Reserved for future encrypted-archive support. It is currently **not**
-implemented: the standard library cannot decrypt RAR or AES-encrypted zip
-files. Password-protected zip members are reported as failures.
+Supplies the password for encrypted **rar** and **7z** archives. Both formats
+are supported: members are decrypted in memory while being read. AES-encrypted
+**zip** members are not supported yet; they are reported as failures.
 
 ### `--failures-out`
 
@@ -184,4 +184,10 @@ Write the failures report to a custom location:
 
 ```sh
 margaret-tools scan ./books --failures-out /tmp/failures.json
+```
+
+Unpack password-protected rar and 7z archives:
+
+```sh
+margaret-tools scan ./books --archive-password letmein
 ```
