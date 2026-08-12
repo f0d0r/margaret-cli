@@ -151,7 +151,7 @@ func TestScanReportsUnreadableDir(t *testing.T) {
 	if err := os.Chmod(sub, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(sub, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
 
 	errCount, err := New(DefaultConfig()).Scan(context.Background(), dir)
 	if err != nil {
