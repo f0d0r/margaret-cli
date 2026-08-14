@@ -7,6 +7,7 @@ import (
 
 	"github.com/f0d0r/margaret-tools/internal/parser"
 	"github.com/f0d0r/margaret-tools/internal/processor"
+	"github.com/f0d0r/margaret-tools/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +15,10 @@ var (
 	scanWorkers     int
 	archiveDepth    int
 	archivePassword string
+	spoolMemLimit   int64
 	failuresOutPath string
+	ftpUser         string
+	ftpPass         string
 )
 
 // scanCmd scans a directory for ebook files.
@@ -36,8 +40,11 @@ unpacked up to the depth given with --archive-depth).`,
 		if cmd.Flags().Changed("archive-depth") {
 			cfg.MaxDepth = archiveDepth
 		}
+		if cmd.Flags().Changed("spool-mem-limit") {
+			cfg.SpoolMemLimit = spoolMemLimit
+		}
 		cfg.Password = archivePassword
-		return runScan(cmd.Context(), args[0], cfg)
+		return runScan(cmd.Context(), args[0], cfg, ftpUser, ftpPass)
 	},
 }
 
@@ -45,11 +52,19 @@ func init() {
 	scanCmd.Flags().IntVar(&scanWorkers, "workers", 0, "number of worker goroutines (default: number of CPUs)")
 	scanCmd.Flags().IntVar(&archiveDepth, "archive-depth", 2, "maximum archive nesting depth to unpack")
 	scanCmd.Flags().StringVar(&archivePassword, "archive-password", "", "password for encrypted rar and 7z archives")
+	scanCmd.Flags().Int64Var(&spoolMemLimit, "spool-mem-limit", 0, "max bytes per member buffered in memory before spilling to a temp file (0 = 64 MiB default)")
 	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
+	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
+	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
 	rootCmd.AddCommand(scanCmd)
 }
 
-func runScan(ctx context.Context, root string, cfg processor.Config) error {
+func runScan(ctx context.Context, root string, cfg processor.Config, ftpUser, ftpPass string) error {
+	sourceFactory, err := source.FactoryForURL(root, source.FTPOptions{User: ftpUser, Password: ftpPass})
+	if err != nil {
+		return err
+	}
+	cfg.SourceFactory = sourceFactory
 	start := time.Now()
 
 	var bar *progressBar
@@ -63,7 +78,7 @@ func runScan(ctx context.Context, root string, cfg processor.Config) error {
 		}
 	}
 
-	proc := processor.New(parser.Dummy{}, cfg)
+	proc := processor.New(parser.EbookParser{}, cfg)
 
 	// A ticker keeps the bar animating (spinner + in-flight item names) while
 	// a long-running unit of work emits no progress event of its own.

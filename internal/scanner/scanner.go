@@ -4,18 +4,18 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/f0d0r/margaret-tools/internal/source"
 )
 
 var knownExtensions = map[string]string{
 	".epub": "epub",
 	".mobi": "mobi",
-	".pdf":  "pdf",
 	".azw3": "azw3",
 	".azw":  "azw",
 	".prc":  "prc",
@@ -66,6 +66,8 @@ func FormatOf(name string) (string, bool) {
 type Result struct {
 	Path   string
 	Format string
+	// Size is the file size in bytes, or -1 when unknown.
+	Size int64
 }
 
 // Progress reports the number of directories, files and matching books
@@ -81,6 +83,10 @@ type Progress struct {
 type Config struct {
 	// Workers is the number of concurrent directory walkers.
 	Workers int
+
+	// SourceFactory returns a fresh Source for every walker goroutine. When
+	// nil, the local filesystem is used.
+	SourceFactory source.Factory
 
 	// OnResult is invoked for every ebook found.
 	OnResult func(Result)
@@ -103,35 +109,53 @@ func New(cfg Config) *Scanner {
 		cfg.Workers = 1
 	}
 	return &Scanner{
-		workers:  cfg.Workers,
-		onResult: cfg.OnResult,
-		onReport: cfg.OnReport,
-		onError:  cfg.OnError,
+		workers:       cfg.Workers,
+		onResult:      cfg.OnResult,
+		onReport:      cfg.OnReport,
+		onError:       cfg.OnError,
+		sourceFactory: cfg.SourceFactory,
 	}
 }
 
 // Scanner walks a directory tree concurrently.
 type Scanner struct {
-	workers  int
-	onResult func(Result)
-	onReport func(Progress)
-	onError  func(path string, err error)
+	workers       int
+	onResult      func(Result)
+	onReport      func(Progress)
+	onError       func(path string, err error)
+	sourceFactory source.Factory
 
 	dirs  atomic.Int64
 	files atomic.Int64
 	found atomic.Int64
 	errs  atomic.Int64
+	errMu sync.Mutex
+	fatal error
+}
+
+// newSource returns the Source used by one walker goroutine. The zero value
+// (nil factory) means the local filesystem.
+func (s *Scanner) newSource() (source.Source, error) {
+	if s.sourceFactory == nil {
+		return source.Local{}, nil
+	}
+	return s.sourceFactory()
 }
 
 // Scan walks root concurrently and reports results through the configured
 // callbacks. It returns the number of directories that could not be read
 // and a fatal error if root itself cannot be accessed.
 func (s *Scanner) Scan(ctx context.Context, root string) (int, error) {
-	fi, err := os.Stat(root)
+	rootSrc, err := s.newSource()
 	if err != nil {
 		return 0, fmt.Errorf("scan %s: %w", root, err)
 	}
-	if !fi.IsDir() {
+	isDir, err := rootSrc.IsDir(root)
+	_ = rootSrc.Close()
+	if err != nil {
+		return 0, fmt.Errorf("scan %s: %w", root, err)
+	}
+	if !isDir {
 		return 0, fmt.Errorf("scan %s: not a directory", root)
 	}
 
@@ -168,6 +192,15 @@ func (s *Scanner) Scan(ctx context.Context, root string) (int, error) {
 	for i := 0; i < s.workers; i++ {
 		go func() {
 			defer walkers.Done()
+			src, err := s.newSource()
+			if err != nil {
+				s.reportFatal(err)
+				cancel()
+				return
+			}
+			defer func() {
+				_ = src.Close()
+			}()
 			for {
 				dir, ok := q.pop()
 				if !ok {
@@ -179,7 +212,7 @@ func (s *Scanner) Scan(ctx context.Context, root string) (int, error) {
 					}
 					continue
 				}
-				s.scanDir(dir, dispatch)
+				s.scanDir(src, dir, dispatch)
 				if remaining.Add(-1) == 0 {
 					q.close()
 				}
@@ -190,30 +223,38 @@ func (s *Scanner) Scan(ctx context.Context, root string) (int, error) {
 	dispatch(root)
 	walkers.Wait()
 
-	return int(s.errs.Load()), nil
+	return int(s.errs.Load()), s.fatalErr()
 }
 
-func (s *Scanner) scanDir(dir string, dispatch func(string)) {
+// reportFatal records the first fatal error encountered by a walker.
+func (s *Scanner) reportFatal(err error) {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	if s.fatal == nil {
+		s.fatal = err
+	}
+}
+
+// fatalErr returns the fatal error recorded by reportFatal, if any.
+func (s *Scanner) fatalErr() error {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	return s.fatal
+}
+
+func (s *Scanner) scanDir(src source.Source, dir string, dispatch func(string)) {
 	s.dirs.Add(1)
 
-	f, err := os.Open(dir)
-	if err != nil {
-		s.reportError(dir, err)
-		return
-	}
-	entries, err := f.ReadDir(-1)
-	defer func() {
-		_ = f.Close()
-	}()
+	entries, err := src.List(dir)
 	if err != nil {
 		s.reportError(dir, err)
 		return
 	}
 
 	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() {
-			dispatch(filepath.Join(dir, name))
+		name := e.Name
+		if e.IsDir {
+			dispatch(src.Join(dir, name))
 			continue
 		}
 		s.files.Add(1)
@@ -223,13 +264,13 @@ func (s *Scanner) scanDir(dir string, dispatch func(string)) {
 		}
 		if IsArchiveFormat(format) {
 			if s.onResult != nil {
-				s.onResult(Result{Path: filepath.Join(dir, name), Format: format})
+				s.onResult(Result{Path: src.Join(dir, name), Format: format, Size: e.Size})
 			}
 			continue
 		}
 		s.found.Add(1)
 		if s.onResult != nil {
-			s.onResult(Result{Path: filepath.Join(dir, name), Format: format})
+			s.onResult(Result{Path: src.Join(dir, name), Format: format, Size: e.Size})
 		}
 	}
 

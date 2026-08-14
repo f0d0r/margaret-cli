@@ -7,7 +7,6 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,12 +14,22 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/f0d0r/margaret-ebook-library/pkg/model"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
+// stubParser always succeeds without inspecting the file, so tests that focus
+// on archive handling (whose fixtures are not real ebooks) can run without a
+// parser that validates content.
+type stubParser struct{}
+
+func (stubParser) Parse(_ model.Blob) (parser.Metadata, error) {
+	return parser.Metadata{}, nil
+}
+
 func collectResults(t *testing.T, cfg Config, dir string) ([]Result, []Failure) {
 	t.Helper()
-	return collectResultsWithParser(t, cfg, dir, parser.Dummy{})
+	return collectResultsWithParser(t, cfg, dir, stubParser{})
 }
 
 func collectResultsWithParser(t *testing.T, cfg Config, dir string, p parser.Parser) ([]Result, []Failure) {
@@ -351,7 +360,7 @@ func TestNoTempFilesLeaked(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range after {
-		if strings.HasPrefix(e.Name(), "margaret-archive-") && !leakedBefore[e.Name()] {
+		if (strings.HasPrefix(e.Name(), "margaret-archive-") || strings.HasPrefix(e.Name(), "margaret-ebook-")) && !leakedBefore[e.Name()] {
 			t.Errorf("temporary file leaked into %s: %s", os.TempDir(), e.Name())
 		}
 	}
@@ -479,23 +488,22 @@ type readerParser struct {
 	failContent string
 }
 
-func (p readerParser) Parse(_ context.Context, r io.Reader, _ string) (parser.Metadata, error) {
-	var buf bytes.Buffer
-	_, err := buf.ReadFrom(r)
+func (p readerParser) Parse(b model.Blob) (parser.Metadata, error) {
+	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
 	}
-	if strings.Contains(buf.String(), p.failContent) {
+	if strings.Contains(string(content), p.failContent) {
 		return parser.Metadata{}, errors.New("boom")
 	}
 	return parser.Metadata{}, nil
 }
 
-// readingParser consumes the whole input, so decryption errors in encrypted
-// archive members surface during parsing.
+// readingParser reads the whole file, so decryption errors in encrypted
+// archive members surface while the member is being spooled to disk.
 type readingParser struct{}
 
-func (readingParser) Parse(_ context.Context, r io.Reader, _ string) (parser.Metadata, error) {
-	_, err := io.Copy(io.Discard, r)
+func (readingParser) Parse(b model.Blob) (parser.Metadata, error) {
+	_, err := readBlobAll(b)
 	return parser.Metadata{}, err
 }

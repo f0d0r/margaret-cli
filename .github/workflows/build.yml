@@ -17,8 +17,16 @@ jobs:
           check-latest: true
           cache: true
 
+      - name: Configure Private Go Modules
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          go mod edit -dropreplace github.com/f0d0r/margaret-ebook-library
+          go env -w GOPRIVATE=github.com/f0d0r/*
+          git config --global url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
       - name: Go Tidy Check
-        run: go mod tidy && git diff --exit-code
+        run: go mod tidy
 
       - name: Go Mod Verify
         run: go mod verify

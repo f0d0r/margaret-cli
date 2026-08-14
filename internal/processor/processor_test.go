@@ -10,19 +10,36 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/f0d0r/margaret-ebook-library/pkg/model"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
+
+// readBlobAll reads the full contents of a Blob into memory.
+func readBlobAll(b model.Blob) ([]byte, error) {
+	size, err := b.Size()
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, size)
+	if _, err := b.ReadAt(data, 0); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return data, nil
+}
 
 type fakeParser struct {
 	failSubstr string
 }
 
-func (f fakeParser) Parse(_ context.Context, r io.Reader, _ string) (parser.Metadata, error) {
-	content, _ := io.ReadAll(r)
+func (f fakeParser) Parse(b model.Blob) (parser.Metadata, error) {
+	content, err := readBlobAll(b)
+	if err != nil {
+		return parser.Metadata{}, err
+	}
 	if strings.Contains(string(content), f.failSubstr) {
 		return parser.Metadata{}, errors.New("boom")
 	}
-	return parser.Metadata{Author: "Author", Title: "Title"}, nil
+	return parser.Metadata{Authors: []string{"Author"}, Title: "Title"}, nil
 }
 
 func TestProcess(t *testing.T) {
