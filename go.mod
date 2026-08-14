@@ -1,6 +1,6 @@
 module github.com/f0d0r/margaret-tools
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/f0d0r/margaret-ebook-library v0.0.0-20260814123056-aeaac7aa2f7f
