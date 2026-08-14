@@ -3,19 +3,19 @@ package processor
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/f0d0r/margaret-ebook-library/pkg/model"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
 type slowParser struct{}
 
-func (slowParser) Parse(_ context.Context, _ io.Reader, _ string) (parser.Metadata, error) {
+func (slowParser) Parse(_ model.Blob) (parser.Metadata, error) {
 	time.Sleep(2 * time.Millisecond)
 	return parser.Metadata{}, nil
 }

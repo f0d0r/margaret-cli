@@ -13,30 +13,39 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/f0d0r/margaret-ebook-library/pkg/model"
 	"github.com/f0d0r/margaret-tools/internal/scanner"
+	"github.com/f0d0r/margaret-tools/internal/source"
 	"github.com/mholt/archives"
 )
 
 // processArchive unpacks an archive and processes every ebook and nested
 // archive found inside. depth is the archive's own nesting level: 0 for an
 // archive found by the scanner, 1 for an archive inside another archive.
-func (p *Processor) processArchive(ctx context.Context, r scanner.Result, depth int) {
-	f, err := os.Open(r.Path)
+// src is the worker's Source, used to open the archive on disk or over FTP.
+func (p *Processor) processArchive(ctx context.Context, r scanner.Result, depth int, src source.Source) {
+	rc, err := src.Open(r.Path)
 	if err != nil {
 		p.fail(r.Path, err)
 		p.report()
 		return
 	}
 	defer func() {
-		_ = f.Close()
+		_ = rc.Close()
 	}()
-	p.processArchiveStream(ctx, r.Format, f, r.Path, depth)
+	if f, ok := rc.(*os.File); ok {
+		p.processArchiveStream(ctx, r.Format, f, r.Path, depth, -1)
+		return
+	}
+	// Remote (e.g. FTP) archives are streamed and spooled lazily.
+	p.processArchiveStream(ctx, r.Format, rc, r.Path, depth, r.Size)
 }
 
 // processArchiveStream processes an archive read from r. r must either be
 // positioned at the start of the archive (zip, tar) or wrap the archive
-// contents (single-stream gz/bz2).
-func (p *Processor) processArchiveStream(ctx context.Context, format string, r io.Reader, displayPath string, depth int) {
+// contents (single-stream gz/bz2). size is the uncompressed size of the
+// stream, or -1 when unknown (the gz/bz2 single-stream case).
+func (p *Processor) processArchiveStream(ctx context.Context, format string, r io.Reader, displayPath string, depth int, size int64) {
 	if depth >= p.cfg.MaxDepth {
 		p.fail(displayPath, fmt.Errorf("archive nesting depth %d exceeds the limit of %d (raise it with --archive-depth)", depth, p.cfg.MaxDepth))
 		p.report()
@@ -44,7 +53,7 @@ func (p *Processor) processArchiveStream(ctx context.Context, format string, r i
 	}
 	switch format {
 	case "zip":
-		p.processZipStream(ctx, r, displayPath, depth)
+		p.processZipStream(ctx, r, displayPath, depth, size)
 	case "tar":
 		p.processTar(ctx, r, displayPath, depth)
 	case "tgz":
@@ -80,63 +89,123 @@ func (p *Processor) processArchiveStream(ctx context.Context, format string, r i
 			p.report()
 		}
 	case "7z":
-		p.processSevenZipStream(ctx, r, displayPath, depth)
+		p.processSevenZipStream(ctx, r, displayPath, depth, size)
 	default:
 		p.fail(displayPath, fmt.Errorf("unsupported archive format %q", format))
 		p.report()
 	}
 }
 
-// processZipStream reads a zip archive from r.
-func (p *Processor) processZipStream(ctx context.Context, r io.Reader, displayPath string, depth int) {
-	p.withReaderAt(r, displayPath, func(f *os.File) {
-		fi, err := f.Stat()
-		if err != nil {
-			p.fail(displayPath, err)
-			p.report()
-			return
-		}
-		p.processZip(ctx, f, fi.Size(), displayPath, depth)
-	})
-}
-
-// withReaderAt calls fn with r as a seekable random-access file. Formats such
-// as zip and 7z need random access, so a stream that is not already an
-// *os.File is first spooled to a temporary file.
-func (p *Processor) withReaderAt(r io.Reader, displayPath string, fn func(*os.File)) {
-	if f, ok := r.(*os.File); ok {
-		fn(f)
-		return
-	}
-	tmp, err := os.CreateTemp("", "margaret-archive-*")
+// processZipStream reads a zip archive from r, adapting it to random access
+// via a spoolBlob (kept in memory up to the limit, spilled to a temp file
+// beyond) instead of a plain temp-file copy.
+func (p *Processor) processZipStream(ctx context.Context, r io.Reader, displayPath string, depth int, size int64) {
+	b, cleanup, err := p.readerAtView(displayPath, "margaret-archive-", size, r)
 	if err != nil {
 		p.fail(displayPath, err)
 		p.report()
 		return
 	}
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-	}()
-	if _, err := io.Copy(tmp, r); err != nil {
+	defer cleanup()
+	bsize, err := b.Size()
+	if err != nil {
 		p.fail(displayPath, err)
 		p.report()
 		return
 	}
-	fn(tmp)
+	p.processZip(ctx, b, bsize, displayPath, depth)
 }
 
-// processSevenZipStream reads a 7z archive from r.
-func (p *Processor) processSevenZipStream(ctx context.Context, r io.Reader, displayPath string, depth int) {
-	p.withReaderAt(r, displayPath, func(f *os.File) {
-		p.processSevenZip(ctx, f, displayPath, depth)
-	})
+// readerAtView returns r as a random-access blob (model.Blob). An *os.File is
+// used directly so no copy is made; any other stream is wrapped in a spoolBlob
+// that buffers lazily in memory up to the configured limit and spills the rest
+// to a temporary file. cleanup must be called when the blob is no longer
+// needed.
+func (p *Processor) readerAtView(displayPath, prefix string, size int64, r io.Reader) (model.Blob, func(), error) {
+	if f, ok := r.(*os.File); ok {
+		if size < 0 {
+			st, err := f.Stat()
+			if err != nil {
+				return nil, nil, err
+			}
+			size = st.Size()
+		}
+		b, err := model.NewFileBlob(f)
+		if err != nil {
+			return nil, nil, err
+		}
+		return b, func() {}, nil
+	}
+	b, err := newSpoolBlob(prefix, p.cfg.SpoolMemLimit, r, size)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b, b.Close, nil
 }
 
-// processSevenZip reads a 7z archive from a random-access file.
-func (p *Processor) processSevenZip(ctx context.Context, f *os.File, displayPath string, depth int) {
+// parseEbookStream adapts the ebook content read from r to a model.Blob and
+// parses it. size is the member's uncompressed size, or -1 when unknown
+// (single-stream gz/bz2). The content is spooled lazily: kept in memory up to
+// the configured limit and spilled to a temporary file beyond. Because the
+// parser reads only what it needs, formats whose metadata lives at the start
+// of the file are not fully materialized. Any error while the content is read
+// (for example a decryption failure in an encrypted archive member) is
+// reported for displayPath.
+func (p *Processor) parseEbookStream(ctx context.Context, displayPath, format string, size int64, r io.Reader) {
+	if ctx.Err() != nil {
+		return
+	}
+	b, err := newSpoolBlob("margaret-ebook-", p.cfg.SpoolMemLimit, r, size)
+	if err != nil {
+		p.fail(displayPath, err)
+		p.report()
+		return
+	}
+	defer b.Close()
+	p.parseEbook(ctx, displayPath, format, b)
+}
+
+// seekReadAt is the interface a source must satisfy for the mholt 7z reader:
+// io.Reader (as required by the Extract signature) plus the ReaderAt and
+// Seeker it needs for random access.
+type seekReadAt interface {
+	io.Reader
+	io.Seeker
+	io.ReaderAt
+}
+
+// processSevenZipStream reads a 7z archive from r, adapting it to the
+// seekable random access the 7z reader requires via a spoolBlob when r is not
+// already an *os.File.
+func (p *Processor) processSevenZipStream(ctx context.Context, r io.Reader, displayPath string, depth int, size int64) {
+	sra, cleanup, err := p.seekReadAtView(displayPath, size, r)
+	if err != nil {
+		p.fail(displayPath, err)
+		p.report()
+		return
+	}
+	defer cleanup()
+	p.processSevenZip(ctx, sra, displayPath, depth)
+}
+
+// seekReadAtView returns r as a value that is both a Reader, a Seeker, and a
+// ReaderAt: the *os.File itself when r is one, otherwise a spoolBlob. cleanup
+// must be called when the value is no longer needed.
+func (p *Processor) seekReadAtView(displayPath string, size int64, r io.Reader) (seekReadAt, func(), error) {
+	if f, ok := r.(*os.File); ok {
+		return f, func() {}, nil
+	}
+	b, err := newSpoolBlob("margaret-archive-", p.cfg.SpoolMemLimit, r, size)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b, b.Close, nil
+}
+
+// processSevenZip reads a 7z archive from a seekable random-access source.
+func (p *Processor) processSevenZip(ctx context.Context, sra seekReadAt, displayPath string, depth int) {
 	sz := archives.SevenZip{Password: p.cfg.Password}
-	if err := sz.Extract(ctx, f, p.handleArchiveFile(displayPath, depth)); err != nil {
+	if err := sz.Extract(ctx, sra, p.handleArchiveFile(displayPath, depth)); err != nil {
 		p.fail(displayPath, err)
 		p.report()
 	}
@@ -152,7 +221,7 @@ func (p *Processor) handleArchiveFile(displayPath string, depth int) func(contex
 			return fs.SkipAll
 		}
 		if f.IsDir() {
-    		return nil
+			return nil
 		}
 		if _, ok := scanner.FormatOf(f.NameInArchive); !ok {
 			return nil
@@ -163,7 +232,7 @@ func (p *Processor) handleArchiveFile(displayPath string, depth int) func(contex
 			p.report()
 			return nil
 		}
-		p.handleMember(ctx, f.NameInArchive, opened, displayPath, depth+1)
+		p.handleMember(ctx, f.NameInArchive, opened, displayPath, depth+1, f.Size())
 		_ = opened.Close()
 		return nil
 	}
@@ -194,7 +263,7 @@ func (p *Processor) processZip(ctx context.Context, ra io.ReaderAt, size int64, 
 			p.report()
 			continue
 		}
-		p.handleMember(ctx, zf.Name, rc, displayPath, depth+1)
+		p.handleMember(ctx, zf.Name, rc, displayPath, depth+1, int64(zf.UncompressedSize64))
 		func() {
 			_ = rc.Close()
 		}()
@@ -219,7 +288,7 @@ func (p *Processor) processTar(ctx context.Context, r io.Reader, displayPath str
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		p.handleMember(ctx, hdr.Name, io.LimitReader(tr, hdr.Size), displayPath, depth+1)
+		p.handleMember(ctx, hdr.Name, io.LimitReader(tr, hdr.Size), displayPath, depth+1, hdr.Size)
 	}
 }
 
@@ -232,28 +301,29 @@ func (p *Processor) processSingleStream(ctx context.Context, r io.Reader, innerP
 		return
 	}
 	if scanner.IsArchiveFormat(format) {
-		p.processArchiveStream(ctx, format, r, innerPath, depth)
+		p.processArchiveStream(ctx, format, r, innerPath, depth, -1)
 		return
 	}
 	p.found.Add(1)
-	p.parseEbook(ctx, innerPath, format, r)
+	p.parseEbookStream(ctx, innerPath, format, -1, r)
 }
 
 // handleMember processes a single entry of an unpacked archive. name is the
 // member's name inside the archive; parentPath is the path of the archive
-// that contained it.
-func (p *Processor) handleMember(ctx context.Context, name string, r io.Reader, parentPath string, depth int) {
+// that contained it. size is the member's uncompressed size, or -1 when
+// unknown.
+func (p *Processor) handleMember(ctx context.Context, name string, r io.Reader, parentPath string, depth int, size int64) {
 	format, ok := scanner.FormatOf(name)
 	if !ok {
 		return
 	}
 	display := parentPath + "!" + name
 	if scanner.IsArchiveFormat(format) {
-		p.processArchiveStream(ctx, format, r, display, depth)
+		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
 	p.found.Add(1)
-	p.parseEbook(ctx, display, format, r)
+	p.parseEbookStream(ctx, display, format, size, r)
 }
 
 // dropSuffix removes the last extension from name, so that "a.epub.gz"

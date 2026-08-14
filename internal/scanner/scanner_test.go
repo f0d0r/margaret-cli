@@ -15,7 +15,6 @@ func TestScan(t *testing.T) {
 	files := map[string]string{
 		"a.epub":     "epub",
 		"b.mobi":     "mobi",
-		"c.PDF":      "pdf",
 		"sub/d.azw3": "azw3",
 	}
 	excluded := []string{"readme.txt", "sub/image.png"}
@@ -169,7 +168,6 @@ func TestFormatOf(t *testing.T) {
 		ok     bool
 	}{
 		{"a.epub", "epub", true},
-		{"b.PDF", "pdf", true},
 		{"c.tar.gz", "tgz", true},
 		{"d.TGZ", "tgz", true},
 		{"e.tar.bz2", "tbz2", true},

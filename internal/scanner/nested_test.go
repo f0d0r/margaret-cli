@@ -37,10 +37,10 @@ func TestScanNestedNoDeadlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-_, err := New(Config{
-		Workers: 2,
-		OnResult: func(r Result) { found.Add(1) },
-	}).Scan(context.Background(), dir)
+		_, err := New(Config{
+			Workers:  2,
+			OnResult: func(r Result) { found.Add(1) },
+		}).Scan(context.Background(), dir)
 		if err != nil {
 			t.Errorf("err: %v", err)
 		}

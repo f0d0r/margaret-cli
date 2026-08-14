@@ -3,6 +3,8 @@ module github.com/f0d0r/margaret-tools
 go 1.26.5
 
 require (
+	github.com/f0d0r/margaret-ebook-library v0.0.0-20260814123056-aeaac7aa2f7f
+	github.com/jlaffaye/ftp v0.2.2
 	github.com/mholt/archives v0.1.5
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.45.0
@@ -29,5 +31,7 @@ require (
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 )
+
+replace github.com/f0d0r/margaret-ebook-library => ../margaret-ebook-library

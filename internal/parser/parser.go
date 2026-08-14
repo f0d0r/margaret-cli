@@ -2,30 +2,37 @@
 package parser
 
 import (
-	"context"
-	"io"
+	"github.com/f0d0r/margaret-ebook-library/pkg/ebook"
+	"github.com/f0d0r/margaret-ebook-library/pkg/model"
 )
 
 // Metadata holds the metadata extracted from an ebook file.
 type Metadata struct {
-	Author string
-	Title  string
+	Authors []string
+	Title   string
 }
 
-// Parser reads metadata from a single ebook. r provides the ebook content;
-// the parser must not consume more than it needs and should stop reading
-// once the metadata has been found.
+// Parser reads metadata from a single ebook. ebookData provides random access
+// to the raw bytes of the ebook; the parser must not consume more than it
+// needs and should stop reading once the metadata has been found.
 type Parser interface {
-	// Parse extracts the metadata of the ebook read from r. format is one of
-	// the detected formats such as "epub", "mobi" or "pdf".
-	Parse(ctx context.Context, r io.Reader, format string) (Metadata, error)
+	// Parse extracts the metadata of the ebook read from ebookData. The format
+	// (such as "epub", "mobi" or "pdf") is detected from the content.
+	Parse(ebookData model.Blob) (Metadata, error)
 }
 
-// Dummy is a placeholder implementation that does nothing. It is meant to
-// be replaced by real format-specific parsers.
-type Dummy struct{}
+// EbookParser reads metadata with the margaret-ebook-library package, which
+// detects the format from the content and extracts author and title metadata.
+type EbookParser struct{}
 
 // Parse always succeeds and returns empty metadata.
-func (Dummy) Parse(context.Context, io.Reader, string) (Metadata, error) {
-	return Metadata{}, nil
+func (EbookParser) Parse(ebookData model.Blob) (Metadata, error) {
+	meta, err := ebook.ReadMetadataFromBlob(ebookData)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return Metadata{
+		Authors: meta.Authors,
+		Title:   meta.Title,
+	}, nil
 }

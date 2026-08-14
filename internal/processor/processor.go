@@ -3,14 +3,15 @@ package processor
 
 import (
 	"context"
-	"io"
 	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 
+	"github.com/f0d0r/margaret-ebook-library/pkg/model"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 	"github.com/f0d0r/margaret-tools/internal/scanner"
+	"github.com/f0d0r/margaret-tools/internal/source"
 )
 
 // Result is an ebook together with its extracted metadata.
@@ -52,6 +53,15 @@ type Config struct {
 	// Depth 0 means the archive itself; an ebook inside is depth 1.
 	MaxDepth int
 
+	// SourceFactory returns a fresh Source for every parse worker. When nil,
+	// the local filesystem is used.
+	SourceFactory source.Factory
+
+	// SpoolMemLimit bounds how many bytes of a spooled archive member are
+	// buffered in memory; anything beyond is spilled to a temporary file. A
+	// zero value uses the default (64 MiB).
+	SpoolMemLimit int64
+
 	// Password decrypts password-protected rar and 7z archives. The
 	// standard library cannot decrypt AES-encrypted zip members, so those
 	// are still reported as failures.
@@ -77,10 +87,11 @@ func DefaultConfig() Config {
 
 // Processor ties the scanner and the parser together.
 type Processor struct {
-	cfg        Config
-	parser     parser.Parser
-	onResult   func(Result)
-	onProgress func(Progress)
+	cfg           Config
+	parser        parser.Parser
+	onResult      func(Result)
+	onProgress    func(Progress)
+	sourceFactory source.Factory
 
 	parsed   atomic.Int64
 	failed   atomic.Int64
@@ -110,11 +121,21 @@ func New(p parser.Parser, cfg Config) *Processor {
 		cfg.MaxDepth = 0
 	}
 	return &Processor{
-		parser:     p,
-		cfg:        cfg,
-		onResult:   cfg.OnResult,
-		onProgress: cfg.OnProgress,
+		parser:        p,
+		cfg:           cfg,
+		onResult:      cfg.OnResult,
+		onProgress:    cfg.OnProgress,
+		sourceFactory: cfg.SourceFactory,
 	}
+}
+
+// newSource returns the Source used by one parse worker. The zero value (nil
+// factory) means the local filesystem.
+func (p *Processor) newSource() (source.Source, error) {
+	if p.sourceFactory == nil {
+		return source.Local{}, nil
+	}
+	return p.sourceFactory()
 }
 
 // Process scans root, extracts the metadata of every ebook found and
@@ -131,7 +152,8 @@ func (p *Processor) Process(ctx context.Context, root string) ([]Failure, error)
 	work := make(chan scanner.Result, p.cfg.QueueSize)
 
 	sc := scanner.New(scanner.Config{
-		Workers: p.cfg.ScanWorkers,
+		Workers:       p.cfg.ScanWorkers,
+		SourceFactory: p.cfg.SourceFactory,
 		OnResult: func(r scanner.Result) {
 			select {
 			case work <- r:
@@ -148,17 +170,38 @@ func (p *Processor) Process(ctx context.Context, root string) ([]Failure, error)
 		},
 	})
 
-	var parseWG sync.WaitGroup
+	var (
+		parseWG  sync.WaitGroup
+		fatalMu  sync.Mutex
+		fatalErr error
+	)
+	reportFatal := func(err error) {
+		fatalMu.Lock()
+		if fatalErr == nil {
+			fatalErr = err
+		}
+		fatalMu.Unlock()
+		cancel()
+	}
+
 	parseWG.Add(p.cfg.ParseWorkers)
 	for i := 0; i < p.cfg.ParseWorkers; i++ {
 		go func() {
 			defer parseWG.Done()
+			src, err := p.newSource()
+			if err != nil {
+				reportFatal(err)
+				return
+			}
+			defer func() {
+				_ = src.Close()
+			}()
 			for r := range work {
 				if ctx.Err() != nil {
 					continue
 				}
 				p.beginWork(r.Path)
-				p.processSource(ctx, r)
+				p.processSource(ctx, r, src)
 				p.endWork(r.Path)
 			}
 		}()
@@ -168,37 +211,61 @@ func (p *Processor) Process(ctx context.Context, root string) ([]Failure, error)
 	close(work)
 	parseWG.Wait()
 
+	fatalMu.Lock()
+	fatal := fatalErr
+	fatalMu.Unlock()
+
 	p.failMu.Lock()
 	failures := append([]Failure(nil), p.failures...)
 	p.failMu.Unlock()
+	if fatal != nil {
+		return failures, fatal
+	}
 	return failures, err
 }
 
 // processSource handles a single unit of work: either an ebook to parse or
-// an archive to unpack and process.
-func (p *Processor) processSource(ctx context.Context, r scanner.Result) {
+// an archive to unpack and process. src is the worker's Source, used to open
+// the file on disk or over FTP.
+func (p *Processor) processSource(ctx context.Context, r scanner.Result, src source.Source) {
 	if scanner.IsArchiveFormat(r.Format) {
-		p.processArchive(ctx, r, 0)
+		p.processArchive(ctx, r, 0, src)
 		return
 	}
-	f, err := os.Open(r.Path)
+	rc, err := src.Open(r.Path)
 	if err != nil {
 		p.fail(r.Path, err)
 		p.report()
 		return
 	}
-	defer func () {
-		_ = f.Close()
+	defer func() {
+		_ = rc.Close()
 	}()
-	p.parseEbook(ctx, r.Path, r.Format, f)
+	if f, ok := rc.(*os.File); ok {
+		b, err := model.NewFileBlob(f)
+		if err != nil {
+			p.fail(r.Path, err)
+			p.report()
+			return
+		}
+		p.parseEbook(ctx, r.Path, r.Format, b)
+		return
+	}
+	// Remote (e.g. FTP) files are streamed and spooled lazily.
+	p.parseEbookStream(ctx, r.Path, r.Format, r.Size, rc)
 }
 
-// parseEbook reads the metadata of one ebook from r and reports the result.
-func (p *Processor) parseEbook(ctx context.Context, displayPath, format string, r io.Reader) {
+// parseEbook reads the metadata of one ebook and reports the result. b is the
+// ebook content: for top-level files it is a blob over the file on disk, for
+// archive and stream members it is a spoolBlob over the extracted content.
+// The parser reads only what it needs, so members whose metadata lives at the
+// start of the file are not fully materialized. displayPath is the
+// user-facing path (an archive member like "a.zip!b.epub") used in reports.
+func (p *Processor) parseEbook(ctx context.Context, displayPath, format string, b model.Blob) {
 	if ctx.Err() != nil {
 		return
 	}
-	md, err := p.parser.Parse(ctx, r, format)
+	md, err := p.parser.Parse(b)
 	if err != nil {
 		p.fail(displayPath, err)
 		p.report()
