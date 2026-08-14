@@ -17,6 +17,13 @@ jobs:
           check-latest: true
           cache: true
 
+      - name: Checkout margaret-ebook-library
+        uses: actions/checkout@v4
+        with:
+          repository: f0d0r/margaret-ebook-library
+          token: ${{ secrets.GH_PAT }}
+          path: ../margaret-ebook-library
+
       - name: Go Tidy Check
         run: go mod tidy && git diff --exit-code
 
