@@ -123,13 +123,6 @@ func (p *Processor) processZipStream(ctx context.Context, r io.Reader, displayPa
 // needed.
 func (p *Processor) readerAtView(displayPath, prefix string, size int64, r io.Reader) (model.Blob, func(), error) {
 	if f, ok := r.(*os.File); ok {
-		if size < 0 {
-			st, err := f.Stat()
-			if err != nil {
-				return nil, nil, err
-			}
-			size = st.Size()
-		}
 		b, err := model.NewFileBlob(f)
 		if err != nil {
 			return nil, nil, err

@@ -539,8 +539,6 @@ func writeNested(dir string, rng *rand.Rand) {
 	}
 
 	// outer.zip: the inner.zip plus one loose book.
-	var outer []book
-	outer = append(outer, inner...)
 	// One loose book on its own.
 	var looseBook book
 	for _, b := range all {
