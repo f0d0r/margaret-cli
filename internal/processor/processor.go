@@ -133,7 +133,7 @@ func New(p parser.Parser, cfg Config) *Processor {
 // factory) means the local filesystem.
 func (p *Processor) newSource() (source.Source, error) {
 	if p.sourceFactory == nil {
-		return source.Local{}, nil
+		return source.LocalSource{}, nil
 	}
 	return p.sourceFactory()
 }

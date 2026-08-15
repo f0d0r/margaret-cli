@@ -137,7 +137,7 @@ type Scanner struct {
 // (nil factory) means the local filesystem.
 func (s *Scanner) newSource() (source.Source, error) {
 	if s.sourceFactory == nil {
-		return source.Local{}, nil
+		return source.LocalSource{}, nil
 	}
 	return s.sourceFactory()
 }

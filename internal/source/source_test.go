@@ -18,7 +18,7 @@ func TestFactoryForURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := src.(Local); !ok {
+	if _, ok := src.(LocalSource); !ok {
 		t.Fatalf("expected Local source for a plain path, got %T", src)
 	}
 	if err := src.Close(); err != nil {
