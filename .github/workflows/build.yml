@@ -25,9 +25,12 @@ jobs:
           go env -w GOPRIVATE=github.com/f0d0r/*
           git config --global url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
 
+      - name: Install SQLc
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+        
       - name: Generate SQLc code
         run: make generate
-        
+
       - name: Go Tidy Check
         run: go mod tidy
 
