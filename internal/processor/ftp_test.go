@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/f0d0r/margaret-tools/internal/ftptest"
-	"github.com/f0d0r/margaret-tools/internal/source"
+	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
 func TestProcessFTP(t *testing.T) {
@@ -35,30 +35,31 @@ func TestProcessFTP(t *testing.T) {
 	defer srv.Close()
 
 	url := "ftp://" + srv.Addr()
-	factory, err := source.FactoryForURL(url, source.FTPOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	var (
 		mu      sync.Mutex
 		results []Result
 	)
-	proc := New(fakeParser{failSubstr: "bad/"}, Config{
-		ScanWorkers:   2,
-		ParseWorkers:  2,
-		SourceFactory: factory,
+	proc := newTestProcessor(t, ScanProcessorConfig{
+		ScanWorkers:  2,
+		ParseWorkers: 2,
 		OnResult: func(r Result) {
 			mu.Lock()
 			results = append(results, r)
 			mu.Unlock()
 		},
-	})
+	}, url)
 
-	failures, err := proc.Process(context.Background(), url)
+	proc.parsers = map[string]parser.Parser{
+		"epub": fakeParser{failSubstr: "bad/"},
+		"mobi": fakeParser{failSubstr: "bad/"},
+	}
+
+	err = proc.Process(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	failures := proc.Failures()
 
 	if len(failures) != 1 {
 		t.Fatalf("expected 1 failure, got %d: %v", len(failures), failures)
@@ -74,15 +75,12 @@ func TestProcessFTP(t *testing.T) {
 }
 
 func TestProcessFTPMissingRoot(t *testing.T) {
-	factory, err := source.FactoryForURL("ftp://127.0.0.1:1/nope", source.FTPOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	proc := New(fakeParser{}, Config{SourceFactory: factory})
-	failures, err := proc.Process(context.Background(), "ftp://127.0.0.1:1/nope")
+	proc := newTestProcessor(t, ScanProcessorConfig{}, "ftp://127.0.0.1:1/nope")
+	err := proc.Process(context.Background())
 	if err == nil {
 		t.Fatal("expected fatal error for an unreachable FTP root")
 	}
+	failures := proc.Failures()
 	if len(failures) != 0 {
 		t.Fatalf("expected no failures, got %v", failures)
 	}

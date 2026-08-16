@@ -48,18 +48,13 @@ func TestScanFTP(t *testing.T) {
 
 	url := "ftp://" + srv.Addr()
 
-	factory, err := source.FactoryForURL(url, source.FTPOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var (
 		mu      sync.Mutex
 		results []Result
 	)
 	_, err = New(Config{
-		Workers:       2,
-		SourceFactory: factory,
+		Workers:    2,
+		FTPOptions: source.FTPOptions{},
 		OnResult: func(r Result) {
 			mu.Lock()
 			results = append(results, r)

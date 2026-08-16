@@ -9,12 +9,8 @@ import (
 	"github.com/f0d0r/margaret-tools/internal/ftptest"
 )
 
-func TestFactoryForURL(t *testing.T) {
-	f, err := FactoryForURL("/tmp/books", FTPOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	src, err := f()
+func TestSourceFactory(t *testing.T) {
+	src, err := SourceFactory("/tmp/books", FTPOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +21,7 @@ func TestFactoryForURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := FactoryForURL("http://example.com/books", FTPOptions{}); err == nil {
+	if _, err := SourceFactory("http://example.com/books", FTPOptions{}); err == nil {
 		t.Fatal("expected error for an unsupported scheme")
 	}
 }
@@ -53,11 +49,7 @@ func TestFTPSource(t *testing.T) {
 	}
 	defer srv.Close()
 
-	f, err := FactoryForURL("ftp://"+srv.Addr(), FTPOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	src, err := f()
+	src, err := SourceFactory("ftp://"+srv.Addr(), FTPOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,12 +109,12 @@ func TestFTPSource(t *testing.T) {
 	}
 
 	// The URL user info is passed through as the login credentials.
-	if _, err := FactoryForURL("ftp://user:pass@"+srv.Addr(), FTPOptions{}); err != nil {
+	if _, err := SourceFactory("ftp://user:pass@"+srv.Addr(), FTPOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
 	// The --ftp-user/--ftp-pass options override the URL.
-	if _, err := FactoryForURL("ftp://"+srv.Addr(), FTPOptions{User: "x", Password: "y"}); err != nil {
+	if _, err := SourceFactory("ftp://"+srv.Addr(), FTPOptions{User: "x", Password: "y"}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -2,7 +2,10 @@ BINARY := margaret-tools
 BUILD_DIR := build
 MAIN_PKG := ./cmd/margaret-tools
 
-.PHONY: build clean test vet run
+.PHONY: build clean generate test vet run
+
+generate:
+	sqlc generate
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) $(MAIN_PKG)

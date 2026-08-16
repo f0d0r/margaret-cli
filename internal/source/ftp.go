@@ -1,9 +1,12 @@
 package source
 
 import (
+	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jlaffaye/ftp"
 )
@@ -23,6 +26,43 @@ type FTPOptions struct {
 type ftpSource struct {
 	conn   *ftp.ServerConn
 	prefix string // scheme://host, stripped from paths before talking to the server
+}
+
+// NewFTPSource dials an FTP server, logs in and returns a Source over the
+// connection. The URL user info and opts supply the credentials, falling back
+// to the anonymous login. It returns an error if the server cannot be reached
+// or the login is rejected.
+func NewFTPSource(u *url.URL, opts FTPOptions) (*ftpSource, error) {
+	user := opts.User
+	pass := opts.Password
+	if u.User != nil {
+		if user == "" {
+			user = u.User.Username()
+		}
+		if p, ok := u.User.Password(); ok && pass == "" {
+			pass = p
+		}
+	}
+	if user == "" {
+		user = "anonymous"
+	}
+	if pass == "" {
+		pass = "anonymous@"
+	}
+	host := u.Host
+	if !strings.Contains(host, ":") {
+		host += ":21"
+	}
+	prefix := u.Scheme + "://" + u.Host
+	conn, err := ftp.Dial(host, ftp.DialWithTimeout(30*time.Second))
+	if err != nil {
+		return nil, fmt.Errorf("connect %s: %w", u.Host, err)
+	}
+	if err := conn.Login(user, pass); err != nil {
+		_ = conn.Quit()
+		return nil, fmt.Errorf("login %s: %w", u.Host, err)
+	}
+	return &ftpSource{conn: conn, prefix: prefix}, nil
 }
 
 // path strips the URL prefix so the remainder can be used in FTP commands.
