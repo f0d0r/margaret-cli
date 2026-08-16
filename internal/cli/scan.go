@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/f0d0r/margaret-tools/internal/parser"
+	"github.com/f0d0r/margaret-tools/internal/database"
+	"github.com/f0d0r/margaret-tools/internal/db"
 	"github.com/f0d0r/margaret-tools/internal/processor"
-	"github.com/f0d0r/margaret-tools/internal/source"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +19,7 @@ var (
 	failuresOutPath string
 	ftpUser         string
 	ftpPass         string
+	duplicatesOut   string
 )
 
 // scanCmd scans a directory for ebook files.
@@ -31,7 +32,7 @@ inside zip, tar, gz, bz2, rar and 7z archives (nested archives are
 unpacked up to the depth given with --archive-depth).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := processor.DefaultConfig()
+		cfg := processor.DefaultScanProcessorConfig()
 		if cmd.Flags().Changed("workers") {
 			cfg.ScanWorkers = scanWorkers
 			cfg.ParseWorkers = scanWorkers
@@ -44,7 +45,9 @@ unpacked up to the depth given with --archive-depth).`,
 			cfg.SpoolMemLimit = spoolMemLimit
 		}
 		cfg.Password = archivePassword
-		return runScan(cmd.Context(), args[0], cfg, ftpUser, ftpPass)
+		cfg.FTPUser = ftpUser
+		cfg.FTPPass = ftpPass
+		return runScan(cmd.Context(), args[0], cfg)
 	},
 }
 
@@ -56,16 +59,19 @@ func init() {
 	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
 	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
+	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
 	rootCmd.AddCommand(scanCmd)
 }
 
-func runScan(ctx context.Context, root string, cfg processor.Config, ftpUser, ftpPass string) error {
-	sourceFactory, err := source.FactoryForURL(root, source.FTPOptions{User: ftpUser, Password: ftpPass})
+func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig) error {
+	start := time.Now()
+
+	conn, cleanup, err := database.OpenTemp()
 	if err != nil {
 		return err
 	}
-	cfg.SourceFactory = sourceFactory
-	start := time.Now()
+	defer cleanup()
+	q := db.New(conn)
 
 	var bar *progressBar
 	var rep *progressReporter
@@ -78,7 +84,7 @@ func runScan(ctx context.Context, root string, cfg processor.Config, ftpUser, ft
 		}
 	}
 
-	proc := processor.New(parser.EbookParser{}, cfg)
+	var proc processor.Processor = processor.NewScanProcessor(conn, q, cfg, root)
 
 	// A ticker keeps the bar animating (spinner + in-flight item names) while
 	// a long-running unit of work emits no progress event of its own.
@@ -100,10 +106,11 @@ func runScan(ctx context.Context, root string, cfg processor.Config, ftpUser, ft
 		}
 	}()
 
-	failures, err := proc.Process(ctx, root)
+	err = proc.Process(ctx)
 	close(stop)
 	<-tickDone
 	stats := proc.Stats()
+	failures := proc.Failures()
 	if rep != nil {
 		rep.sync(stats)
 	}
@@ -113,6 +120,9 @@ func runScan(ctx context.Context, root string, cfg processor.Config, ftpUser, ft
 
 	printReport(stats, time.Since(start))
 	if err := writeFailures(failures, failuresOutPath); err != nil {
+		return err
+	}
+	if err := writeDuplicates(conn, duplicatesOut); err != nil {
 		return err
 	}
 	return err

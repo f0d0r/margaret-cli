@@ -1,2 +1,4 @@
 build/
+internal/db/*.go
 failures.json
+duplicates.json

@@ -84,9 +84,9 @@ type Config struct {
 	// Workers is the number of concurrent directory walkers.
 	Workers int
 
-	// SourceFactory returns a fresh Source for every walker goroutine. When
-	// nil, the local filesystem is used.
-	SourceFactory source.Factory
+	// FTPOptions carries the credentials used to reach ftp:// roots. It is
+	// ignored for local paths.
+	FTPOptions source.FTPOptions
 
 	// OnResult is invoked for every ebook found.
 	OnResult func(Result)
@@ -109,21 +109,21 @@ func New(cfg Config) *Scanner {
 		cfg.Workers = 1
 	}
 	return &Scanner{
-		workers:       cfg.Workers,
-		onResult:      cfg.OnResult,
-		onReport:      cfg.OnReport,
-		onError:       cfg.OnError,
-		sourceFactory: cfg.SourceFactory,
+		workers:  cfg.Workers,
+		onResult: cfg.OnResult,
+		onReport: cfg.OnReport,
+		onError:  cfg.OnError,
+		ftpOpts:  cfg.FTPOptions,
 	}
 }
 
 // Scanner walks a directory tree concurrently.
 type Scanner struct {
-	workers       int
-	onResult      func(Result)
-	onReport      func(Progress)
-	onError       func(path string, err error)
-	sourceFactory source.Factory
+	workers  int
+	onResult func(Result)
+	onReport func(Progress)
+	onError  func(path string, err error)
+	ftpOpts  source.FTPOptions
 
 	dirs  atomic.Int64
 	files atomic.Int64
@@ -133,20 +133,11 @@ type Scanner struct {
 	fatal error
 }
 
-// newSource returns the Source used by one walker goroutine. The zero value
-// (nil factory) means the local filesystem.
-func (s *Scanner) newSource() (source.Source, error) {
-	if s.sourceFactory == nil {
-		return source.LocalSource{}, nil
-	}
-	return s.sourceFactory()
-}
-
 // Scan walks root concurrently and reports results through the configured
 // callbacks. It returns the number of directories that could not be read
 // and a fatal error if root itself cannot be accessed.
 func (s *Scanner) Scan(ctx context.Context, root string) (int, error) {
-	rootSrc, err := s.newSource()
+	rootSrc, err := source.SourceFactory(root, s.ftpOpts)
 	if err != nil {
 		return 0, fmt.Errorf("scan %s: %w", root, err)
 	}
@@ -192,7 +183,7 @@ func (s *Scanner) Scan(ctx context.Context, root string) (int, error) {
 	for i := 0; i < s.workers; i++ {
 		go func() {
 			defer walkers.Done()
-			src, err := s.newSource()
+			src, err := source.SourceFactory(root, s.ftpOpts)
 			if err != nil {
 				s.reportFatal(err)
 				cancel()

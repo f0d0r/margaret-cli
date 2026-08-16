@@ -27,12 +27,12 @@ func (stubParser) Parse(_ model.Blob) (parser.Metadata, error) {
 	return parser.Metadata{}, nil
 }
 
-func collectResults(t *testing.T, cfg Config, dir string) ([]Result, []Failure) {
+func collectResults(t *testing.T, cfg ScanProcessorConfig, dir string) ([]Result, []Failure) {
 	t.Helper()
 	return collectResultsWithParser(t, cfg, dir, stubParser{})
 }
 
-func collectResultsWithParser(t *testing.T, cfg Config, dir string, p parser.Parser) ([]Result, []Failure) {
+func collectResultsWithParser(t *testing.T, cfg ScanProcessorConfig, dir string, p parser.Parser) ([]Result, []Failure) {
 	t.Helper()
 	var (
 		mu      sync.Mutex
@@ -43,11 +43,13 @@ func collectResultsWithParser(t *testing.T, cfg Config, dir string, p parser.Par
 		results = append(results, r)
 		mu.Unlock()
 	}
-	failures, err := New(p, cfg).Process(context.Background(), dir)
+	proc := newTestProcessor(t, cfg, dir)
+	proc.parsers = map[string]parser.Parser{"epub": p, "mobi": p}
+	err := proc.Process(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return results, failures
+	return results, proc.Failures()
 }
 
 func pathsOf(results []Result) []string {
@@ -108,7 +110,7 @@ func TestProcessZip(t *testing.T) {
 		"sub/b.mobi": "b",
 	})
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -135,7 +137,7 @@ func TestProcessNestedZip(t *testing.T) {
 		"bundle/inner.zip": string(inner),
 	})
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -161,7 +163,7 @@ func TestProcessArchiveDepthLimit(t *testing.T) {
 	b := zipBytes(t, map[string]string{"c.zip": string(c)})
 	writeZip(t, filepath.Join(dir, "a.zip"), map[string]string{"b.zip": string(b)})
 
-	cfg := DefaultConfig()
+	cfg := DefaultScanProcessorConfig()
 	cfg.MaxDepth = 2
 	results, failures := collectResults(t, cfg, dir)
 	if len(results) != 0 {
@@ -206,7 +208,7 @@ func TestProcessTar(t *testing.T) {
 		_ = f.Close()
 	}()
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -247,7 +249,7 @@ func TestProcessTgz(t *testing.T) {
 		_ = f.Close()
 	}()
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -276,7 +278,7 @@ func TestProcessGzSingleFile(t *testing.T) {
 		_ = f.Close()
 	}()
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -290,7 +292,7 @@ func TestProcessRar(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "bundle.rar")
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -313,7 +315,7 @@ func TestProcess7z(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "bundle.7z")
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -347,7 +349,7 @@ func TestNoTempFilesLeaked(t *testing.T) {
 	stageFixture(t, dir, "bundle.rar")
 	stageFixture(t, dir, "bundle.7z")
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -370,7 +372,7 @@ func TestProcessRarInside7z(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "outer.7z")
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -390,7 +392,7 @@ func TestProcessTarContainingRar(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "tar-outer-rar.tar")
 
-	results, failures := collectResults(t, DefaultConfig(), dir)
+	results, failures := collectResults(t, DefaultScanProcessorConfig(), dir)
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
@@ -410,7 +412,7 @@ func TestProcessPasswordProtectedRar(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "secret.rar")
 
-	cfg := DefaultConfig()
+	cfg := DefaultScanProcessorConfig()
 	cfg.Password = "letmein"
 	results, failures := collectResultsWithParser(t, cfg, dir, readingParser{})
 	if len(failures) != 0 {
@@ -426,7 +428,7 @@ func TestProcessPasswordProtected7z(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "secret.7z")
 
-	cfg := DefaultConfig()
+	cfg := DefaultScanProcessorConfig()
 	cfg.Password = "letmein"
 	results, failures := collectResultsWithParser(t, cfg, dir, readingParser{})
 	if len(failures) != 0 {
@@ -442,7 +444,7 @@ func TestProcessEncryptedRarWithoutPassword(t *testing.T) {
 	dir := t.TempDir()
 	path := stageFixture(t, dir, "secret.rar")
 
-	results, failures := collectResultsWithParser(t, DefaultConfig(), dir, readingParser{})
+	results, failures := collectResultsWithParser(t, DefaultScanProcessorConfig(), dir, readingParser{})
 	if len(results) != 0 {
 		t.Fatalf("expected no results, got %v", pathsOf(results))
 	}
@@ -463,16 +465,19 @@ func TestProcessFailuresReported(t *testing.T) {
 
 	var mu sync.Mutex
 	results := []Result{}
-	cfg := DefaultConfig()
+	cfg := DefaultScanProcessorConfig()
 	cfg.OnResult = func(r Result) {
 		mu.Lock()
 		results = append(results, r)
 		mu.Unlock()
 	}
-	failures, err := New(readerParser{failContent: "will fail"}, cfg).Process(context.Background(), dir)
+	proc := newTestProcessor(t, cfg, dir)
+	proc.parsers = map[string]parser.Parser{"epub": readerParser{failContent: "will fail"}}
+	err := proc.Process(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	failures := proc.Failures()
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}

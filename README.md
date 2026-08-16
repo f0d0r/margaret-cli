@@ -108,6 +108,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--ftp-user` | `string` | `anonymous` | FTP username for `ftp://` scans. |
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
+| `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
 | `-h`, `--help` | | | Show help. |
 
 ### `--workers`
@@ -146,6 +147,13 @@ done processing.
 
 The path where the JSON report of failed items is written. Defaults to
 `failures.json` in the current directory.
+
+### `--duplicates-out`
+
+The path where the JSON report of duplicate books is written. Defaults to
+`duplicates.json` in the current directory. Each entry lists the original book
+(`authors`, `title`, `path`) and every other path that holds the same content
+(`duplicates`). When no duplicates are found the file is not created.
 
 ### `--ftp-user` / `--ftp-pass`
 
@@ -222,6 +230,22 @@ When items fail, the report lists each item and the reason:
 
 Note that paths of items found inside archives are shown as
 `<archive-path>!<member-name>`.
+
+Duplicate books are reported in `duplicates.json`. Each entry describes the
+original book and every other path that holds the same content:
+
+```json
+[
+  {
+    "authors": "Herman Melville",
+    "title": "Moby Dick",
+    "path": "books/mobydick.epub",
+    "duplicates": ["backup/mobydick.epub", "mirror/mobydick.epub"]
+  }
+]
+```
+
+When no duplicates are found the file is not created.
 
 ---
 

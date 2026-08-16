@@ -38,20 +38,21 @@ func TestProcessStress(t *testing.T) {
 	}
 
 	var parsed atomic.Int64
-	proc := New(slowParser{}, Config{
+	proc := newTestProcessor(t, ScanProcessorConfig{
 		ScanWorkers:  4,
 		ParseWorkers: 4,
 		OnResult:     func(r Result) { parsed.Add(1) },
-	})
+	}, dir)
+	proc.parsers = map[string]parser.Parser{"epub": slowParser{}}
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		failures, err := proc.Process(context.Background(), dir)
+		err := proc.Process(context.Background())
 		if err != nil {
 			t.Errorf("err: %v", err)
 		}
-		if len(failures) != 0 {
+		if failures := proc.Failures(); len(failures) != 0 {
 			t.Errorf("failures: %v", failures)
 		}
 	}()
