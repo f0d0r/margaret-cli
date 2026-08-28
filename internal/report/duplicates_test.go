@@ -1,4 +1,4 @@
-package cli
+package report
 
 import (
 	"context"
@@ -19,7 +19,7 @@ func TestWriteDuplicatesEmpty(t *testing.T) {
 	defer cleanup()
 
 	path := filepath.Join(t.TempDir(), "duplicates.json")
-	if err := writeDuplicates(conn, path); err != nil {
+	if err := WriteDuplicates(db.New(conn), path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -68,7 +68,7 @@ func TestWriteDuplicates(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "duplicates.json")
-	if err := writeDuplicates(conn, path); err != nil {
+	if err := WriteDuplicates(q, path); err != nil {
 		t.Fatal(err)
 	}
 

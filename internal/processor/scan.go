@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-tools/internal/db"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 	"github.com/f0d0r/margaret-tools/internal/scanner"
@@ -228,7 +228,7 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 		_ = rc.Close()
 	}()
 	if f, ok := rc.(*os.File); ok {
-		b, err := model.NewFileBlob(f)
+		b, err := book.NewFileBlob(f)
 		if err != nil {
 			p.fail(r.Path, err)
 			p.report()
@@ -247,7 +247,7 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 // The parser reads only what it needs, so members whose metadata lives at the
 // start of the file are not fully materialized. displayPath is the
 // user-facing path (an archive member like "a.zip!b.epub") used in reports.
-func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format string, b model.Blob) {
+func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format string, b book.Blob) {
 	if ctx.Err() != nil {
 		return
 	}

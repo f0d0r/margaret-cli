@@ -13,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-tools/internal/scanner"
 	"github.com/f0d0r/margaret-tools/internal/source"
 	"github.com/mholt/archives"
@@ -116,14 +116,14 @@ func (p *ScanProcessor) processZipStream(ctx context.Context, r io.Reader, displ
 	p.processZip(ctx, b, bsize, displayPath, depth)
 }
 
-// readerAtView returns r as a random-access blob (model.Blob). An *os.File is
+// readerAtView returns r as a random-access blob (book.Blob). An *os.File is
 // used directly so no copy is made; any other stream is wrapped in a spoolBlob
 // that buffers lazily in memory up to the configured limit and spills the rest
 // to a temporary file. cleanup must be called when the blob is no longer
 // needed.
-func (p *ScanProcessor) readerAtView(displayPath, prefix string, size int64, r io.Reader) (model.Blob, func(), error) {
+func (p *ScanProcessor) readerAtView(displayPath, prefix string, size int64, r io.Reader) (book.Blob, func(), error) {
 	if f, ok := r.(*os.File); ok {
-		b, err := model.NewFileBlob(f)
+		b, err := book.NewFileBlob(f)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -136,7 +136,7 @@ func (p *ScanProcessor) readerAtView(displayPath, prefix string, size int64, r i
 	return b, b.Close, nil
 }
 
-// parseEbookStream adapts the ebook content read from r to a model.Blob and
+// parseEbookStream adapts the ebook content read from r to a book.Blob and
 // parses it. size is the member's uncompressed size, or -1 when unknown
 // (single-stream gz/bz2). The content is spooled lazily: kept in memory up to
 // the configured limit and spilled to a temporary file beyond. Because the

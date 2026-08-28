@@ -1,4 +1,4 @@
-package cli
+package report
 
 import (
 	"encoding/json"
@@ -14,8 +14,8 @@ type failureReport struct {
 	Error string `json:"error"`
 }
 
-// writeFailures writes a JSON report of all failed items to path.
-func writeFailures(failures []processor.Failure, path string) error {
+// WriteFailures writes a JSON report of all failed items to path.
+func WriteFailures(failures []processor.Failure, path string) error {
 	report := make([]failureReport, 0, len(failures))
 	for _, f := range failures {
 		report = append(report, failureReport{Path: f.Path, Error: f.Err.Error()})

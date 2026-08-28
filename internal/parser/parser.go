@@ -2,7 +2,7 @@
 package parser
 
 import (
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 )
 
 // Metadata holds the metadata extracted from an ebook file.
@@ -18,5 +18,5 @@ type Metadata struct {
 type Parser interface {
 	// Parse extracts the metadata of the ebook read from ebookData. The format
 	// (such as "epub", "mobi" or "pdf") is detected from the content.
-	Parse(ebookData model.Blob) (Metadata, error)
+	Parse(ebookData book.Blob) (Metadata, error)
 }

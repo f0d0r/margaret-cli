@@ -1,8 +1,7 @@
-package cli
+package report
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,11 +18,11 @@ type duplicateReport struct {
 	Duplicates []string `json:"duplicates"`
 }
 
-// writeDuplicates writes a JSON report of the duplicate books found during
+// WriteDuplicates writes a JSON report of the duplicate books found during
 // the scan to path. When no duplicates were found nothing is written, so no
 // empty file is left behind.
-func writeDuplicates(conn *sql.DB, path string) error {
-	rows, err := db.New(conn).ListBookFileDuplicates(context.Background())
+func WriteDuplicates(q *db.Queries, path string) error {
+	rows, err := q.ListBookFileDuplicates(context.Background())
 	if err != nil {
 		return fmt.Errorf("list duplicates: %w", err)
 	}
