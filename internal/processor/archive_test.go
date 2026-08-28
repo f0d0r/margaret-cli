@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
@@ -23,7 +23,7 @@ import (
 // parser that validates content.
 type stubParser struct{}
 
-func (stubParser) Parse(_ model.Blob) (parser.Metadata, error) {
+func (stubParser) Parse(_ book.Blob) (parser.Metadata, error) {
 	return parser.Metadata{}, nil
 }
 
@@ -493,7 +493,7 @@ type readerParser struct {
 	failContent string
 }
 
-func (p readerParser) Parse(b model.Blob) (parser.Metadata, error) {
+func (p readerParser) Parse(b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
@@ -508,7 +508,7 @@ func (p readerParser) Parse(b model.Blob) (parser.Metadata, error) {
 // archive members surface while the member is being spooled to disk.
 type readingParser struct{}
 
-func (readingParser) Parse(b model.Blob) (parser.Metadata, error) {
+func (readingParser) Parse(b book.Blob) (parser.Metadata, error) {
 	_, err := readBlobAll(b)
 	return parser.Metadata{}, err
 }

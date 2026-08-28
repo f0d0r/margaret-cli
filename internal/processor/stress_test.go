@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
 type slowParser struct{}
 
-func (slowParser) Parse(_ model.Blob) (parser.Metadata, error) {
+func (slowParser) Parse(_ book.Blob) (parser.Metadata, error) {
 	time.Sleep(2 * time.Millisecond)
 	return parser.Metadata{}, nil
 }

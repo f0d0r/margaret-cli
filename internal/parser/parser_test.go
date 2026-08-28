@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 )
 
 const containerXML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -60,7 +60,7 @@ func TestEbookParser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "book.epub")
 	writeEPUB(t, path)
 
-	md, err := EbookParser{}.Parse(model.NewPathBlob(path))
+	md, err := EbookParser{}.Parse(book.NewPathBlob(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestEbookParser(t *testing.T) {
 }
 
 func TestEbookParserMissingFile(t *testing.T) {
-	_, err := EbookParser{}.Parse(model.NewPathBlob(filepath.Join(t.TempDir(), "missing.epub")))
+	_, err := EbookParser{}.Parse(book.NewPathBlob(filepath.Join(t.TempDir(), "missing.epub")))
 	if err == nil {
 		t.Fatal("expected an error for a missing file")
 	}

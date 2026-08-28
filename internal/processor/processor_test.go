@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/f0d0r/margaret-ebook-library/pkg/model"
+	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-tools/internal/database"
 	"github.com/f0d0r/margaret-tools/internal/db"
 	"github.com/f0d0r/margaret-tools/internal/parser"
@@ -30,7 +30,7 @@ func newTestProcessor(t *testing.T, cfg ScanProcessorConfig, root string) *ScanP
 }
 
 // readBlobAll reads the full contents of a Blob into memory.
-func readBlobAll(b model.Blob) ([]byte, error) {
+func readBlobAll(b book.Blob) ([]byte, error) {
 	size, err := b.Size()
 	if err != nil {
 		return nil, err
@@ -46,7 +46,7 @@ type fakeParser struct {
 	failSubstr string
 }
 
-func (f fakeParser) Parse(b model.Blob) (parser.Metadata, error) {
+func (f fakeParser) Parse(b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
@@ -166,7 +166,7 @@ func TestProcessCancel(t *testing.T) {
 // create files that share a hash.
 type hashParser struct{}
 
-func (hashParser) Parse(b model.Blob) (parser.Metadata, error) {
+func (hashParser) Parse(b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err

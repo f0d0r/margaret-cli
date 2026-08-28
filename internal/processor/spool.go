@@ -70,7 +70,7 @@ func (b *spoolBlob) length() int64 {
 	return int64(len(b.ram)) + b.spillN
 }
 
-// Size implements model.Blob.
+// Size implements book.Blob.
 func (b *spoolBlob) Size() (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -8,6 +8,7 @@ import (
 	"github.com/f0d0r/margaret-tools/internal/database"
 	"github.com/f0d0r/margaret-tools/internal/db"
 	"github.com/f0d0r/margaret-tools/internal/processor"
+	"github.com/f0d0r/margaret-tools/internal/report"
 	"github.com/spf13/cobra"
 )
 
@@ -119,10 +120,10 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	}
 
 	printReport(stats, time.Since(start))
-	if err := writeFailures(failures, failuresOutPath); err != nil {
+	if err := report.WriteFailures(failures, failuresOutPath); err != nil {
 		return err
 	}
-	if err := writeDuplicates(conn, duplicatesOut); err != nil {
+	if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
 		return err
 	}
 	return err
