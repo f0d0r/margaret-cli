@@ -7,7 +7,9 @@ CREATE TABLE book_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hash TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL,
-    title TEXT NOT NULL DEFAULT ''
+    title TEXT NOT NULL DEFAULT '',
+    minhash BLOB,
+    simhash INTEGER
 );
 
 CREATE TABLE authors (
@@ -65,3 +67,13 @@ CREATE TABLE book_book_files (
     FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
     FOREIGN KEY (book_file_id) REFERENCES book_files(id) ON DELETE CASCADE
 );
+
+CREATE TABLE book_file_lsh_buckets (
+    band_idx INTEGER NOT NULL,
+    bucket_hash INTEGER NOT NULL,
+    book_file_id INTEGER NOT NULL,
+    PRIMARY KEY (band_idx, bucket_hash, book_file_id),
+    FOREIGN KEY (book_file_id) REFERENCES book_files(id) ON DELETE CASCADE
+);
+-- NOTE: no extra index on (band_idx, bucket_hash): the PRIMARY KEY already
+-- covers that leftmost prefix, a second index would only add write cost.
