@@ -1,6 +1,6 @@
 -- name: CreateBookFile :one
-INSERT INTO book_files (hash, path, title)
-VALUES (?, ?, ?)
+INSERT INTO book_files (hash, path, title, minhash, simhash)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(hash) DO NOTHING
 RETURNING id;
 

@@ -10,6 +10,8 @@ type Metadata struct {
 	Authors []string
 	Title   string
 	Hash    string
+	MinHash []uint64
+	SimHash uint64
 }
 
 // Parser reads metadata from a single ebook. ebookData provides random access

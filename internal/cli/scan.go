@@ -21,6 +21,7 @@ var (
 	ftpUser         string
 	ftpPass         string
 	duplicatesOut   string
+	booksOut        string
 )
 
 // scanCmd scans a directory for ebook files.
@@ -61,6 +62,7 @@ func init() {
 	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
 	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
+	scanCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -124,6 +126,9 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 		return err
 	}
 	if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
+		return err
+	}
+	if err := report.WriteBooks(q, booksOut); err != nil {
 		return err
 	}
 	return err

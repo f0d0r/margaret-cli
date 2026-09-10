@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"sync/atomic"
 
 	"github.com/f0d0r/margaret-ebook-library/book"
+	"github.com/f0d0r/margaret-ebook-library/tools"
 	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-tools/internal/lsh"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 	"github.com/f0d0r/margaret-tools/internal/scanner"
 	"github.com/f0d0r/margaret-tools/internal/source"
@@ -286,10 +289,12 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			authorIDs = append(authorIDs, author.ID)
 		}
 
-		bookID, err := q.CreateBookFile(txCtx, db.CreateBookFileParams{
-			Hash:  md.Hash,
-			Path:  displayPath,
-			Title: md.Title,
+		bookFileID, err := q.CreateBookFile(txCtx, db.CreateBookFileParams{
+			Hash:    md.Hash,
+			Path:    displayPath,
+			Title:   md.Title,
+			Minhash: encodeMinHash(md.MinHash),
+			Simhash: sql.NullInt64{Int64: int64(md.SimHash), Valid: true},
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := q.CreateBookFileDuplicate(txCtx, db.CreateBookFileDuplicateParams{
@@ -306,12 +311,91 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 
 		for _, authorID := range authorIDs {
 			if err := q.CreateBookFileAuthor(txCtx, db.CreateBookFileAuthorParams{
-				BookFileID: bookID,
+				BookFileID: bookFileID,
 				AuthorID:   authorID,
 			}); err != nil {
 				return fmt.Errorf("link author: %w", err)
 			}
 		}
+
+		bands := lsh.ComputeBands(md.MinHash)
+		var bestMatchFileID int64
+		var bestSimilarity float64
+
+		if len(bands) > 0 {
+			candidates := make(map[int64][]byte)
+			for _, b := range bands {
+				rows, err := q.FindCandidateMinHashesByBand(txCtx, db.FindCandidateMinHashesByBandParams{
+					BandIdx:    int64(b.BandIdx),
+					BucketHash: b.BucketHash,
+				})
+				if err != nil {
+					return fmt.Errorf("find lsh candidates: %w", err)
+				}
+				for _, row := range rows {
+					if row.BookFileID != bookFileID {
+						candidates[row.BookFileID] = row.Minhash
+					}
+				}
+			}
+
+			for candID, candBlob := range candidates {
+				sim := tools.Jaccard(md.MinHash, decodeMinHash(candBlob))
+				if sim >= lsh.MinSimilarityThreshold && sim > bestSimilarity {
+					bestSimilarity = sim
+					bestMatchFileID = candID
+				}
+			}
+		}
+
+		var bookID int64
+		if bestMatchFileID != 0 {
+			existingBookID, err := q.GetBookIDByBookFileID(txCtx, bestMatchFileID)
+			if err == nil {
+				bookID = existingBookID
+				if md.Title != "" {
+					_ = q.UpdateBookTitleIfEmpty(txCtx, db.UpdateBookTitleIfEmptyParams{
+						Title: md.Title,
+						ID:    bookID,
+					})
+				}
+			}
+		}
+
+		if bookID == 0 {
+			newBookID, err := q.CreateBook(txCtx, md.Title)
+			if err != nil {
+				return fmt.Errorf("create book: %w", err)
+			}
+			bookID = newBookID
+		}
+
+		if err := q.CreateBookBookFile(txCtx, db.CreateBookBookFileParams{
+			BookID:     bookID,
+			BookFileID: bookFileID,
+		}); err != nil {
+			return fmt.Errorf("link book file: %w", err)
+		}
+
+		for _, authorID := range authorIDs {
+			if err := q.CreateBookAuthor(txCtx, db.CreateBookAuthorParams{
+				BookID:   bookID,
+				AuthorID: authorID,
+			}); err != nil {
+				return fmt.Errorf("link book author: %w", err)
+			}
+		}
+
+		for _, b := range bands {
+			if err := q.CreateLSHBucket(txCtx, db.CreateLSHBucketParams{
+				BandIdx:    int64(b.BandIdx),
+				BucketHash: b.BucketHash,
+				BookFileID: bookFileID,
+			}); err != nil {
+				return fmt.Errorf("create lsh bucket: %w", err)
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -325,6 +409,31 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		p.onResult(Result{File: scanner.Result{Path: displayPath, Format: format}, Metadata: md})
 	}
 	p.report()
+}
+
+// encodeMinHash encodes a MinHash signature ([]uint64) as a BLOB (little-endian).
+func encodeMinHash(sig []uint64) []byte {
+	if len(sig) == 0 {
+		return nil
+	}
+	b := make([]byte, len(sig)*8)
+	for i, v := range sig {
+		binary.LittleEndian.PutUint64(b[i*8:], v)
+	}
+	return b
+}
+
+// decodeMinHash decodes a BLOB back to a MinHash signature.
+func decodeMinHash(b []byte) []uint64 {
+	if len(b) == 0 {
+		return nil
+	}
+	n := len(b) / 8
+	sig := make([]uint64, n)
+	for i := range n {
+		sig[i] = binary.LittleEndian.Uint64(b[i*8:])
+	}
+	return sig
 }
 
 // fail records an item that could not be processed.

@@ -212,6 +212,8 @@ func TestProcessStoresInDatabase(t *testing.T) {
 		duplicates int
 		authors    int
 		links      int
+		books      int
+		bookLinks  int
 	)
 	for _, q := range []struct {
 		query string
@@ -221,6 +223,8 @@ func TestProcessStoresInDatabase(t *testing.T) {
 		{"SELECT count(*) FROM book_file_duplicates", &duplicates},
 		{"SELECT count(*) FROM authors", &authors},
 		{"SELECT count(*) FROM book_file_authors", &links},
+		{"SELECT count(*) FROM books", &books},
+		{"SELECT count(*) FROM book_book_files", &bookLinks},
 	} {
 		if err := conn.QueryRow(q.query).Scan(q.dest); err != nil {
 			t.Fatal(err)
@@ -238,6 +242,14 @@ func TestProcessStoresInDatabase(t *testing.T) {
 	}
 	if links != 2 {
 		t.Errorf("expected 2 author links, got %d", links)
+	}
+	// hashParser returns no MinHash, so LSH cannot match: each file gets its
+	// own book, and the exact duplicate gets none.
+	if books != 2 {
+		t.Errorf("expected 2 books, got %d", books)
+	}
+	if bookLinks != 2 {
+		t.Errorf("expected 2 book links, got %d", bookLinks)
 	}
 }
 
@@ -274,5 +286,243 @@ func TestProcessSkipsEmptyHash(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("expected no book_files for empty hashes, got %d", n)
+	}
+}
+
+type lshMockParser struct {
+	sigs map[string][]uint64
+}
+
+func (m lshMockParser) Parse(b book.Blob) (parser.Metadata, error) {
+	content, err := readBlobAll(b)
+	if err != nil {
+		return parser.Metadata{}, err
+	}
+	name := string(content)
+	sig, ok := m.sigs[name]
+	if !ok {
+		return parser.Metadata{}, fmt.Errorf("unknown mock book: %s", name)
+	}
+	return parser.Metadata{
+		Authors: []string{"Test Author"},
+		Title:   "Book " + name,
+		Hash:    "hash-" + name,
+		MinHash: sig,
+	}, nil
+}
+
+func TestProcessMinHashLSHGrouping(t *testing.T) {
+	dir := t.TempDir()
+
+	// Base signature
+	sigA := make([]uint64, 128)
+	for i := range sigA {
+		sigA[i] = uint64(i*1000 + 7)
+	}
+
+	// Near duplicate: 96% similar (only 5 entries differ)
+	sigB := make([]uint64, 128)
+	copy(sigB, sigA)
+	for i := 0; i < 5; i++ {
+		sigB[i] = ^uint64(i)
+	}
+
+	// Completely different book: all entries differ
+	sigC := make([]uint64, 128)
+	for i := range sigC {
+		sigC[i] = uint64(999999 + i)
+	}
+
+	for filename, content := range map[string]string{
+		"book1_v1.epub": "book1_v1",
+		"book1_v2.mobi": "book1_v2",
+		"book2.epub":    "book2",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn, cleanup, err := database.OpenTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	cfg := DefaultScanProcessorConfig()
+	cfg.ParseWorkers = 1 // deterministic single-worker for sequential matching
+	proc := NewScanProcessor(conn, db.New(conn), cfg, dir)
+	mock := lshMockParser{
+		sigs: map[string][]uint64{
+			"book1_v1": sigA,
+			"book1_v2": sigB,
+			"book2":    sigC,
+		},
+	}
+	proc.parsers = map[string]parser.Parser{"epub": mock, "mobi": mock}
+
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+
+	var bookFilesCount, booksCount int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&bookFilesCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("SELECT count(*) FROM books").Scan(&booksCount); err != nil {
+		t.Fatal(err)
+	}
+
+	if bookFilesCount != 3 {
+		t.Fatalf("expected 3 book_files, got %d", bookFilesCount)
+	}
+	// book1_v1 and book1_v2 should be grouped under 1 book, book2 has 1 book -> total 2 books
+	if booksCount != 2 {
+		t.Fatalf("expected 2 books, got %d", booksCount)
+	}
+
+	// Verify that book1_v1 and book1_v2 belong to the same book
+	var book1ID, book2ID int64
+	err = conn.QueryRow(`
+		SELECT bbf.book_id
+		FROM book_book_files bbf
+		JOIN book_files bf ON bf.id = bbf.book_file_id
+		WHERE bf.hash = 'hash-book1_v1'
+	`).Scan(&book1ID)
+	if err != nil {
+		t.Fatalf("query book1_v1 book_id: %v", err)
+	}
+
+	err = conn.QueryRow(`
+		SELECT bbf.book_id
+		FROM book_book_files bbf
+		JOIN book_files bf ON bf.id = bbf.book_file_id
+		WHERE bf.hash = 'hash-book1_v2'
+	`).Scan(&book2ID)
+	if err != nil {
+		t.Fatalf("query book1_v2 book_id: %v", err)
+	}
+
+	if book1ID != book2ID {
+		t.Errorf("expected book1_v1 and book1_v2 to share the same book_id, got %d vs %d", book1ID, book2ID)
+	}
+
+	var otherBookID int64
+	err = conn.QueryRow(`
+		SELECT bbf.book_id
+		FROM book_book_files bbf
+		JOIN book_files bf ON bf.id = bbf.book_file_id
+		WHERE bf.hash = 'hash-book2'
+	`).Scan(&otherBookID)
+	if err != nil {
+		t.Fatalf("query book2 book_id: %v", err)
+	}
+
+	if otherBookID == book1ID {
+		t.Errorf("expected book2 to have a different book_id than book1, got %d", otherBookID)
+	}
+}
+
+// TestProcessMinHashLSHThresholdBoundary pins the 75% Jaccard grouping
+// threshold from both sides. All three signatures share intact LSH bands with
+// the base, so every pair reaches the Jaccard verification — the grouping
+// decision itself is what differs:
+//   - sigAbove: 102/128 = 79.7% similar -> must group with the base.
+//   - sigBelow: 89/128 = 69.5% similar -> must NOT group (own book).
+//
+// sigBelow is also <75% away from sigAbove (63/128 = 49.2%), so the outcome
+// is independent of processing order.
+func TestProcessMinHashLSHThresholdBoundary(t *testing.T) {
+	dir := t.TempDir()
+
+	sigBase := make([]uint64, 128)
+	for i := range sigBase {
+		sigBase[i] = uint64(i*1000 + 7)
+	}
+
+	// 26 diffs confined to bands 0..5; bands 6..24 stay intact.
+	sigAbove := make([]uint64, 128)
+	copy(sigAbove, sigBase)
+	for i := 0; i < 26; i++ {
+		sigAbove[i] = ^uint64(i)
+	}
+
+	// 39 diffs confined to bands 5..12; bands 0..4 and 13..24 stay intact.
+	sigBelow := make([]uint64, 128)
+	copy(sigBelow, sigBase)
+	for i := 26; i < 65; i++ {
+		sigBelow[i] = ^uint64(i)
+	}
+
+	for filename, content := range map[string]string{
+		"base.epub":  "base",
+		"above.mobi": "above",
+		"below.epub": "below",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn, cleanup, err := database.OpenTemp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	cfg := DefaultScanProcessorConfig()
+	cfg.ParseWorkers = 1 // deterministic single-worker for sequential matching
+	proc := NewScanProcessor(conn, db.New(conn), cfg, dir)
+	mock := lshMockParser{
+		sigs: map[string][]uint64{
+			"base":  sigBase,
+			"above": sigAbove,
+			"below": sigBelow,
+		},
+	}
+	proc.parsers = map[string]parser.Parser{"epub": mock, "mobi": mock}
+
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+
+	bookIDOf := func(hash string) int64 {
+		t.Helper()
+		var id int64
+		err := conn.QueryRow(`
+			SELECT bbf.book_id
+			FROM book_book_files bbf
+			JOIN book_files bf ON bf.id = bbf.book_file_id
+			WHERE bf.hash = ?
+		`, hash).Scan(&id)
+		if err != nil {
+			t.Fatalf("query book_id for %s: %v", hash, err)
+		}
+		return id
+	}
+
+	baseID := bookIDOf("hash-base")
+	aboveID := bookIDOf("hash-above")
+	belowID := bookIDOf("hash-below")
+
+	if aboveID != baseID {
+		t.Errorf("expected above-threshold file to share base's book_id, got %d vs %d", aboveID, baseID)
+	}
+	if belowID == baseID {
+		t.Errorf("expected below-threshold file to have its own book_id, got %d", belowID)
+	}
+
+	var booksCount int
+	if err := conn.QueryRow("SELECT count(*) FROM books").Scan(&booksCount); err != nil {
+		t.Fatal(err)
+	}
+	if booksCount != 2 {
+		t.Errorf("expected 2 books, got %d", booksCount)
 	}
 }

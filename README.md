@@ -109,6 +109,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
 | `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
+| `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
 | `-h`, `--help` | | | Show help. |
 
 ### `--workers`
@@ -154,6 +155,13 @@ The path where the JSON report of duplicate books is written. Defaults to
 `duplicates.json` in the current directory. Each entry lists the original book
 (`authors`, `title`, `path`) and every other path that holds the same content
 (`duplicates`). When no duplicates are found the file is not created.
+
+### `--books-out`
+
+The path where the JSON report of the grouped books is written. Defaults to
+`books.json` in the current directory. See
+[How books are grouped and described](#how-books-are-grouped-and-described).
+When no books were found the file is not created.
 
 ### `--ftp-user` / `--ftp-pass`
 
@@ -246,6 +254,114 @@ original book and every other path that holds the same content:
 ```
 
 When no duplicates are found the file is not created.
+
+Grouped books are reported in `books.json` (see
+[How books are grouped and described](#how-books-are-grouped-and-described)).
+Each entry holds the chosen book-level metadata plus every grouped file with
+its own metadata:
+
+```json
+[
+  {
+    "authors": ["Herman Melville"],
+    "title": "Moby Dick",
+    "files": [
+      {
+        "path": "books/mobydick.epub",
+        "authors": ["Herman Melville"],
+        "title": "Moby Dick"
+      },
+      {
+        "path": "backup/mobydick.mobi",
+        "authors": ["Herman Melville"],
+        "title": "Moby Dick; Or, The Whale"
+      }
+    ]
+  }
+]
+```
+
+When no books were found the file is not created.
+
+---
+
+## How books are grouped and described
+
+### Exact duplicates
+
+Files with byte-identical content (same content hash) are exact duplicates.
+The first path seen wins; the rest are listed under it in `duplicates.json`.
+Exact duplicates never get a book of their own.
+
+### Near-duplicate grouping
+
+Every other file carries two content fingerprints: a 128-number MinHash
+signature and a 64-bit SimHash (currently stored for diagnostics). During the
+scan each new file is grouped as follows:
+
+1. Its MinHash signature is split into 25 bands of 5 numbers (LSH banding).
+   Files sharing at least one band hash become candidates.
+2. Candidates are verified with exact Jaccard similarity in Go.
+3. At Jaccard ≥ 75% the file joins the best-matching candidate's book
+   (greedy best match, no transitive merging of books); otherwise a new
+   book is created.
+
+Every file belongs to exactly one book. Grouping runs inside the scan
+transaction, so results do not depend on worker scheduling.
+
+### Book-level metadata
+
+`books.json` picks one title and one author list per book; the per-file
+entries keep their original titles (whitespace-normalized) and their
+placeholder-filtered authors. All of the below runs at report time only —
+the database is never rewritten:
+
+- **Normalization.** Comparisons use trimmed, whitespace-collapsed,
+  lower-cased keys; diacritics are folded (NFD mark-stripping for Latin
+  script only, so Cyrillic `й` and Indic scripts survive, plus `ø→o`,
+  `ß→ss`, `æ→ae`, `œ→oe`, `ł→l`, `đ→d`, `þ→th`, `ı→i`).
+- **Author placeholders are dropped.** Converter defaults such as
+  `Unknown`, `Ismeretlen`, `Inconnu`, `Unbekannt`, `Desconocido`,
+  `Sconosciuto`, `Onbekend`, `Nieznany`, `Okänd`, `Bilinmiyor`,
+  `Неизвестный`, `مجهول`, `نامعلوم`, `अज्ञात`, `未知`, `佚名`, `不明`,
+  `미상`, `Névtelen`, `User`, `N/A` (full list in code). An author name
+  identical to its file's title is also dropped (converters sometimes copy
+  the title into the author field).
+- **Author vote.** The most common full author list wins; `Last, First`
+  spellings vote together with `First Last` ones (display keeps the
+  first-seen spelling and order). Ties break towards more authors, then
+  more characters, then more space-containing names, then first-seen.
+- **Title placeholders are dropped.** `Untitled`, `Sans titre`,
+  `Ohne Titel`, `Sin título`, `Senza titolo`, `Sem título`,
+  `Zonder titel`, `Bez tytułu`, `Utan titel`, `Başlıksız`, `Без названия`,
+  `بدون عنوان`, `无标题`, `無題`, `제목 없음`, `Névtelen` (full list in
+  code).
+- **Title vote.** The most common title wins. Ties break towards fewer
+  underscores (machine-stamped titles use them, clean ones use spaces),
+  then towards titles not mentioning a known author, then longer, then
+  first-seen.
+- **Author-in-title penalty (tie-break only).** A title containing every
+  distinctive token of a known author (`Steven Saylor - X`) loses ties.
+  Tokens of 1–2 letters and particles (`van`, `von`, `del`, …) do not
+  count; single-token names can still match on their one word.
+- **Filename fallback.** With no usable title at all, the first file's
+  name is used (archive prefixes and directories dropped, known ebook
+  extension stripped, underscores to spaces). File entries keep their
+  empty titles.
+- **Calibre `Title - Author` filenames.** With no usable authors, member
+  filenames are scanned in path order: the strict form needs a comma
+  (`X - Last, First`) and can also supply the title; next to a known-good
+  title a comma-less two-word author (`X - First Last`) is accepted for
+  the authors only. Authors recovered this way are stored verbatim.
+- **Credit-affix wash.** With known authors, a leading `Author - ` or
+  trailing ` - Author` / ` by Author` is stripped from the picked title
+  (whole-word, order-free, diacritic-folded match; the result must stay
+  non-empty). Genuine titles such as `Stephen King Goes to the Movies`
+  are unaffected.
+
+The rules above naturally cannot guarantee fully correct data: metadata
+incorrectness occurs in a huge variety of forms, so the reports are worth
+checking by hand.
 
 ---
 

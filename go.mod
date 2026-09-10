@@ -8,6 +8,7 @@ require (
 	github.com/mholt/archives v0.1.5
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.45.0
+	golang.org/x/text v0.39.0
 	modernc.org/sqlite v1.56.0
 )
 
@@ -38,7 +39,6 @@ require (
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
