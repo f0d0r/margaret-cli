@@ -17,31 +17,24 @@ jobs:
           check-latest: true
           cache: true
 
-      - name: Configure Private Go Modules
-        env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          go mod edit -dropreplace github.com/f0d0r/margaret-ebook-library
-          go env -w GOPRIVATE=github.com/f0d0r/*
-          git config --global url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
-
-      - name: Install SQLc
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-        
       - name: Generate SQLc code
-        run: make generate
+        run: |
+          make generate
+          git diff --exit-code -- internal/db
 
       - name: Go Tidy Check
-        run: go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
       - name: Go Mod Verify
         run: go mod verify
 
       - name: Run golangci-lint
-        run: go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run ./...
+        run: go tool golangci-lint run ./...
 
       - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest -test ./...
+        run: go tool govulncheck -test ./...
 
       - name: Run Tests
         run: go test -v ./...

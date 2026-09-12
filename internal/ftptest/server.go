@@ -54,7 +54,7 @@ func (s *Server) serve() {
 }
 
 func (s *Server) handle(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	sess := &session{c: c, r: bufio.NewReader(c), root: s.root}
 	defer func() {
 		if sess.data != nil {

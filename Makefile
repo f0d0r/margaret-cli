@@ -5,7 +5,7 @@ MAIN_PKG := ./cmd/margaret-tools
 .PHONY: build clean generate test vet run
 
 generate:
-	sqlc generate
+	go tool sqlc generate
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) $(MAIN_PKG)

@@ -73,7 +73,7 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	q := db.New(conn)
 
 	var bar *progressBar
