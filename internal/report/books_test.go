@@ -13,11 +13,13 @@ import (
 )
 
 func TestWriteBooksEmpty(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	path := filepath.Join(t.TempDir(), "books.json")
 	if err := WriteBooks(db.New(conn), path); err != nil {
@@ -93,11 +95,13 @@ func TestPickAuthors(t *testing.T) {
 }
 
 func TestWriteBooks(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -208,11 +212,13 @@ func TestTitleFromPath(t *testing.T) {
 }
 
 func TestWriteBooksFallsBackToFileName(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -455,11 +461,13 @@ func TestWashAuthorAffix(t *testing.T) {
 }
 
 func TestWriteBooksCalibreFallback(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -512,11 +520,13 @@ func TestWriteBooksCalibreFallback(t *testing.T) {
 }
 
 func TestWriteBooksWashAffix(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -579,11 +589,13 @@ func TestWriteBooksWashAffix(t *testing.T) {
 }
 
 func TestWriteBooksWashPickedTitle(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -693,11 +705,13 @@ func TestParseCalibreAuthorOnly(t *testing.T) {
 }
 
 func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -772,11 +786,13 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 }
 
 func TestWriteBooksWashLeavesCleanTitle(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()

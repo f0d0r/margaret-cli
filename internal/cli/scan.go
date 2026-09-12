@@ -69,11 +69,11 @@ func init() {
 func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig) error {
 	start := time.Now()
 
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer conn.Close()
 	q := db.New(conn)
 
 	var bar *progressBar

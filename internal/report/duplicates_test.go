@@ -12,11 +12,13 @@ import (
 )
 
 func TestWriteDuplicatesEmpty(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	path := filepath.Join(t.TempDir(), "duplicates.json")
 	if err := WriteDuplicates(db.New(conn), path); err != nil {
@@ -28,11 +30,13 @@ func TestWriteDuplicatesEmpty(t *testing.T) {
 }
 
 func TestWriteDuplicates(t *testing.T) {
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()

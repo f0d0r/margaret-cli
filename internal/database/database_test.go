@@ -16,7 +16,9 @@ func TestOpenAppliesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -58,7 +60,9 @@ func TestCreateBookFileDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -99,23 +103,12 @@ func TestOpenRejectsUnknownTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	if _, err := conn.Query("SELECT * FROM does_not_exist"); err == nil {
 		t.Fatal("expected an error for a missing table")
-	}
-}
-
-func TestOpenTemp(t *testing.T) {
-	conn, cleanup, err := OpenTemp()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	var n int
-	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&n); err != nil {
-		t.Fatalf("schema not applied: %v", err)
 	}
 }
 
@@ -124,7 +117,9 @@ func TestListBookFileDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	q := db.New(conn)
 	ctx := context.Background()
@@ -205,7 +200,9 @@ func TestListBookFileDuplicatesEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	rows, err := db.New(conn).ListBookFileDuplicates(context.Background())
 	if err != nil {
