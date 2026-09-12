@@ -144,7 +144,7 @@ func (p *ScanProcessor) readerAtView(displayPath, prefix string, size int64, r i
 // of the file are not fully materialized. Any error while the content is read
 // (for example a decryption failure in an encrypted archive member) is
 // reported for displayPath.
-func (p *ScanProcessor) parseEbookStream(ctx context.Context, displayPath, format string, size int64, r io.Reader) {
+func (p *ScanProcessor) parseEbookStream(ctx context.Context, displayPath, format string, size int64, r io.Reader, st fileStat) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -155,7 +155,7 @@ func (p *ScanProcessor) parseEbookStream(ctx context.Context, displayPath, forma
 		return
 	}
 	defer b.Close()
-	p.parseEbook(ctx, displayPath, format, b)
+	p.parseEbook(ctx, displayPath, format, b, st)
 }
 
 // seekReadAt is the interface a source must satisfy for the mholt 7z reader:
@@ -298,7 +298,7 @@ func (p *ScanProcessor) processSingleStream(ctx context.Context, r io.Reader, in
 		return
 	}
 	p.found.Add(1)
-	p.parseEbookStream(ctx, innerPath, format, -1, r)
+	p.parseEbookStream(ctx, innerPath, format, -1, r, fileStat{})
 }
 
 // handleMember processes a single entry of an unpacked archive. name is the
@@ -315,8 +315,16 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
+	// Members inherit the outer archive's stat: they cannot change without
+	// it, so an unchanged outer file skips every member. Nested display
+	// paths stat nothing (unknown), leaving the decision to tier-2.
+	st := statOf(parentPath)
+	if p.shouldSkip(ctx, display, st) {
+		p.skip()
+		return
+	}
 	p.found.Add(1)
-	p.parseEbookStream(ctx, display, format, size, r)
+	p.parseEbookStream(ctx, display, format, size, r, st)
 }
 
 // dropSuffix removes the last extension from name, so that "a.epub.gz"
