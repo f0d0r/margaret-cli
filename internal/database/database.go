@@ -24,7 +24,8 @@ const DefaultPath = "margaret.db"
 // clearStatements deletes all scanned content in foreign-key-safe order
 // (children before parents). The goose version table is intentionally left
 // untouched, and deleting from authors lets the authors_fts triggers clean
-// up the full-text index.
+// up the full-text index. When a migration adds a table, extend this list:
+// TestClearCoversEntireSchema fails until you do.
 var clearStatements = []string{
 	`DELETE FROM book_file_lsh_buckets;`,
 	`DELETE FROM book_book_files;`,

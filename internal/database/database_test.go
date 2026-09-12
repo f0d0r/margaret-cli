@@ -319,3 +319,170 @@ func TestClearDeletesContentButKeepsSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// expectedSchemaTables lists every table the migrations create. If a future
+// migration adds a table, this test fails and reminds the author to extend
+// clearStatements in database.go as well. Tables intentionally excluded:
+// goose_db_version (migration history, kept by Clear) and sqlite_sequence
+// (AUTOINCREMENT counters, harmless).
+var expectedSchemaTables = []string{
+	"authors",
+	"authors_fts",
+	"authors_fts_config",
+	"authors_fts_data",
+	"authors_fts_docsize",
+	"authors_fts_idx",
+	"book_authors",
+	"book_book_files",
+	"book_file_authors",
+	"book_file_duplicates",
+	"book_file_lsh_buckets",
+	"book_files",
+	"books",
+}
+
+func listUserTables(t *testing.T, conn *sql.DB) []string {
+	t.Helper()
+	rows, err := conn.Query(`SELECT name FROM sqlite_master WHERE type = 'table'
+		AND name NOT LIKE 'sqlite_%' AND name <> 'goose_db_version' ORDER BY name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		tables = append(tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return tables
+}
+
+// TestClearCoversEntireSchema guards clearStatements against schema drift in
+// both directions: every user table must be known (so a new migration cannot
+// silently add a table Clear misses), and after populating every content
+// table, Clear must leave all of them empty.
+func TestClearCoversEntireSchema(t *testing.T) {
+	conn, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if got := listUserTables(t, conn); !equalStrings(got, expectedSchemaTables) {
+		t.Fatalf("schema drift: sqlite_master holds %v, expected %v; "+
+			"if a migration added a table, extend clearStatements in database.go",
+			got, expectedSchemaTables)
+	}
+
+	ctx := context.Background()
+	q := db.New(conn)
+	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+		Hash:  "deadbeef",
+		Path:  "books/mobydick.epub",
+		Title: "Moby Dick",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateAuthor(ctx, "Herman Melville"); err != nil {
+		t.Fatal(err)
+	}
+	author, err := q.GetAuthorByName(ctx, "Herman Melville")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookFileAuthor(ctx, db.CreateBookFileAuthorParams{
+		BookFileID: fileID,
+		AuthorID:   author.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bookID, err := q.CreateBook(ctx, "Moby Dick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+		BookID:     bookID,
+		BookFileID: fileID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookAuthor(ctx, db.CreateBookAuthorParams{
+		BookID:   bookID,
+		AuthorID: author.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookFileDuplicate(ctx, db.CreateBookFileDuplicateParams{
+		Hash: "deadbeef",
+		Path: "backup/mobydick.epub",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateLSHBucket(ctx, db.CreateLSHBucketParams{
+		BandIdx:    0,
+		BucketHash: 12345,
+		BookFileID: fileID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity check: every content table really holds a row, so the emptiness
+	// assertions below are meaningful.
+	for _, table := range []string{
+		"book_files",
+		"books",
+		"authors",
+		"authors_fts",
+		"book_file_authors",
+		"book_file_duplicates",
+		"book_book_files",
+		"book_authors",
+		"book_file_lsh_buckets",
+	} {
+		var n int
+		if err := conn.QueryRow("SELECT count(*) FROM "+table).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n == 0 {
+			t.Fatalf("test setup broken: expected rows in %s before Clear", table)
+		}
+	}
+
+	if err := Clear(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range listUserTables(t, conn) {
+		// FTS5 shadow tables are maintained by the authors_fts triggers;
+		// authors_fts itself is the observable index state.
+		if strings.HasPrefix(table, "authors_fts_") {
+			continue
+		}
+		var n int
+		if err := conn.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n != 0 {
+			t.Fatalf("expected %s to be empty after Clear, got %d rows", table, n)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
