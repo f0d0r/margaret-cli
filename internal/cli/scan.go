@@ -22,6 +22,7 @@ var (
 	ftpPass         string
 	duplicatesOut   string
 	booksOut        string
+	reportEnabled   bool
 	dbPath          string
 )
 
@@ -64,6 +65,7 @@ func init() {
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
 	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
 	scanCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
+	scanCmd.Flags().BoolVar(&reportEnabled, "report", false, "write the books and duplicates JSON reports (failures are always written)")
 	scanCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to use (use \":memory:\" for an ephemeral database)")
 	rootCmd.AddCommand(scanCmd)
 }
@@ -135,11 +137,13 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	if err := report.WriteFailures(failures, failuresOutPath); err != nil {
 		return err
 	}
-	if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
-		return err
-	}
-	if err := report.WriteBooks(q, booksOut); err != nil {
-		return err
+	if reportEnabled {
+		if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
+			return err
+		}
+		if err := report.WriteBooks(q, booksOut); err != nil {
+			return err
+		}
 	}
 	return err
 }
