@@ -268,6 +268,29 @@ func TestPromptScanModeRejectsGarbage(t *testing.T) {
 
 func q2(conn *sql.DB) *db.Queries { return db.New(conn) }
 
+func TestRunScanResumeDoesNotRefailDuplicates(t *testing.T) {
+	booksDir, _, failures := fileScanSetup(t, false, false, false)
+
+	if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The fixture holds two byte-identical files: one canonical row, one
+	// duplicate entry. Resuming must not turn the duplicate into a
+	// constraint-violation failure.
+	freshFlag, resumeFlag = false, true
+	if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(failures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "[]" {
+		t.Errorf("expected no failures on resume, got: %s", data)
+	}
+}
+
 func TestRunScanResumeDifferentRootGuard(t *testing.T) {
 	booksDir, _, _ := fileScanSetup(t, false, false, false)
 

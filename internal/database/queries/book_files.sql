@@ -22,6 +22,12 @@ SELECT count(*) FROM book_files;
 -- name: CreateBookFileAuthor :exec
 INSERT INTO book_file_authors (book_file_id, author_id) VALUES (?, ?);
 
+-- name: BookFileDuplicateExists :one
+SELECT count(*) FROM book_file_duplicates WHERE hash = ? AND path = ?;
+
+-- name: DeleteBookFileDuplicatesByPath :exec
+DELETE FROM book_file_duplicates WHERE path = ?;
+
 -- name: CreateBookFileDuplicate :exec
 INSERT INTO book_file_duplicates (hash, path) VALUES (?, ?);
 

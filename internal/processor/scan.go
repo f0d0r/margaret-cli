@@ -299,7 +299,8 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		replaced := false
 		if p.cfg.Resume {
 			existing, err := q.GetBookFileByPath(txCtx, displayPath)
-			if err == nil {
+			switch {
+			case err == nil:
 				if existing.Hash == md.Hash {
 					// Same content (e.g. touched file, or no stat
 					// available): refresh the recorded stat and stop.
@@ -318,7 +319,28 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 					return fmt.Errorf("delete stale file row: %w", err)
 				}
 				replaced = true
-			} else if !errors.Is(err, sql.ErrNoRows) {
+			case errors.Is(err, sql.ErrNoRows):
+				// No canonical row for this path, but it may still be
+				// recorded as a duplicate of the same content (duplicates
+				// carry no stat, so tier-1 never skips them). Re-inserting
+				// would violate the (hash, path) primary key.
+				dup, err := q.BookFileDuplicateExists(txCtx, db.BookFileDuplicateExistsParams{
+					Hash: md.Hash,
+					Path: displayPath,
+				})
+				if err != nil {
+					return fmt.Errorf("lookup duplicate by path: %w", err)
+				}
+				if dup > 0 {
+					return nil
+				}
+				// Genuinely new content at this path: drop stale duplicate
+				// rows (left from when the path held other content) so the
+				// insert below starts clean.
+				if err := q.DeleteBookFileDuplicatesByPath(txCtx, displayPath); err != nil {
+					return fmt.Errorf("delete stale duplicates: %w", err)
+				}
+			default:
 				return fmt.Errorf("lookup file by path: %w", err)
 			}
 		}
