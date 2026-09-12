@@ -4,3 +4,4 @@ internal/db/*.go
 failures.json
 duplicates.json
 books.json
+margaret.db

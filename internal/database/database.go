@@ -1,23 +1,45 @@
 // Package database opens the SQLite database used during a scan and applies
-// the schema. The database is ephemeral: it is created per run and removed
-// when the scan finishes, so there is nothing to migrate.
+// pending schema migrations with goose, so an existing database file is
+// reused and only migrated forward. Each scan starts with a clean slate via
+// Clear, which deletes all scanned content while keeping the schema and the
+// goose version history.
 package database
 
 import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"os"
 
+	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
-//go:embed schema.sql
-var schemaFS embed.FS
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
+// DefaultPath is the SQLite database file used when the user does not pass
+// an explicit path. It is resolved relative to the current working directory.
+const DefaultPath = "margaret.db"
+
+// clearStatements deletes all scanned content in foreign-key-safe order
+// (children before parents). The goose version table is intentionally left
+// untouched, and deleting from authors lets the authors_fts triggers clean
+// up the full-text index. When a migration adds a table, extend this list:
+// TestClearCoversEntireSchema fails until you do.
+var clearStatements = []string{
+	`DELETE FROM book_file_lsh_buckets;`,
+	`DELETE FROM book_book_files;`,
+	`DELETE FROM book_authors;`,
+	`DELETE FROM book_file_duplicates;`,
+	`DELETE FROM book_file_authors;`,
+	`DELETE FROM book_files;`,
+	`DELETE FROM books;`,
+	`DELETE FROM authors;`,
+}
 
 // Open opens a SQLite database at dataSource (a file path or ":memory:"),
-// applies the schema and returns a connection with foreign keys enabled and
-// a single connection so writes are serialized.
+// applies pending migrations and returns a connection with foreign keys
+// enabled and a single connection so writes are serialized.
 func Open(dataSource string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dataSource+"?_pragma=foreign_keys(1)")
 	if err != nil {
@@ -30,38 +52,35 @@ func Open(dataSource string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	schema, err := schemaFS.ReadFile("schema.sql")
-	if err != nil {
+	if err := goose.SetDialect("sqlite3"); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("failed to read embedded schema: %w", err)
+		return nil, fmt.Errorf("failed to set goose dialect: %w", err)
 	}
-	if _, err := db.Exec(string(schema)); err != nil {
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.Up(db, "migrations"); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("failed to apply schema: %w", err)
+		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
 	return db, nil
 }
 
-// OpenTemp creates a per-run temporary database file, opens it with [Open]
-// and returns the connection plus a cleanup function that closes it and
-// removes the file.
-func OpenTemp() (*sql.DB, func(), error) {
-	f, err := os.CreateTemp("", "margaret-tools-db-*")
+// Clear deletes all scanned content so a new scan starts with a clean slate.
+// The schema and the goose version history are kept. It is safe to call on a
+// fresh database, where it is a no-op.
+func Clear(db *sql.DB) error {
+	tx, err := db.Begin()
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("failed to begin clear transaction: %w", err)
 	}
-	name := f.Name()
-	if err := f.Close(); err != nil {
-		_ = os.Remove(name)
-		return nil, nil, err
+	for _, stmt := range clearStatements {
+		if _, err := tx.Exec(stmt); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("failed to clear database: %w", err)
+		}
 	}
-	db, err := Open(name)
-	if err != nil {
-		_ = os.Remove(name)
-		return nil, nil, err
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to clear database: %w", err)
 	}
-	return db, func() {
-		_ = db.Close()
-		_ = os.Remove(name)
-	}, nil
+	return nil
 }

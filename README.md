@@ -110,6 +110,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
 | `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
 | `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
+| `--db` | `string` | `margaret.db` | SQLite database file to use. |
 | `-h`, `--help` | | | Show help. |
 
 ### `--workers`
@@ -169,6 +170,26 @@ Credentials for `ftp://` scans. Both default to the anonymous login
 (`anonymous` / `anonymous@`). They are optional: an FTP URL may embed
 credentials directly (`ftp://user:pass@host/path`), but using the flags keeps
 the password out of the command line.
+
+### `--db`
+
+The SQLite database file used during the scan. Defaults to `margaret.db` in
+the current directory. Pending schema migrations are applied automatically
+with goose, so an existing database file is reused and only migrated forward.
+
+Each scan starts with a clean slate: previous scan data is deleted first
+(the schema and migration history are kept), so re-running a scan never mixes
+results from earlier runs. Pass a custom path to use a different database
+file, or `":memory:"` for an ephemeral database that is discarded when the
+scan finishes:
+
+```sh
+margaret-tools scan ./books --db /tmp/test.db
+margaret-tools scan ./books --db ":memory:"
+```
+
+If the parent directory of a custom path does not exist, the scan fails with
+an error. Do not run two scans against the same database file in parallel.
 
 ---
 
@@ -404,6 +425,12 @@ Write the failures report to a custom location:
 
 ```sh
 margaret-tools scan ./books --failures-out /tmp/failures.json
+```
+
+Scan into a custom database file instead of the default `./margaret.db`:
+
+```sh
+margaret-tools scan ./books --db /tmp/test.db
 ```
 
 Unpack password-protected rar and 7z archives:

@@ -60,7 +60,7 @@ func TestSpoolBlobSpillAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	// Point the spill at dir so we can observe it.
 	defer func(old func(string, string) (*os.File, error)) { osCreateTemp = old }(osCreateTemp)
 	osCreateTemp = func(p, pat string) (*os.File, error) {

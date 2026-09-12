@@ -1,3 +1,4 @@
+-- +goose Up
 CREATE TABLE books (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL DEFAULT ''
@@ -24,18 +25,24 @@ CREATE VIRTUAL TABLE authors_fts USING FTS5(
     tokenize='trigram remove_diacritics 1'
 );
 
+-- +goose StatementBegin
 CREATE TRIGGER authors_fts_insert AFTER INSERT ON authors BEGIN
     INSERT INTO authors_fts(rowid, name) VALUES (new.id, new.name);
 END;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 CREATE TRIGGER authors_fts_update AFTER UPDATE ON authors BEGIN
     INSERT INTO authors_fts(authors_fts, rowid, name) VALUES ('delete', old.id, old.name);
     INSERT INTO authors_fts(rowid, name) VALUES (new.id, new.name);
 END;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 CREATE TRIGGER authors_fts_delete AFTER DELETE ON authors BEGIN
     INSERT INTO authors_fts(authors_fts, rowid, name) VALUES ('delete', old.id, old.name);
 END;
+-- +goose StatementEnd
 
 CREATE TABLE book_file_authors (
     book_file_id INTEGER NOT NULL,
@@ -77,3 +84,17 @@ CREATE TABLE book_file_lsh_buckets (
 );
 -- NOTE: no extra index on (band_idx, bucket_hash): the PRIMARY KEY already
 -- covers that leftmost prefix, a second index would only add write cost.
+
+-- +goose Down
+DROP TABLE IF EXISTS book_file_lsh_buckets;
+DROP TABLE IF EXISTS book_book_files;
+DROP TABLE IF EXISTS book_authors;
+DROP TABLE IF EXISTS book_file_duplicates;
+DROP TABLE IF EXISTS book_file_authors;
+DROP TRIGGER IF EXISTS authors_fts_delete;
+DROP TRIGGER IF EXISTS authors_fts_update;
+DROP TRIGGER IF EXISTS authors_fts_insert;
+DROP TABLE IF EXISTS authors_fts;
+DROP TABLE IF EXISTS authors;
+DROP TABLE IF EXISTS book_files;
+DROP TABLE IF EXISTS books;

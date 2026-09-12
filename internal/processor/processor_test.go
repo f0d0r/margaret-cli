@@ -17,15 +17,14 @@ import (
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
-// newTestProcessor builds a ScanProcessor backed by a temporary database that
-// is removed when the test finishes.
+// newTestProcessor builds a ScanProcessor backed by an in-memory database.
 func newTestProcessor(t *testing.T, cfg ScanProcessorConfig, root string) *ScanProcessor {
 	t.Helper()
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(cleanup)
+	t.Cleanup(func() { _ = conn.Close() })
 	return NewScanProcessor(conn, db.New(conn), cfg, root)
 }
 
@@ -191,11 +190,13 @@ func TestProcessStoresInDatabase(t *testing.T) {
 		}
 	}
 
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	proc := NewScanProcessor(conn, db.New(conn), DefaultScanProcessorConfig(), dir)
 	proc.parsers = map[string]parser.Parser{"epub": hashParser{}}
@@ -264,11 +265,13 @@ func TestProcessSkipsEmptyHash(t *testing.T) {
 		}
 	}
 
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	proc := NewScanProcessor(conn, db.New(conn), DefaultScanProcessorConfig(), dir)
 	proc.parsers = map[string]parser.Parser{"epub": stubParser{}}
@@ -323,7 +326,7 @@ func TestProcessMinHashLSHGrouping(t *testing.T) {
 	// Near duplicate: 96% similar (only 5 entries differ)
 	sigB := make([]uint64, 128)
 	copy(sigB, sigA)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		sigB[i] = ^uint64(i)
 	}
 
@@ -343,11 +346,13 @@ func TestProcessMinHashLSHGrouping(t *testing.T) {
 		}
 	}
 
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	cfg := DefaultScanProcessorConfig()
 	cfg.ParseWorkers = 1 // deterministic single-worker for sequential matching
@@ -446,7 +451,7 @@ func TestProcessMinHashLSHThresholdBoundary(t *testing.T) {
 	// 26 diffs confined to bands 0..5; bands 6..24 stay intact.
 	sigAbove := make([]uint64, 128)
 	copy(sigAbove, sigBase)
-	for i := 0; i < 26; i++ {
+	for i := range 26 {
 		sigAbove[i] = ^uint64(i)
 	}
 
@@ -467,11 +472,13 @@ func TestProcessMinHashLSHThresholdBoundary(t *testing.T) {
 		}
 	}
 
-	conn, cleanup, err := database.OpenTemp()
+	conn, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	cfg := DefaultScanProcessorConfig()
 	cfg.ParseWorkers = 1 // deterministic single-worker for sequential matching
