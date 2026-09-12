@@ -1,6 +1,9 @@
 -- name: CreateBook :one
 INSERT INTO books (title) VALUES (?) RETURNING id;
 
+-- name: CountBooks :one
+SELECT count(*) FROM books;
+
 -- name: UpdateBookTitleIfEmpty :exec
 UPDATE books SET title = ? WHERE id = ? AND title = '';
 
@@ -16,6 +19,10 @@ SELECT book_id FROM book_book_files WHERE book_file_id = ? LIMIT 1;
 INSERT INTO book_authors (book_id, author_id)
 VALUES (?, ?)
 ON CONFLICT(book_id, author_id) DO NOTHING;
+
+-- name: DeleteOrphanedBooks :exec
+DELETE FROM books
+WHERE id NOT IN (SELECT book_id FROM book_book_files);
 
 -- name: CreateLSHBucket :exec
 INSERT INTO book_file_lsh_buckets (band_idx, bucket_hash, book_file_id)

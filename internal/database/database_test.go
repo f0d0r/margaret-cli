@@ -339,6 +339,7 @@ var expectedSchemaTables = []string{
 	"book_file_lsh_buckets",
 	"book_files",
 	"books",
+	"scan_runs",
 }
 
 func listUserTables(t *testing.T, conn *sql.DB) []string {
