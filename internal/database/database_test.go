@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -210,5 +211,111 @@ func TestListBookFileDuplicatesEmpty(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected no rows, got %d", len(rows))
+	}
+}
+
+func TestClearDeletesContentButKeepsSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	conn, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	q := db.New(conn)
+	id, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+		Hash:  "deadbeef",
+		Path:  "books/mobydick.epub",
+		Title: "Moby Dick",
+	})
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := q.CreateAuthor(ctx, "Herman Melville"); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	author, err := q.GetAuthorByName(ctx, "Herman Melville")
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := q.CreateBookFileAuthor(ctx, db.CreateBookFileAuthorParams{
+		BookFileID: id,
+		AuthorID:   author.ID,
+	}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	bookID, err := q.CreateBook(ctx, "Moby Dick")
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+		BookID:     bookID,
+		BookFileID: id,
+	}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := q.CreateBookFileDuplicate(ctx, db.CreateBookFileDuplicateParams{
+		Hash: "deadbeef",
+		Path: "backup/mobydick.epub",
+	}); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+
+	if err := Clear(conn); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+
+	for _, table := range []string{
+		"book_files",
+		"books",
+		"authors",
+		"authors_fts",
+		"book_file_authors",
+		"book_file_duplicates",
+		"book_book_files",
+		"book_authors",
+		"book_file_lsh_buckets",
+	} {
+		var n int
+		if err := conn.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+			_ = conn.Close()
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n != 0 {
+			_ = conn.Close()
+			t.Fatalf("expected %s to be empty, got %d rows", table, n)
+		}
+	}
+
+	// Clearing a second time must be a no-op, not an error.
+	if err := Clear(conn); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening the cleared file must migrate cleanly and stay writable.
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = reopened.Close()
+	}()
+	if _, err := db.New(reopened).CreateBookFile(ctx, db.CreateBookFileParams{
+		Hash: "cafebabe",
+		Path: "books/other.epub",
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

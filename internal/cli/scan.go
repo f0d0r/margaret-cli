@@ -22,6 +22,7 @@ var (
 	ftpPass         string
 	duplicatesOut   string
 	booksOut        string
+	dbPath          string
 )
 
 // scanCmd scans a directory for ebook files.
@@ -63,17 +64,26 @@ func init() {
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
 	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
 	scanCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
+	scanCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to use (use \":memory:\" for an ephemeral database)")
 	rootCmd.AddCommand(scanCmd)
 }
 
 func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig) error {
 	start := time.Now()
 
-	conn, err := database.Open(":memory:")
+	if dbPath == "" {
+		return fmt.Errorf("database path must not be empty")
+	}
+	conn, err := database.Open(dbPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open database %q: %w", dbPath, err)
 	}
 	defer func() { _ = conn.Close() }()
+	// Each scan starts with a clean slate so re-running a scan never mixes
+	// results from previous runs. The schema and migration history are kept.
+	if err := database.Clear(conn); err != nil {
+		return fmt.Errorf("clear database %q: %w", dbPath, err)
+	}
 	q := db.New(conn)
 
 	var bar *progressBar
