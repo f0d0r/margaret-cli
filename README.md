@@ -110,6 +110,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
 | `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
 | `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
+| `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
 | `-h`, `--help` | | | Show help. |
 
@@ -155,14 +156,31 @@ The path where the JSON report of failed items is written. Defaults to
 The path where the JSON report of duplicate books is written. Defaults to
 `duplicates.json` in the current directory. Each entry lists the original book
 (`authors`, `title`, `path`) and every other path that holds the same content
-(`duplicates`). When no duplicates are found the file is not created.
+(`duplicates`). When no duplicates are found the file is not created. Only
+written when `--report` is set.
 
 ### `--books-out`
 
 The path where the JSON report of the grouped books is written. Defaults to
 `books.json` in the current directory. See
 [How books are grouped and described](#how-books-are-grouped-and-described).
-When no books were found the file is not created.
+When no books were found the file is not created. Only written when
+`--report` is set.
+
+### `--report`
+
+Writes the two bulk JSON reports — the grouped books (`--books-out`) and the
+duplicate books (`--duplicates-out`). Off by default: at hundreds of thousands
+of books these files grow to hundreds of megabytes, while the database itself
+is already kept as a stable, queryable artifact (see [`--db`](#--db)), so
+there is no reason to pay that disk cost on every run.
+
+`failures.json` is not affected: it is the error channel (like logs), normally
+small, and is written on every run, as is the stdout summary.
+
+```sh
+margaret-tools scan ./books --report
+```
 
 ### `--ftp-user` / `--ftp-pass`
 
