@@ -1,6 +1,9 @@
 -- name: CreateBook :one
 INSERT INTO books (title) VALUES (?) RETURNING id;
 
+-- name: CountBooks :one
+SELECT count(*) FROM books;
+
 -- name: UpdateBookTitleIfEmpty :exec
 UPDATE books SET title = ? WHERE id = ? AND title = '';
 

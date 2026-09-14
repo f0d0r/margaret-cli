@@ -185,10 +185,11 @@ func fit(s string, n int) string {
 // after each directory, so the bar's maximum is only raised as new files are
 // discovered; parsing may briefly outrun the scan, which setMax guards against.
 type progressReporter struct {
-	bar        *progressBar
-	mu         sync.Mutex
-	lastParsed int64 // last reported Parsed
-	maxFound   int64 // highest Found seen (used as max once parsing starts)
+	bar         *progressBar
+	mu          sync.Mutex
+	lastParsed  int64 // last reported Parsed
+	lastSkipped int64 // last reported Skipped
+	maxFound    int64 // highest Found seen (used as max once parsing starts)
 }
 
 func (r *progressReporter) report(p processor.Progress) {
@@ -203,6 +204,13 @@ func (r *progressReporter) report(p processor.Progress) {
 	if p.Parsed > r.lastParsed {
 		r.bar.add(p.Parsed - r.lastParsed)
 		r.lastParsed = p.Parsed
+	}
+
+	// Skipped units are seen work too: without this the bar would stall
+	// below its maximum on resume runs where most units skip.
+	if p.Skipped > r.lastSkipped {
+		r.bar.add(p.Skipped - r.lastSkipped)
+		r.lastSkipped = p.Skipped
 	}
 
 	r.applyActive(p)
@@ -235,6 +243,10 @@ func (r *progressReporter) sync(p processor.Progress) {
 	if p.Parsed > r.lastParsed {
 		r.bar.add(p.Parsed - r.lastParsed)
 		r.lastParsed = p.Parsed
+	}
+	if p.Skipped > r.lastSkipped {
+		r.bar.add(p.Skipped - r.lastSkipped)
+		r.lastSkipped = p.Skipped
 	}
 	r.bar.active = false
 	r.bar.names = nil

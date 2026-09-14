@@ -47,6 +47,11 @@ type ScanProcessorConfig struct {
 	FTPUser string
 	FTPPass string
 
+	// Resume makes Process skip files whose path is already recorded and
+	// only process never-seen paths. When false every scan writes all files
+	// (callers typically Clear the database first).
+	Resume bool
+
 	// OnResult is invoked for every successfully parsed ebook.
 	OnResult func(Result)
 
@@ -79,6 +84,7 @@ type ScanProcessor struct {
 	parsed   atomic.Int64
 	failed   atomic.Int64
 	found    atomic.Int64
+	skipped  atomic.Int64
 	progMu   sync.Mutex
 	lastScan scanner.Progress
 	failMu   sync.Mutex
@@ -221,6 +227,10 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 		p.processArchive(ctx, r, 0, src)
 		return
 	}
+	if p.shouldSkip(ctx, r.Path) {
+		p.skip()
+		return
+	}
 	rc, err := src.Open(r.Path)
 	if err != nil {
 		p.fail(r.Path, err)
@@ -256,7 +266,8 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 	}
 	par := p.parsers[format]
 	if par == nil {
-		p.fail(displayPath, fmt.Errorf("no parser registered for format %q", format))
+		err := fmt.Errorf("no parser registered for format %q", format)
+		p.fail(displayPath, err)
 		p.report()
 		return
 	}
@@ -274,6 +285,9 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			return nil
 		}
 
+		// Resume already skipped every recorded path, so this path is new:
+		// insert it directly. A changed file keeps its old row until the
+		// owner reruns with a fresh database.
 		authorIDs := make([]int64, 0, len(md.Authors))
 		for _, authorName := range md.Authors {
 			author, err := q.GetAuthorByName(txCtx, authorName)
@@ -294,7 +308,6 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			Path:    displayPath,
 			Title:   md.Title,
 			Minhash: encodeMinHash(md.MinHash),
-			Simhash: sql.NullInt64{Int64: int64(md.SimHash), Valid: true},
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := q.CreateBookFileDuplicate(txCtx, db.CreateBookFileDuplicateParams{
@@ -497,6 +510,7 @@ func (p *ScanProcessor) Stats() Progress {
 		Found:   sp.Found + p.found.Load(),
 		Parsed:  p.parsed.Load(),
 		Failed:  p.failed.Load(),
+		Skipped: p.skipped.Load(),
 		Active:  p.active.Load(),
 		Current: cur,
 	}

@@ -112,6 +112,8 @@ archives, up to the depth given by `--archive-depth`.
 | `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
 | `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
+| `--fresh` | `bool` | `false` | Delete existing scan data and start from a clean slate. |
+| `--resume` | `bool` | `false` | Keep existing scan data and only process never-seen paths. |
 | `-h`, `--help` | | | Show help. |
 
 ### `--workers`
@@ -195,11 +197,13 @@ The SQLite database file used during the scan. Defaults to `margaret.db` in
 the current directory. Pending schema migrations are applied automatically
 with goose, so an existing database file is reused and only migrated forward.
 
-Each scan starts with a clean slate: previous scan data is deleted first
-(the schema and migration history are kept), so re-running a scan never mixes
-results from earlier runs. Pass a custom path to use a different database
-file, or `":memory:"` for an ephemeral database that is discarded when the
-scan finishes:
+A scan with `--fresh` (or over an empty database) starts with a clean slate:
+previous scan data is deleted first (the schema and migration history are
+kept), so re-running a scan never mixes results from earlier runs. With
+`--resume` existing rows are kept instead (see
+[`--fresh` / `--resume`](#fresh---resume)). Pass a custom path to use a
+different database file, or `":memory:"` for an ephemeral database that is
+discarded when the scan finishes:
 
 ```sh
 margaret-tools scan ./books --db /tmp/test.db
@@ -208,6 +212,39 @@ margaret-tools scan ./books --db ":memory:"
 
 If the parent directory of a custom path does not exist, the scan fails with
 an error. Do not run two scans against the same database file in parallel.
+
+### `--fresh` / `--resume`
+
+Controls what happens when the database already holds scanned data:
+
+- `--fresh` deletes the existing data first (same as the default behavior on
+  an empty database) and rescans everything.
+- `--resume` keeps the existing rows: files whose path is already recorded
+  are skipped without being read again — even if they changed on disk —
+  while never-seen paths are processed. Failures leave no row behind, so
+  they are retried on every run. The scan summary reports skipped files
+  separately.
+
+With neither flag and a non-empty database, an interactive terminal asks
+whether to resume (the default) or start fresh, showing the database path,
+the recorded book/file counts and the previous scan's root and time. Without
+a terminal (scripts, CI, cron) the scan fails instead with an error telling
+you to pass `--fresh` or `--resume` — so automation can never silently wipe
+or mix data. The two flags are mutually exclusive.
+
+Resuming a *different* tree into the same database warns explicitly on a
+terminal and is refused without one: mixing two trees is almost never
+intended, so use `--fresh` or a different `--db` file instead.
+
+### Crash and re-run behavior
+
+Every successfully parsed file is committed to the database immediately (one
+transaction per file), so interrupting a scan with `Ctrl-C` keeps everything
+processed so far — only the in-progress files are lost. Re-running with
+`--resume` continues where the interrupted run stopped: finished files are
+skipped, failed files (which leave no row behind) are retried. Each run is
+recorded with its root, mode and outcome; the re-run prompt reads the latest
+entry.
 
 ---
 
@@ -252,9 +289,10 @@ Failed     0
 Duration   1ms
 ```
 
-- **Total** — total number of ebook files found (succeeded + failed).
+- **Total** — total number of ebook files encountered (succeeded + failed + skipped).
 - **Succeeded** — ebooks whose metadata was read successfully.
 - **Failed** — items that could not be processed.
+- **Skipped** — recorded files passed over without reading (resume runs only).
 - **Duration** — wall-clock time of the scan.
 
 The report is followed by the failures JSON file. Empty output is written even
@@ -334,9 +372,8 @@ Exact duplicates never get a book of their own.
 
 ### Near-duplicate grouping
 
-Every other file carries two content fingerprints: a 128-number MinHash
-signature and a 64-bit SimHash (currently stored for diagnostics). During the
-scan each new file is grouped as follows:
+Every other file carries a 128-number MinHash content fingerprint. During
+the scan each new file is grouped as follows:
 
 1. Its MinHash signature is split into 25 bands of 5 numbers (LSH banding).
    Files sharing at least one band hash become candidates.

@@ -36,6 +36,10 @@ type Progress struct {
 	Parsed int64
 	Failed int64
 
+	// Skipped counts files that resume mode passed over without reading:
+	// already recorded in a previous run.
+	Skipped int64
+
 	// Active is the number of units of work currently in flight. Current
 	// holds the paths of the items being processed, newest last, capped so
 	// the report stays small. These let consumers keep showing progress (and

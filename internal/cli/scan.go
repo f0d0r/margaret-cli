@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -23,6 +24,8 @@ var (
 	duplicatesOut   string
 	booksOut        string
 	reportEnabled   bool
+	freshFlag       bool
+	resumeFlag      bool
 	dbPath          string
 )
 
@@ -66,6 +69,8 @@ func init() {
 	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
 	scanCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
 	scanCmd.Flags().BoolVar(&reportEnabled, "report", false, "write the books and duplicates JSON reports (failures are always written)")
+	scanCmd.Flags().BoolVar(&freshFlag, "fresh", false, "delete existing scan data and start from a clean slate")
+	scanCmd.Flags().BoolVar(&resumeFlag, "resume", false, "keep existing scan data and only process new or changed files")
 	scanCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to use (use \":memory:\" for an ephemeral database)")
 	rootCmd.AddCommand(scanCmd)
 }
@@ -81,12 +86,30 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 		return fmt.Errorf("open database %q: %w", dbPath, err)
 	}
 	defer func() { _ = conn.Close() }()
-	// Each scan starts with a clean slate so re-running a scan never mixes
-	// results from previous runs. The schema and migration history are kept.
-	if err := database.Clear(conn); err != nil {
-		return fmt.Errorf("clear database %q: %w", dbPath, err)
-	}
 	q := db.New(conn)
+
+	mode, err := resolveScanMode(ctx, q, root)
+	if err != nil {
+		return err
+	}
+	if mode == modeFresh {
+		// Each fresh scan starts with a clean slate so re-running a scan
+		// never mixes results from previous runs. The schema and migration
+		// history are kept.
+		if err := database.Clear(conn); err != nil {
+			return fmt.Errorf("clear database %q: %w", dbPath, err)
+		}
+	}
+	cfg.Resume = mode == modeResume
+
+	runID, err := q.CreateScanRun(ctx, db.CreateScanRunParams{
+		Root:      root,
+		Mode:      mode.String(),
+		StartedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		return fmt.Errorf("record scan run: %w", err)
+	}
 
 	var bar *progressBar
 	var rep *progressReporter
@@ -122,6 +145,17 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	}()
 
 	err = proc.Process(ctx)
+	status := "completed"
+	if err != nil {
+		status = "failed"
+	}
+	if ferr := q.FinishScanRun(ctx, db.FinishScanRunParams{
+		Status:     status,
+		FinishedAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
+		ID:         runID,
+	}); ferr != nil {
+		return fmt.Errorf("finish scan run: %w", ferr)
+	}
 	close(stop)
 	<-tickDone
 	stats := proc.Stats()
@@ -150,9 +184,12 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 
 func printReport(s processor.Progress, d time.Duration) {
 	succeeded := s.Parsed
-	total := succeeded + s.Failed
+	total := succeeded + s.Failed + s.Skipped
 	fmt.Printf("Total      %d ebook(s)\n", total)
 	fmt.Printf("Succeeded  %d\n", succeeded)
 	fmt.Printf("Failed     %d\n", s.Failed)
+	if s.Skipped > 0 {
+		fmt.Printf("Skipped    %d\n", s.Skipped)
+	}
 	fmt.Printf("Duration   %s\n", d.Round(time.Millisecond))
 }

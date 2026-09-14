@@ -219,9 +219,14 @@ func (p *ScanProcessor) handleArchiveFile(displayPath string, depth int) func(co
 		if _, ok := scanner.FormatOf(f.NameInArchive); !ok {
 			return nil
 		}
+		display := displayPath + "!" + f.NameInArchive
+		if p.shouldSkip(ctx, display) {
+			p.skip()
+			return nil
+		}
 		opened, err := f.Open()
 		if err != nil {
-			p.fail(displayPath+"!"+f.NameInArchive, err)
+			p.fail(display, err)
 			p.report()
 			return nil
 		}
@@ -245,14 +250,24 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 		if zf.FileInfo().IsDir() {
 			continue
 		}
+		display := displayPath + "!" + zf.Name
+		if _, ok := scanner.FormatOf(zf.Name); !ok {
+			continue
+		}
+		if p.shouldSkip(ctx, display) {
+			p.skip()
+			continue
+		}
 		if zf.Flags&0x1 != 0 {
-			p.fail(displayPath+"!"+zf.Name, errors.New("password-protected zip member; --archive-password is not supported yet"))
+			err := errors.New("password-protected zip member; --archive-password is not supported yet")
+			p.fail(display, err)
 			p.report()
 			continue
 		}
 		rc, err := zf.Open()
 		if err != nil {
-			p.fail(displayPath+"!"+zf.Name, zipMemberError(err))
+			zerr := zipMemberError(err)
+			p.fail(display, zerr)
 			p.report()
 			continue
 		}
@@ -297,6 +312,10 @@ func (p *ScanProcessor) processSingleStream(ctx context.Context, r io.Reader, in
 		p.processArchiveStream(ctx, format, r, innerPath, depth, -1)
 		return
 	}
+	if p.shouldSkip(ctx, innerPath) {
+		p.skip()
+		return
+	}
 	p.found.Add(1)
 	p.parseEbookStream(ctx, innerPath, format, -1, r)
 }
@@ -313,6 +332,10 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 	display := parentPath + "!" + name
 	if scanner.IsArchiveFormat(format) {
 		p.processArchiveStream(ctx, format, r, display, depth, size)
+		return
+	}
+	if p.shouldSkip(ctx, display) {
+		p.skip()
 		return
 	}
 	p.found.Add(1)

@@ -7,10 +7,9 @@ CREATE TABLE books (
 CREATE TABLE book_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hash TEXT NOT NULL UNIQUE,
-    path TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL DEFAULT '',
-    minhash BLOB,
-    simhash INTEGER
+    minhash BLOB
 );
 
 CREATE TABLE authors (
@@ -85,7 +84,23 @@ CREATE TABLE book_file_lsh_buckets (
 -- NOTE: no extra index on (band_idx, bucket_hash): the PRIMARY KEY already
 -- covers that leftmost prefix, a second index would only add write cost.
 
+-- scan_runs records one row per scan run: the scanned root, the mode the
+-- run used and its outcome. The prompt shown before a re-run over a
+-- non-empty database reads the latest row to display the previous root and
+-- time and to detect a different-root re-run. A fresh scan wipes this table
+-- together with the scanned content (see database.Clear); a resumed scan
+-- adds a new row.
+CREATE TABLE scan_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+
 -- +goose Down
+DROP TABLE IF EXISTS scan_runs;
 DROP TABLE IF EXISTS book_file_lsh_buckets;
 DROP TABLE IF EXISTS book_book_files;
 DROP TABLE IF EXISTS book_authors;

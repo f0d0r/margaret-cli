@@ -161,6 +161,187 @@ func TestProcessCancel(t *testing.T) {
 	}
 }
 
+// hashOrFailParser returns a content-derived hash like hashParser but fails
+// on contents containing failSubstr, so tests can mix successful and failed
+// files while keeping deterministic hashes.
+type hashOrFailParser struct {
+	failSubstr string
+}
+
+func (p hashOrFailParser) Parse(b book.Blob) (parser.Metadata, error) {
+	content, err := readBlobAll(b)
+	if err != nil {
+		return parser.Metadata{}, err
+	}
+	if strings.Contains(string(content), p.failSubstr) {
+		return parser.Metadata{}, errors.New("boom")
+	}
+	return parser.Metadata{
+		Authors: []string{"Author"},
+		Title:   "Title " + string(content),
+		Hash:    "hash-" + string(content),
+	}, nil
+}
+
+// TestFailedFilesRetriedOnResume pins the optimistic resume rule: failures
+// leave no row behind, so a resume run retries them instead of skipping.
+// Only successes are recorded and skipped; the failed file never appears in
+// book grouping, and fixing it is picked up by the next resume without a
+// fresh run.
+func TestFailedFilesRetriedOnResume(t *testing.T) {
+	dir := t.TempDir()
+	goodPath := filepath.Join(dir, "good.epub")
+	badPath := filepath.Join(dir, "bad.epub")
+	if err := os.WriteFile(goodPath, []byte("good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badPath, []byte("bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	newProc := func(resume bool) *ScanProcessor {
+		cfg := DefaultScanProcessorConfig()
+		cfg.Resume = resume
+		proc := NewScanProcessor(conn, q, cfg, dir)
+		proc.parsers = map[string]parser.Parser{"epub": hashOrFailParser{failSubstr: "bad"}}
+		return proc
+	}
+	counts := func() (files, books int) {
+		t.Helper()
+		if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&files); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.QueryRow("SELECT count(*) FROM books").Scan(&books); err != nil {
+			t.Fatal(err)
+		}
+		return files, books
+	}
+	hasRow := func(path string) bool {
+		t.Helper()
+		var n int
+		if err := conn.QueryRow("SELECT count(*) FROM book_files WHERE path = ?", path).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n > 0
+	}
+
+	// First run records only the success; the failure leaves no row.
+	proc1 := newProc(false)
+	if err := proc1.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc1.Stats(); got.Parsed != 1 || got.Failed != 1 {
+		t.Fatalf("first run: expected 1 parsed 1 failed, got %+v", got)
+	}
+	if files, books := counts(); files != 1 || books != 1 {
+		t.Fatalf("after first run: files=%d books=%d, want 1/1", files, books)
+	}
+	if hasRow(badPath) {
+		t.Fatalf("failed file %q must leave no row behind", badPath)
+	}
+	// The failed file carries no links, so grouping never sees it.
+	rows, err := q.ListBooksWithFiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.FilePath == badPath {
+			t.Fatalf("failed file %q must not appear in book grouping", badPath)
+		}
+	}
+
+	// A resume run skips the recorded success and retries the failure.
+	proc2 := newProc(true)
+	if err := proc2.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 1 || got.Skipped != 1 {
+		t.Fatalf("resume run: expected 0 parsed 1 failed 1 skipped, got %+v", got)
+	}
+	if failures := proc2.Failures(); len(failures) != 1 || failures[0].Path != badPath {
+		t.Fatalf("expected the retried failure for %q, got %+v", badPath, failures)
+	}
+	if files, books := counts(); files != 1 || books != 1 {
+		t.Fatalf("after resume: files=%d books=%d, want 1/1", files, books)
+	}
+
+	// Fixing the bad file is picked up by the next resume without a fresh
+	// run; rewriting the good file is ignored (recorded paths always win).
+	if err := os.WriteFile(badPath, []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goodPath, []byte("bad now"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proc3 := newProc(true)
+	if err := proc3.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc3.Stats(); got.Parsed != 1 || got.Failed != 0 || got.Skipped != 1 {
+		t.Fatalf("fixed run: expected 1 parsed 0 failed 1 skipped, got %+v", got)
+	}
+	if files, books := counts(); files != 2 || books != 2 {
+		t.Fatalf("after fixed run: files=%d books=%d, want 2/2", files, books)
+	}
+}
+
+// TestFailedFilesLeaveNoRows asserts that identical failing files record
+// nothing: both fail on every run and no book grouping is built from them.
+func TestFailedFilesLeaveNoRows(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.epub", "b.epub"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("bad"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	newProc := func(resume bool) *ScanProcessor {
+		cfg := DefaultScanProcessorConfig()
+		cfg.Resume = resume
+		proc := NewScanProcessor(conn, db.New(conn), cfg, dir)
+		proc.parsers = map[string]parser.Parser{"epub": hashOrFailParser{failSubstr: "bad"}}
+		return proc
+	}
+
+	for run, resume := range []bool{false, true} {
+		proc := newProc(resume)
+		if err := proc.Process(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := proc.Stats(); got.Failed != 2 || got.Parsed != 0 {
+			t.Fatalf("run %d: expected 0 parsed 2 failed, got %+v", run, got)
+		}
+	}
+	var n int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected no book_files rows from failed files, got %d", n)
+	}
+	var books int
+	if err := conn.QueryRow("SELECT count(*) FROM books").Scan(&books); err != nil {
+		t.Fatal(err)
+	}
+	if books != 0 {
+		t.Fatalf("expected no books from failed files, got %d", books)
+	}
+}
+
 // hashParser derives a deterministic hash from the content length so tests can
 // create files that share a hash.
 type hashParser struct{}
@@ -175,6 +356,83 @@ func (hashParser) Parse(b book.Blob) (parser.Metadata, error) {
 		Title:   "Title",
 		Hash:    fmt.Sprintf("hash-%d", len(content)),
 	}, nil
+}
+
+// TestResumeSkipsDuplicates pins the duplicate resume path: a recorded
+// duplicate is skipped by path existence instead of being reparsed (which
+// previously also failed on reinserting the duplicate row with a UNIQUE
+// constraint violation, flipping Succeeded to Failed).
+func TestResumeSkipsDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	// a and b share a hash (same content length); c is unique.
+	for name, content := range map[string]string{
+		"a.epub": "one",
+		"b.epub": "one",
+		"c.epub": "twelve",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	newProc := func(resume bool) *ScanProcessor {
+		cfg := DefaultScanProcessorConfig()
+		cfg.Resume = resume
+		proc := NewScanProcessor(conn, q, cfg, dir)
+		proc.parsers = map[string]parser.Parser{"epub": hashParser{}}
+		return proc
+	}
+
+	proc1 := newProc(false)
+	if err := proc1.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc1.Stats(); got.Parsed != 3 || got.Failed != 0 {
+		t.Fatalf("first run: expected 3 parsed 0 failed, got %+v", got)
+	}
+	var dups int
+	if err := conn.QueryRow("SELECT count(*) FROM book_file_duplicates").Scan(&dups); err != nil {
+		t.Fatal(err)
+	}
+	if dups != 1 {
+		t.Fatalf("expected 1 duplicate row, got %d", dups)
+	}
+	// The duplicate row carries the file stat used for resume skipping.
+	// Either of the identical files can lose the hash race and land here.
+	var dupPath string
+	if err := conn.QueryRow("SELECT path FROM book_file_duplicates").Scan(&dupPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("duplicate path: %q", dupPath)
+
+	proc2 := newProc(true)
+	if err := proc2.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 0 || got.Skipped != 3 {
+		t.Fatalf("resume run: expected 0 parsed 0 failed 3 skipped, got %+v", got)
+	}
+	var files, books int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&files); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("SELECT count(*) FROM books").Scan(&books); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow("SELECT count(*) FROM book_file_duplicates").Scan(&dups); err != nil {
+		t.Fatal(err)
+	}
+	if files != 2 || dups != 1 || books != 2 {
+		t.Fatalf("after resume: files=%d dups=%d books=%d, want 2/1/2", files, dups, books)
+	}
 }
 
 func TestProcessStoresInDatabase(t *testing.T) {
