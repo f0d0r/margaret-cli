@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/f0d0r/margaret-tools/internal/processor"
+	"github.com/f0d0r/margaret-cli/internal/processor"
 	"golang.org/x/term"
 )
 

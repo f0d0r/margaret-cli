@@ -11,10 +11,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/f0d0r/margaret-cli/internal/database"
+	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-ebook-library/book"
-	"github.com/f0d0r/margaret-tools/internal/database"
-	"github.com/f0d0r/margaret-tools/internal/db"
-	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
 // newTestProcessor builds a ScanProcessor backed by an in-memory database.

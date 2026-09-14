@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/f0d0r/margaret-tools/internal/database"
-	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/database"
+	"github.com/f0d0r/margaret-cli/internal/db"
 )
 
 func TestWriteDuplicatesEmpty(t *testing.T) {

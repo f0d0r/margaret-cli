@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/db"
 )
 
 type txKey struct{}

@@ -1,4 +1,4 @@
-# margaret-tools
+# margaret-cli
 
 A command-line tool that scans a directory tree for ebook files, reads their
 metadata (author and title), and reports the results. It searches for ebooks
@@ -12,7 +12,7 @@ configurable depth.
 Requires Go 1.26+.
 
 ```sh
-make build        # builds ./build/margaret-tools
+make build        # builds ./build/margaret-cli
 make test         # runs the test suite
 make vet          # runs go vet
 make run ARGS="scan <path>"
@@ -21,7 +21,7 @@ make run ARGS="scan <path>"
 Or without the Makefile:
 
 ```sh
-go build -o build/margaret-tools ./cmd/margaret-tools
+go build -o build/margaret-cli ./cmd/margaret-cli
 ```
 
 ---
@@ -32,7 +32,7 @@ The tool has a single command, `scan`, which walks a directory recursively and
 processes every ebook it finds.
 
 ```
-margaret-tools scan <path> [flags]
+margaret-cli scan <path> [flags]
 ```
 
 `<path>` must be a directory. The scan is recursive: ebooks in subdirectories
@@ -45,14 +45,14 @@ network; ebooks and archives are spooled lazily instead of being downloaded to
 disk first.
 
 ```sh
-margaret-tools scan ftp://192.168.178.1/network/backup
+margaret-cli scan ftp://192.168.178.1/network/backup
 ```
 
 If the server requires credentials, pass them with `--ftp-user` and
 `--ftp-pass`. When neither is given, the anonymous login is used:
 
 ```sh
-margaret-tools scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret
+margaret-cli scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret
 ```
 
 > **Note for FTP scans:** one FTP connection is opened per worker, and each
@@ -63,7 +63,7 @@ margaret-tools scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-p
 > lower the worker count:
 >
 > ```sh
-> margaret-tools scan ftp://192.168.178.1/network/backup --workers 1
+> margaret-cli scan ftp://192.168.178.1/network/backup --workers 1
 > ```
 >
 > `--workers 1` is the safe choice for such devices, but it is a
@@ -181,7 +181,7 @@ there is no reason to pay that disk cost on every run.
 small, and is written on every run, as is the stdout summary.
 
 ```sh
-margaret-tools scan ./books --report
+margaret-cli scan ./books --report
 ```
 
 ### `--ftp-user` / `--ftp-pass`
@@ -206,8 +206,8 @@ different database file, or `":memory:"` for an ephemeral database that is
 discarded when the scan finishes:
 
 ```sh
-margaret-tools scan ./books --db /tmp/test.db
-margaret-tools scan ./books --db ":memory:"
+margaret-cli scan ./books --db /tmp/test.db
+margaret-cli scan ./books --db ":memory:"
 ```
 
 If the parent directory of a custom path does not exist, the scan fails with
@@ -266,10 +266,10 @@ have little RAM; raise it to avoid temp files on a slow disk:
 
 ```sh
 # keep at most 16 MiB of each member in memory
-margaret-tools scan ./books --spool-mem-limit 16777216
+margaret-cli scan ./books --spool-mem-limit 16777216
 
 # keep at most 256 MiB in memory (avoids temp files for large ebooks)
-margaret-tools scan ./books --spool-mem-limit 268435456
+margaret-cli scan ./books --spool-mem-limit 268435456
 ```
 
 ---
@@ -450,7 +450,7 @@ Root-level commands:
 - `help` — show help for any command.
 - `completion` — generate shell autocompletion scripts.
 
-Run `margaret-tools --help` or `margaret-tools scan --help` for details.
+Run `margaret-cli --help` or `margaret-cli scan --help` for details.
 
 ## Regenerating reports
 
@@ -461,8 +461,8 @@ scan, when the JSON files were deleted, or when they are wanted at different
 paths:
 
 ```sh
-margaret-tools report
-margaret-tools report --db /tmp/test.db --books-out /tmp/books.json
+margaret-cli report
+margaret-cli report --db /tmp/test.db --books-out /tmp/books.json
 ```
 
 `failures.json` cannot be regenerated: failures are produced during the scan
@@ -486,60 +486,60 @@ reports or creating an empty database file.
 Scan a bookshelf with the default settings:
 
 ```sh
-margaret-tools scan ./books
+margaret-cli scan ./books
 ```
 
 Scan using 8 workers and allow deep archive nesting:
 
 ```sh
-margaret-tools scan ./books --workers 8 --archive-depth 5
+margaret-cli scan ./books --workers 8 --archive-depth 5
 ```
 
 Write the failures report to a custom location:
 
 ```sh
-margaret-tools scan ./books --failures-out /tmp/failures.json
+margaret-cli scan ./books --failures-out /tmp/failures.json
 ```
 
 Scan into a custom database file instead of the default `./margaret.db`:
 
 ```sh
-margaret-tools scan ./books --db /tmp/test.db
+margaret-cli scan ./books --db /tmp/test.db
 ```
 
 Unpack password-protected rar and 7z archives:
 
 ```sh
-margaret-tools scan ./books --archive-password letmein
+margaret-cli scan ./books --archive-password letmein
 ```
 
 Scan with a small in-memory spool limit, e.g. 32 MiB per member:
 
 ```sh
-margaret-tools scan ./books --spool-mem-limit 33554432
+margaret-cli scan ./books --spool-mem-limit 33554432
 ```
 
 Scan a bookshelf on an FTP server with the default (anonymous) login:
 
 ```sh
-margaret-tools scan ftp://192.168.178.1/network/backup
+margaret-cli scan ftp://192.168.178.1/network/backup
 ```
 
 Scan over FTP with a username and password:
 
 ```sh
-margaret-tools scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret
+margaret-cli scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret
 ```
 
 Scan over FTP with a single worker, for routers and NAS devices that only
 accept one concurrent FTP connection:
 
 ```sh
-margaret-tools scan ftp://192.168.178.1/network/backup --workers 1
+margaret-cli scan ftp://192.168.178.1/network/backup --workers 1
 ```
 
 Scan over FTP with credentials and a single worker:
 
 ```sh
-margaret-tools scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret --workers 1
+margaret-cli scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret --workers 1
 ```

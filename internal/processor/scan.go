@@ -11,14 +11,14 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/lsh"
+	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/scanner"
+	"github.com/f0d0r/margaret-cli/internal/source"
+	"github.com/f0d0r/margaret-cli/internal/tx"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-ebook-library/tools"
-	"github.com/f0d0r/margaret-tools/internal/db"
-	"github.com/f0d0r/margaret-tools/internal/lsh"
-	"github.com/f0d0r/margaret-tools/internal/parser"
-	"github.com/f0d0r/margaret-tools/internal/scanner"
-	"github.com/f0d0r/margaret-tools/internal/source"
-	"github.com/f0d0r/margaret-tools/internal/tx"
 )
 
 // ScanProcessorConfig configures a Processor. The zero value is not valid; use

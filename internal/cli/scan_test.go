@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/f0d0r/margaret-tools/internal/processor"
+	"github.com/f0d0r/margaret-cli/internal/processor"
 )
 
 // withScanOutputs swaps the package-level scan output settings for the

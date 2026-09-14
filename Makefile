@@ -1,6 +1,6 @@
-BINARY := margaret-tools
+BINARY := margaret-cli
 BUILD_DIR := build
-MAIN_PKG := ./cmd/margaret-tools
+MAIN_PKG := ./cmd/margaret-cli
 
 .PHONY: build clean generate test vet run
 

@@ -4,8 +4,8 @@ package processor
 import (
 	"context"
 
-	"github.com/f0d0r/margaret-tools/internal/parser"
-	"github.com/f0d0r/margaret-tools/internal/scanner"
+	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/scanner"
 )
 
 // Processor runs the pipeline of a CLI command to completion, reporting

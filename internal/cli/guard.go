@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/db"
 )
 
 // requireDatabaseFile fails when path does not exist. Read-only commands
@@ -17,7 +17,7 @@ func requireDatabaseFile(path string) error {
 		return nil
 	}
 	if os.IsNotExist(err) {
-		return fmt.Errorf("database %q does not exist: run \"margaret-tools scan <path>\" first", path)
+		return fmt.Errorf("database %q does not exist: run \"margaret-cli scan <path>\" first", path)
 	}
 	return fmt.Errorf("stat database %q: %w", path, err)
 }
@@ -32,7 +32,7 @@ func requireScannedData(ctx context.Context, q *db.Queries, path string) error {
 		return fmt.Errorf("count recorded files: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("database %q holds no scanned data: run \"margaret-tools scan <path>\" first", path)
+		return fmt.Errorf("database %q holds no scanned data: run \"margaret-cli scan <path>\" first", path)
 	}
 	return nil
 }

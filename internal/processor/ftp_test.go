@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/f0d0r/margaret-tools/internal/ftptest"
-	"github.com/f0d0r/margaret-tools/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/ftptest"
+	"github.com/f0d0r/margaret-cli/internal/parser"
 )
 
 func TestProcessFTP(t *testing.T) {

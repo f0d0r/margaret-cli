@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/db"
 )
 
 // bookFileReport is the JSON representation of one file belonging to a book.
