@@ -1,4 +1,4 @@
-BINARY := margaret-cli
+BINARY := margaret
 BUILD_DIR := build
 MAIN_PKG := ./cmd/margaret-cli
 

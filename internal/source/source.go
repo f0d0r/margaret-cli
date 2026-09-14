@@ -1,4 +1,4 @@
-// Package source abstracts the locations margaret-cli reads ebooks from:
+// Package source abstracts the locations margaret reads ebooks from:
 // the local filesystem or an FTP server. The scanner and the processor walk
 // and open files through this interface so remote trees behave like local
 // ones.
