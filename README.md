@@ -446,10 +446,29 @@ checking by hand.
 Root-level commands:
 
 - `scan` — scan a directory for ebook files.
+- `report` — regenerate JSON reports from the database.
 - `help` — show help for any command.
 - `completion` — generate shell autocompletion scripts.
 
 Run `margaret-tools --help` or `margaret-tools scan --help` for details.
+
+## Regenerating reports
+
+`scan` writes the `books.json` / `duplicates.json` reports only with
+`--report`, but the database always holds the full data. `report` regenerates
+both files from an existing database without scanning — after a report-less
+scan, when the JSON files were deleted, or when they are wanted at different
+paths:
+
+```sh
+margaret-tools report
+margaret-tools report --db /tmp/test.db --books-out /tmp/books.json
+```
+
+`failures.json` cannot be regenerated: failures are produced during the scan
+and are not stored in the database. Against an empty or missing database the
+command fails with an error pointing to `scan`, instead of writing empty
+reports or creating an empty database file.
 
 ---
 
