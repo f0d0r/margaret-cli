@@ -144,7 +144,7 @@ func (p *ScanProcessor) readerAtView(displayPath, prefix string, size int64, r i
 // of the file are not fully materialized. Any error while the content is read
 // (for example a decryption failure in an encrypted archive member) is
 // reported for displayPath.
-func (p *ScanProcessor) parseEbookStream(ctx context.Context, displayPath, format string, size int64, r io.Reader, st fileStat) {
+func (p *ScanProcessor) parseEbookStream(ctx context.Context, displayPath, format string, size int64, r io.Reader) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -155,7 +155,7 @@ func (p *ScanProcessor) parseEbookStream(ctx context.Context, displayPath, forma
 		return
 	}
 	defer b.Close()
-	p.parseEbook(ctx, displayPath, format, b, st)
+	p.parseEbook(ctx, displayPath, format, b)
 }
 
 // seekReadAt is the interface a source must satisfy for the mholt 7z reader:
@@ -219,9 +219,14 @@ func (p *ScanProcessor) handleArchiveFile(displayPath string, depth int) func(co
 		if _, ok := scanner.FormatOf(f.NameInArchive); !ok {
 			return nil
 		}
+		display := displayPath + "!" + f.NameInArchive
+		if p.shouldSkip(ctx, display) {
+			p.skip()
+			return nil
+		}
 		opened, err := f.Open()
 		if err != nil {
-			p.fail(displayPath+"!"+f.NameInArchive, err)
+			p.fail(display, err)
 			p.report()
 			return nil
 		}
@@ -245,14 +250,24 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 		if zf.FileInfo().IsDir() {
 			continue
 		}
+		display := displayPath + "!" + zf.Name
+		if _, ok := scanner.FormatOf(zf.Name); !ok {
+			continue
+		}
+		if p.shouldSkip(ctx, display) {
+			p.skip()
+			continue
+		}
 		if zf.Flags&0x1 != 0 {
-			p.fail(displayPath+"!"+zf.Name, errors.New("password-protected zip member; --archive-password is not supported yet"))
+			err := errors.New("password-protected zip member; --archive-password is not supported yet")
+			p.fail(display, err)
 			p.report()
 			continue
 		}
 		rc, err := zf.Open()
 		if err != nil {
-			p.fail(displayPath+"!"+zf.Name, zipMemberError(err))
+			zerr := zipMemberError(err)
+			p.fail(display, zerr)
 			p.report()
 			continue
 		}
@@ -297,8 +312,12 @@ func (p *ScanProcessor) processSingleStream(ctx context.Context, r io.Reader, in
 		p.processArchiveStream(ctx, format, r, innerPath, depth, -1)
 		return
 	}
+	if p.shouldSkip(ctx, innerPath) {
+		p.skip()
+		return
+	}
 	p.found.Add(1)
-	p.parseEbookStream(ctx, innerPath, format, -1, r, fileStat{})
+	p.parseEbookStream(ctx, innerPath, format, -1, r)
 }
 
 // handleMember processes a single entry of an unpacked archive. name is the
@@ -315,16 +334,12 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
-	// Members inherit the outer archive's stat: they cannot change without
-	// it, so an unchanged outer file skips every member. Nested display
-	// paths stat nothing (unknown), leaving the decision to tier-2.
-	st := statOf(parentPath)
-	if p.shouldSkip(ctx, display, st) {
+	if p.shouldSkip(ctx, display) {
 		p.skip()
 		return
 	}
 	p.found.Add(1)
-	p.parseEbookStream(ctx, display, format, size, r, st)
+	p.parseEbookStream(ctx, display, format, size, r)
 }
 
 // dropSuffix removes the last extension from name, so that "a.epub.gz"

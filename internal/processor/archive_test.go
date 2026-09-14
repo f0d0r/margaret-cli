@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/f0d0r/margaret-ebook-library/book"
+	"github.com/f0d0r/margaret-tools/internal/database"
+	"github.com/f0d0r/margaret-tools/internal/db"
 	"github.com/f0d0r/margaret-tools/internal/parser"
 )
 
@@ -153,6 +155,128 @@ func TestProcessNestedZip(t *testing.T) {
 		if got[i] != w {
 			t.Errorf("expected path %q, got %q", w, got[i])
 		}
+	}
+}
+
+// TestResumeSkipsNestedMembers pins that a member two levels deep is skipped
+// on resume by path existence, instead of being reparsed and counted as
+// succeeded again.
+func TestResumeSkipsNestedMembers(t *testing.T) {
+	dir := t.TempDir()
+	inner := zipBytes(t, map[string]string{"c.epub": "c-content"})
+	writeZip(t, filepath.Join(dir, "outer.zip"), map[string]string{
+		"a.epub":           "a-content",
+		"bundle/inner.zip": string(inner),
+	})
+
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	newProc := func(resume bool) *ScanProcessor {
+		cfg := DefaultScanProcessorConfig()
+		cfg.Resume = resume
+		proc := NewScanProcessor(conn, q, cfg, dir)
+		proc.parsers = map[string]parser.Parser{"epub": hashOrFailParser{failSubstr: "\x00never-matches"}}
+		return proc
+	}
+
+	proc1 := newProc(false)
+	if err := proc1.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc1.Stats(); got.Parsed != 2 || got.Failed != 0 {
+		t.Fatalf("first run: expected 2 parsed 0 failed, got %+v", got)
+	}
+	// Both members are recorded, the nested one under its full path.
+	nestedPath := filepath.Join(dir, "outer.zip") + "!bundle/inner.zip!c.epub"
+	var n int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files WHERE path = ?", nestedPath).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected a recorded row for the nested member %q", nestedPath)
+	}
+
+	proc2 := newProc(true)
+	if err := proc2.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 0 || got.Skipped != 2 {
+		t.Fatalf("resume run: expected 0 parsed 0 failed 2 skipped, got %+v", got)
+	}
+}
+
+// setZipEncryptedFlag flips general-purpose bit 0 (encryption) in the first
+// local and central headers of a zip archive so the reader reports the
+// member as password-protected without needing a real encrypted fixture.
+func setZipEncryptedFlag(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	out := append([]byte(nil), raw...)
+	for _, sig := range [][]byte{{'P', 'K', 0x03, 0x04}, {'P', 'K', 0x01, 0x02}} {
+		i := bytes.Index(out, sig)
+		if i < 0 {
+			t.Fatal("zip header signature not found")
+		}
+		out[i+8] |= 0x01
+	}
+	return out
+}
+
+// TestPasswordProtectedMemberFails covers the zip member-failure branches:
+// the password failure is reported in-memory every run (failures leave no
+// row behind, so resume retries them) without any book grouping.
+func TestPasswordProtectedMemberFails(t *testing.T) {
+	dir := t.TempDir()
+	raw := setZipEncryptedFlag(t, zipBytes(t, map[string]string{"secret.epub": "shh"}))
+	if err := os.WriteFile(filepath.Join(dir, "locked.zip"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	newProc := func(resume bool) *ScanProcessor {
+		cfg := DefaultScanProcessorConfig()
+		cfg.Resume = resume
+		proc := NewScanProcessor(conn, q, cfg, dir)
+		proc.parsers = map[string]parser.Parser{"epub": hashOrFailParser{failSubstr: "\x00never-matches"}}
+		return proc
+	}
+
+	proc1 := newProc(false)
+	if err := proc1.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc1.Stats(); got.Parsed != 0 || got.Failed != 1 {
+		t.Fatalf("first run: expected 0 parsed 1 failed, got %+v", got)
+	}
+	if failures := proc1.Failures(); len(failures) != 1 || !strings.Contains(failures[0].Err.Error(), "password-protected") {
+		t.Fatalf("expected password failure, got %+v", failures)
+	}
+	var n int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected no rows from failed members, got %d", n)
+	}
+
+	proc2 := newProc(true)
+	if err := proc2.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 1 || got.Skipped != 0 {
+		t.Fatalf("resume run: expected 0 parsed 1 failed 0 skipped, got %+v", got)
 	}
 }
 

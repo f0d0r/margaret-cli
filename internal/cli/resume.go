@@ -82,8 +82,8 @@ func checkSameRoot(ctx context.Context, q *db.Queries, root string) error {
 	return fmt.Errorf("database was last scanned from %q, not %q: refusing to mix two trees without a terminal; use --fresh or a different --db file", prev.Root, root)
 }
 
-// promptScanMode asks whether to append to or wipe the existing data. The
-// default is append: the non-destructive choice.
+// promptScanMode asks whether to resume onto or wipe the existing data. The
+// default is resume: the non-destructive choice.
 func promptScanMode(ctx context.Context, q *db.Queries, root string) (scanMode, error) {
 	files, err := q.CountBookFiles(ctx)
 	if err != nil {
@@ -103,22 +103,27 @@ func promptScanMode(ctx context.Context, q *db.Queries, root string) (scanMode, 
 		fmt.Printf("Previous scan: unknown.\n")
 	case prev.Root != root:
 		fmt.Printf("Previous scan: %q (%s).\n", prev.Root, formatUnix(prev.StartedAt))
-		fmt.Printf("WARNING: %q is a different tree; appending will mix both trees. Use fresh to start over, or a different --db file.\n", root)
+		fmt.Printf("WARNING: %q is a different tree; resuming will mix both trees. Use fresh to start over, or a different --db file.\n", root)
 	default:
 		fmt.Printf("Previous scan: %q (%s).\n", prev.Root, formatUnix(prev.StartedAt))
 	}
-	fmt.Printf("Append new results, or delete existing data and start fresh?\n  [a]ppend (default) / [f]resh: ")
+	fmt.Printf("Resume the scan, or delete existing data and start fresh?\n")
+	fmt.Printf("  [r]esume (default): only never-seen paths are processed. Recorded\n")
+	fmt.Printf("    files are skipped; failures are retried on every run. Use fresh\n")
+	fmt.Printf("    to reprocess everything.\n")
+	fmt.Printf("  [f]resh: delete existing data and start from a clean slate.\n")
+	fmt.Printf("  [r]esume (default) / [f]resh: ")
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		return modeFresh, fmt.Errorf("read answer: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "", "a", "append":
+	case "", "r", "resume":
 		return modeResume, checkSameRoot(ctx, q, root)
 	case "f", "fresh":
 		return modeFresh, nil
 	default:
-		return modeFresh, fmt.Errorf("unknown choice %q: expected append or fresh", strings.TrimSpace(line))
+		return modeFresh, fmt.Errorf("unknown choice %q: expected resume or fresh", strings.TrimSpace(line))
 	}
 }
 

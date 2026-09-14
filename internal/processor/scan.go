@@ -47,9 +47,8 @@ type ScanProcessorConfig struct {
 	FTPUser string
 	FTPPass string
 
-	// Resume makes Process skip files that are already recorded and
-	// unchanged (same size and mtime) and replace the stored row when the
-	// content hash changed. When false every scan writes all files
+	// Resume makes Process skip files whose path is already recorded and
+	// only process never-seen paths. When false every scan writes all files
 	// (callers typically Clear the database first).
 	Resume bool
 
@@ -228,13 +227,7 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 		p.processArchive(ctx, r, 0, src)
 		return
 	}
-	st := statOf(r.Path)
-	if !st.known && r.Size > 0 {
-		// Remote files (e.g. FTP) have no mtime through this path, but the
-		// walker-reported size is still worth recording for tier-2.
-		st.size = r.Size
-	}
-	if p.shouldSkip(ctx, r.Path, st) {
+	if p.shouldSkip(ctx, r.Path) {
 		p.skip()
 		return
 	}
@@ -254,11 +247,11 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 			p.report()
 			return
 		}
-		p.parseEbook(ctx, r.Path, r.Format, b, st)
+		p.parseEbook(ctx, r.Path, r.Format, b)
 		return
 	}
 	// Remote (e.g. FTP) files are streamed and spooled lazily.
-	p.parseEbookStream(ctx, r.Path, r.Format, r.Size, rc, st)
+	p.parseEbookStream(ctx, r.Path, r.Format, r.Size, rc)
 }
 
 // parseEbook reads the metadata of one ebook and reports the result. b is the
@@ -267,15 +260,14 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 // The parser reads only what it needs, so members whose metadata lives at the
 // start of the file are not fully materialized. displayPath is the
 // user-facing path (an archive member like "a.zip!b.epub") used in reports.
-// st is the observed size/mtime recorded on the book_files row; for archive
-// members it describes the outer archive file.
-func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format string, b book.Blob, st fileStat) {
+func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format string, b book.Blob) {
 	if ctx.Err() != nil {
 		return
 	}
 	par := p.parsers[format]
 	if par == nil {
-		p.fail(displayPath, fmt.Errorf("no parser registered for format %q", format))
+		err := fmt.Errorf("no parser registered for format %q", format)
+		p.fail(displayPath, err)
 		p.report()
 		return
 	}
@@ -293,36 +285,9 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			return nil
 		}
 
-		// In resume mode a row for this path may already exist: the tier-1
-		// stat check passed it (stat changed or unknown) but the content
-		// may still be identical.
-		replaced := false
-		if p.cfg.Resume {
-			existing, err := q.GetBookFileByPath(txCtx, displayPath)
-			if err == nil {
-				if existing.Hash == md.Hash {
-					// Same content (e.g. touched file, or no stat
-					// available): refresh the recorded stat and stop.
-					if st.known && (existing.Size != st.size || existing.MtimeNs != st.mtimeNs) {
-						params := db.UpdateBookFileStatParams{Size: st.size, MtimeNs: st.mtimeNs, ID: existing.ID}
-						if err := q.UpdateBookFileStat(txCtx, params); err != nil {
-							return fmt.Errorf("refresh file stat: %w", err)
-						}
-					}
-					return nil
-				}
-				// Same path, new content: drop the stale row. Foreign keys
-				// cascade to its author links, duplicate entries, book link
-				// and LSH buckets; the insert below re-records everything.
-				if err := q.DeleteBookFile(txCtx, existing.ID); err != nil {
-					return fmt.Errorf("delete stale file row: %w", err)
-				}
-				replaced = true
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("lookup file by path: %w", err)
-			}
-		}
-
+		// Resume already skipped every recorded path, so this path is new:
+		// insert it directly. A changed file keeps its old row until the
+		// owner reruns with a fresh database.
 		authorIDs := make([]int64, 0, len(md.Authors))
 		for _, authorName := range md.Authors {
 			author, err := q.GetAuthorByName(txCtx, authorName)
@@ -343,9 +308,6 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			Path:    displayPath,
 			Title:   md.Title,
 			Minhash: encodeMinHash(md.MinHash),
-			Simhash: sql.NullInt64{Int64: int64(md.SimHash), Valid: true},
-			Size:    st.size,
-			MtimeNs: st.mtimeNs,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := q.CreateBookFileDuplicate(txCtx, db.CreateBookFileDuplicateParams{
@@ -444,13 +406,6 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 				BookFileID: bookFileID,
 			}); err != nil {
 				return fmt.Errorf("create lsh bucket: %w", err)
-			}
-		}
-
-		if replaced {
-			// The deleted row may have left its book without files.
-			if err := q.DeleteOrphanedBooks(txCtx); err != nil {
-				return fmt.Errorf("delete orphaned books: %w", err)
 			}
 		}
 

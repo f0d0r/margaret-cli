@@ -13,7 +13,7 @@ import (
 type EbookParser struct{}
 
 // Parse reads the e-book from ebookData using the new blob API and returns
-// normalized metadata, a content hash and content fingerprints (MinHash/SimHash).
+// normalized metadata, a content hash and the MinHash content fingerprint.
 func (ep EbookParser) Parse(ebookData book.Blob) (Metadata, error) {
 	bk, err := ebook.ReadFromBlob(ebookData)
 	if err != nil {
@@ -33,6 +33,5 @@ func (ep EbookParser) Parse(ebookData book.Blob) (Metadata, error) {
 		Title:   md.Title,
 		Hash:    hash,
 		MinHash: fp.MinHash,
-		SimHash: fp.SimHash,
 	}, nil
 }

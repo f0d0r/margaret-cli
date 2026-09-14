@@ -113,7 +113,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
 | `--fresh` | `bool` | `false` | Delete existing scan data and start from a clean slate. |
-| `--resume` | `bool` | `false` | Keep existing scan data and only process new or changed files. |
+| `--resume` | `bool` | `false` | Keep existing scan data and only process never-seen paths. |
 | `-h`, `--help` | | | Show help. |
 
 ### `--workers`
@@ -219,14 +219,14 @@ Controls what happens when the database already holds scanned data:
 
 - `--fresh` deletes the existing data first (same as the default behavior on
   an empty database) and rescans everything.
-- `--resume` keeps the existing rows: files that are already recorded and
-  unchanged (same size and modification time) are skipped without being read
-  again, while new files are processed and changed files (same path, new
-  content) replace their stale row. The scan summary reports skipped files
+- `--resume` keeps the existing rows: files whose path is already recorded
+  are skipped without being read again — even if they changed on disk —
+  while never-seen paths are processed. Failures leave no row behind, so
+  they are retried on every run. The scan summary reports skipped files
   separately.
 
 With neither flag and a non-empty database, an interactive terminal asks
-whether to append (the default) or start fresh, showing the database path,
+whether to resume (the default) or start fresh, showing the database path,
 the recorded book/file counts and the previous scan's root and time. Without
 a terminal (scripts, CI, cron) the scan fails instead with an error telling
 you to pass `--fresh` or `--resume` — so automation can never silently wipe
@@ -289,9 +289,10 @@ Failed     0
 Duration   1ms
 ```
 
-- **Total** — total number of ebook files found (succeeded + failed).
+- **Total** — total number of ebook files encountered (succeeded + failed + skipped).
 - **Succeeded** — ebooks whose metadata was read successfully.
 - **Failed** — items that could not be processed.
+- **Skipped** — recorded files passed over without reading (resume runs only).
 - **Duration** — wall-clock time of the scan.
 
 The report is followed by the failures JSON file. Empty output is written even
@@ -371,9 +372,8 @@ Exact duplicates never get a book of their own.
 
 ### Near-duplicate grouping
 
-Every other file carries two content fingerprints: a 128-number MinHash
-signature and a 64-bit SimHash (currently stored for diagnostics). During the
-scan each new file is grouped as follows:
+Every other file carries a 128-number MinHash content fingerprint. During
+the scan each new file is grouped as follows:
 
 1. Its MinHash signature is split into 25 bands of 5 numbers (LSH banding).
    Files sharing at least one band hash become candidates.

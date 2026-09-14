@@ -152,6 +152,10 @@ func TestRunScanResumeSkipsUnchanged(t *testing.T) {
 	if !strings.Contains(out, "Skipped") {
 		t.Errorf("expected Skipped line in summary, got:\n%s", out)
 	}
+	// Total counts every encountered unit, including skipped ones.
+	if !strings.Contains(out, "Total      2 ebook(s)") {
+		t.Errorf("expected Total 2 (both files skipped), got:\n%s", out)
+	}
 	filesAfter, booksAfter, runs := dbCounts(t, dbFile)
 	if filesAfter != filesBefore || booksAfter != booksBefore {
 		t.Errorf("resume changed row counts: files %d->%d, books %d->%d", filesBefore, filesAfter, booksBefore, booksAfter)
@@ -161,33 +165,101 @@ func TestRunScanResumeSkipsUnchanged(t *testing.T) {
 	}
 }
 
-func TestRunScanResumeReplacesChangedFile(t *testing.T) {
+func TestRunScanResumeSkipsChangedFile(t *testing.T) {
 	booksDir, dbFile, _ := fileScanSetup(t, false, false, false)
 
 	if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
 		t.Fatal(err)
 	}
 
-	// Change one file's content (new hash, same path).
+	// Change one file's content. Resume still skips the recorded path:
+	// changed bytes need a fresh run to reprocess.
 	writeTestEpub(t, filepath.Join(booksDir, "b.epub"), "Test Book Changed", "Author A", "different")
 
 	freshFlag, resumeFlag = false, true
-	if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
-		t.Fatal(err)
+	out := captureStdout(t, func() {
+		if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "Skipped") {
+		t.Errorf("expected Skipped line in summary, got:\n%s", out)
 	}
 
 	conn := openTestDB(t, dbFile)
 	defer func() { _ = conn.Close() }()
-	var paths, rows int
-	if err := conn.QueryRow("SELECT count(*), count(DISTINCT path) FROM book_files").Scan(&rows, &paths); err != nil {
+	var files, dups int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&files); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 2 || paths != 2 {
-		t.Errorf("expected exactly one row per path (2 rows, 2 paths), got %d rows, %d paths", rows, paths)
+	if err := conn.QueryRow("SELECT count(*) FROM book_file_duplicates").Scan(&dups); err != nil {
+		t.Fatal(err)
+	}
+	if files != 1 || dups != 1 {
+		t.Errorf("expected recorded rows untouched (1 file, 1 dup), got %d files, %d dups", files, dups)
 	}
 }
 
-func TestPromptScanModeAppendDefault(t *testing.T) {
+func TestRunScanResumeRetriesFailedFiles(t *testing.T) {
+	booksDir, dbFile, failuresPath := fileScanSetup(t, false, false, false)
+
+	// Keep a single valid book next to the corrupt file so the resume
+	// counters stay unambiguous (no byte-identical duplicates).
+	if err := os.Remove(filepath.Join(booksDir, "b.epub")); err != nil {
+		t.Fatal(err)
+	}
+	corruptPath := filepath.Join(booksDir, "corrupt.epub")
+	if err := os.WriteFile(corruptPath, []byte("this is not an ebook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The corrupt file leaves no row behind.
+	conn := openTestDB(t, dbFile)
+	var n int
+	if err := conn.QueryRow("SELECT count(*) FROM book_files WHERE path = ?", corruptPath).Scan(&n); err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	if n != 0 {
+		t.Fatalf("failed file %q must leave no row behind, found %d", corruptPath, n)
+	}
+	data, err := os.ReadFile(failuresPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "corrupt.epub") {
+		t.Errorf("expected failures.json to list the corrupt file, got:\n%s", data)
+	}
+
+	// A resume run retries the failure (leaving failures.json a
+	// current-run report) while skipping the recorded success.
+	freshFlag, resumeFlag = false, true
+	out := captureStdout(t, func() {
+		if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "Failed     1") {
+		t.Errorf("expected the retried failure on resume, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Skipped") {
+		t.Errorf("expected a Skipped line in summary, got:\n%s", out)
+	}
+	data, err = os.ReadFile(failuresPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "corrupt.epub") {
+		t.Errorf("expected failures.json to list the retried failure, got:\n%s", data)
+	}
+}
+
+func TestPromptScanModeResumeDefault(t *testing.T) {
 	_, dbFile, _ := fileScanSetup(t, false, false, true)
 	booksDir := filepath.Join(filepath.Dir(filepath.Dir(dbFile)), "books")
 
@@ -205,8 +277,8 @@ func TestPromptScanModeAppendDefault(t *testing.T) {
 		in   string
 		want scanMode
 	}{
-		{"empty defaults to append", "\n", modeResume},
-		{"explicit append", "a\n", modeResume},
+		{"empty defaults to resume", "\n", modeResume},
+		{"explicit resume", "r\n", modeResume},
 		{"explicit fresh", "f\n", modeFresh},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

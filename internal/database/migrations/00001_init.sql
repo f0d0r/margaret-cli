@@ -9,10 +9,7 @@ CREATE TABLE book_files (
     hash TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL UNIQUE,
     title TEXT NOT NULL DEFAULT '',
-    minhash BLOB,
-    simhash INTEGER,
-    size INTEGER NOT NULL DEFAULT 0,
-    mtime_ns INTEGER NOT NULL DEFAULT 0
+    minhash BLOB
 );
 
 CREATE TABLE authors (
@@ -92,7 +89,7 @@ CREATE TABLE book_file_lsh_buckets (
 -- non-empty database reads the latest row to display the previous root and
 -- time and to detect a different-root re-run. A fresh scan wipes this table
 -- together with the scanned content (see database.Clear); a resumed scan
--- appends a new row.
+-- adds a new row.
 CREATE TABLE scan_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     root TEXT NOT NULL,

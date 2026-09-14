@@ -37,7 +37,7 @@ type Progress struct {
 	Failed int64
 
 	// Skipped counts files that resume mode passed over without reading:
-	// already recorded with an identical size and mtime.
+	// already recorded in a previous run.
 	Skipped int64
 
 	// Active is the number of units of work currently in flight. Current

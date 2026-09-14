@@ -184,12 +184,12 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 
 func printReport(s processor.Progress, d time.Duration) {
 	succeeded := s.Parsed
-	total := succeeded + s.Failed
+	total := succeeded + s.Failed + s.Skipped
 	fmt.Printf("Total      %d ebook(s)\n", total)
 	fmt.Printf("Succeeded  %d\n", succeeded)
 	fmt.Printf("Failed     %d\n", s.Failed)
 	if s.Skipped > 0 {
-		fmt.Printf("Skipped    %d (unchanged)\n", s.Skipped)
+		fmt.Printf("Skipped    %d\n", s.Skipped)
 	}
 	fmt.Printf("Duration   %s\n", d.Round(time.Millisecond))
 }
