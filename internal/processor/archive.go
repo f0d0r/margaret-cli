@@ -13,9 +13,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/f0d0r/margaret-cli/internal/scanner"
+	"github.com/f0d0r/margaret-cli/internal/source"
 	"github.com/f0d0r/margaret-ebook-library/book"
-	"github.com/f0d0r/margaret-tools/internal/scanner"
-	"github.com/f0d0r/margaret-tools/internal/source"
 	"github.com/mholt/archives"
 )
 

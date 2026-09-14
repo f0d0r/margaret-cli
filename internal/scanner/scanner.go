@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/f0d0r/margaret-tools/internal/source"
+	"github.com/f0d0r/margaret-cli/internal/source"
 )
 
 var knownExtensions = map[string]string{

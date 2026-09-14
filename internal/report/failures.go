@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/f0d0r/margaret-tools/internal/processor"
+	"github.com/f0d0r/margaret-cli/internal/processor"
 )
 
 // failureReport is the JSON representation of one failed item.

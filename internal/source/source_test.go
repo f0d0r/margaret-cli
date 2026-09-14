@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/f0d0r/margaret-tools/internal/ftptest"
+	"github.com/f0d0r/margaret-cli/internal/ftptest"
 )
 
 func TestSourceFactory(t *testing.T) {

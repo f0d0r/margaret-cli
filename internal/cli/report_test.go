@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f0d0r/margaret-tools/internal/database"
-	"github.com/f0d0r/margaret-tools/internal/processor"
+	"github.com/f0d0r/margaret-cli/internal/database"
+	"github.com/f0d0r/margaret-cli/internal/processor"
 )
 
 func TestRunReportMissingDB(t *testing.T) {

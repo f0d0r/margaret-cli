@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/db"
 )
 
 func TestOpenAppliesSchema(t *testing.T) {
@@ -448,7 +448,7 @@ func TestClearCoversEntireSchema(t *testing.T) {
 		"book_file_lsh_buckets",
 	} {
 		var n int
-		if err := conn.QueryRow("SELECT count(*) FROM "+table).Scan(&n); err != nil {
+		if err := conn.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
 			t.Fatalf("count %s: %v", table, err)
 		}
 		if n == 0 {

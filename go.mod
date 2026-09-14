@@ -1,4 +1,4 @@
-module github.com/f0d0r/margaret-tools
+module github.com/f0d0r/margaret-cli
 
 go 1.26.6
 

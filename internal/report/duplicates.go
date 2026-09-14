@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/f0d0r/margaret-tools/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/db"
 )
 
 // duplicateReport is the JSON representation of one original book together
