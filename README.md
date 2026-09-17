@@ -28,11 +28,14 @@ go build -o build/margaret ./cmd/margaret-cli
 
 ## Usage
 
-The tool has a single command, `scan`, which walks a directory recursively and
-processes every ebook it finds.
+The tool has three commands: `scan` walks a directory recursively and
+processes every ebook it finds, `report` regenerates the JSON reports from
+an existing database, and `search` finds books and authors in the database
+without scanning.
 
 ```
 margaret scan <path> [flags]
+margaret search <query> [flags]
 ```
 
 `<path>` must be a directory. The scan is recursive: ebooks in subdirectories
@@ -112,6 +115,11 @@ archives, up to the depth given by `--archive-depth`.
 | `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
 | `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
+| `--json` | `bool` | `false` | Write search results in JSON format (search only). |
+| `--json-out` | `string` | `search.json` | Path to write the JSON search results (search only). |
+| `--author` | `bool` | `false` | Search authors instead of both titles and authors (search only). |
+| `--title` | `bool` | `false` | Search titles instead of both titles and authors (search only). |
+| `--limit` | `int` | `0` | Limit the number of search results (`0` = unlimited, search only). |
 | `--fresh` | `bool` | `false` | Delete existing scan data and start from a clean slate. |
 | `--resume` | `bool` | `false` | Keep existing scan data and only process never-seen paths. |
 | `-h`, `--help` | | | Show help. |
@@ -447,6 +455,8 @@ Root-level commands:
 
 - `scan` — scan a directory for ebook files.
 - `report` — regenerate JSON reports from the database.
+- `search` — search books and authors in the database (see
+  [Searching](#searching)).
 - `help` — show help for any command.
 - `completion` — generate shell autocompletion scripts.
 
@@ -469,6 +479,49 @@ margaret report --db /tmp/test.db --books-out /tmp/books.json
 and are not stored in the database. Against an empty or missing database the
 command fails with an error pointing to `scan`, instead of writing empty
 reports or creating an empty database file.
+
+---
+
+## Searching
+
+`search` answers "how do I find a book or an author in this collection?"
+from the database, without running a scan. Both titles and authors are
+matched with a full-text index (trigram, diacritic-insensitive), so partial
+words and accented names match:
+
+```sh
+margaret search "Asimov"
+margaret search --author "King"
+margaret search --title "Foundation" --limit 5
+```
+
+By default both titles and authors are searched and hits are ordered by
+relevance. `--author` restricts the search to authors, `--title` to titles
+(both flags together mean the default). `--limit` caps the number of hits;
+`0` (the default) means unlimited. Only letters and digits count towards
+the query: punctuation and FTS5 syntax characters (`"`, `*`, parentheses,
+`:`) are ignored and bare `AND`/`OR`/`NOT` words are dropped, so they can
+never break the search; an empty query is an error.
+
+Two matching rules follow from the trigram index: every word must match
+within a single field — all words have to occur in the title or all in one
+author name, so `Asimov Foundation` finds nothing unless one field holds
+both words — and words shorter than 3 characters never match, so e.g. `Ed`
+alone finds nothing.
+
+The human-readable table (authors, title, file paths) goes to **stdout**.
+With `--json` the hits are written in the `books.json` shape (same entries,
+restricted to the hits in relevance order) to `--json-out` (default
+`search.json` in the current directory):
+
+```sh
+margaret search "Asimov" --json --json-out /tmp/hits.json
+```
+
+With no hits nothing is printed and no file is created. Like `report`,
+`search` is read-only: against an empty or missing database it fails with an
+error naming the database file and pointing to `scan`, and it never creates
+a missing database file.
 
 ---
 
@@ -542,4 +595,22 @@ Scan over FTP with credentials and a single worker:
 
 ```sh
 margaret scan ftp://192.168.178.1/network/backup --ftp-user backup --ftp-pass secret --workers 1
+```
+
+Search books and authors from a previous scan:
+
+```sh
+margaret search "Asimov"
+```
+
+Search only authors, at most 5 hits:
+
+```sh
+margaret search --author "King" --limit 5
+```
+
+Write the hits in the `books.json` shape:
+
+```sh
+margaret search "Foundation" --json --json-out /tmp/hits.json
 ```

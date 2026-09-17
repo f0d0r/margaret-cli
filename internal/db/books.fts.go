@@ -4,9 +4,20 @@ import (
 	"context"
 )
 
-// SearchBooksByTitleFTS performs a full-text search on the books_fts table
-func (q *Queries) SearchBooksByTitleFTS(ctx context.Context, searchQuery string) ([]Book, error) {
-	const query = `
+// appendLimit appends a "LIMIT ?" clause to an FTS query only when limit > 0.
+// A limit <= 0 means unlimited: the query is returned unchanged.
+func appendLimit(query string, args []any, limit int) (string, []any) {
+	if limit > 0 {
+		query += "\nLIMIT ?"
+		args = append(args, limit)
+	}
+	return query, args
+}
+
+// SearchBooksByTitleFTS performs a full-text search on the books_fts table.
+// A limit > 0 caps the number of results; limit <= 0 means unlimited.
+func (q *Queries) SearchBooksByTitleFTS(ctx context.Context, searchQuery string, limit int) ([]Book, error) {
+	const baseQuery = `
 		SELECT b.id, b.title
 		FROM books b
 		JOIN books_fts fts ON fts.rowid = b.id
@@ -14,7 +25,8 @@ func (q *Queries) SearchBooksByTitleFTS(ctx context.Context, searchQuery string)
 		ORDER BY fts.rank
 	`
 
-	rows, err := q.db.QueryContext(ctx, query, searchQuery)
+	query, args := appendLimit(baseQuery, []any{searchQuery}, limit)
+	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +54,12 @@ func (q *Queries) SearchBooksByTitleFTS(ctx context.Context, searchQuery string)
 	return items, nil
 }
 
-func (q *Queries) SearchBooksByAuthorFTS(ctx context.Context, searchQuery string) ([]Book, error) {
-	const query = `
+// SearchBooksByAuthorFTS returns books having at least one author matching
+// the full-text query. Each book is returned once even when several of its
+// authors match. A limit > 0 caps the number of results; limit <= 0 means
+// unlimited.
+func (q *Queries) SearchBooksByAuthorFTS(ctx context.Context, searchQuery string, limit int) ([]Book, error) {
+	const baseQuery = `
 		SELECT b.id, b.title
 		FROM books b
 		JOIN book_authors ba ON ba.book_id = b.id
@@ -54,7 +70,8 @@ func (q *Queries) SearchBooksByAuthorFTS(ctx context.Context, searchQuery string
 		ORDER BY MIN(fts.rank)
 	`
 
-	rows, err := q.db.QueryContext(ctx, query, searchQuery)
+	query, args := appendLimit(baseQuery, []any{searchQuery}, limit)
+	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +99,11 @@ func (q *Queries) SearchBooksByAuthorFTS(ctx context.Context, searchQuery string
 	return items, nil
 }
 
-func (q *Queries) SearchBooksByAuthorOrTitleFTS(ctx context.Context, searchQuery string) ([]Book, error) {
-	const query = `
+// SearchBooksByAuthorOrTitleFTS returns books whose title or at least one
+// author matches the full-text query, de-duplicated and ordered by best
+// rank. A limit > 0 caps the number of results; limit <= 0 means unlimited.
+func (q *Queries) SearchBooksByAuthorOrTitleFTS(ctx context.Context, searchQuery string, limit int) ([]Book, error) {
+	const baseQuery = `
 		SELECT id, title FROM (
 			SELECT b.id as id, b.title as title, books_fts.rank as r FROM books b JOIN books_fts ON books_fts.rowid = b.id WHERE books_fts MATCH ?
 			UNION ALL
@@ -97,7 +117,8 @@ func (q *Queries) SearchBooksByAuthorOrTitleFTS(ctx context.Context, searchQuery
 		ORDER BY MIN(r)
 	`
 
-	rows, err := q.db.QueryContext(ctx, query, searchQuery, searchQuery)
+	query, args := appendLimit(baseQuery, []any{searchQuery, searchQuery}, limit)
+	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

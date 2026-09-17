@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/pressly/goose/v3"
 )
 
 func TestOpenAppliesSchema(t *testing.T) {
@@ -276,6 +277,7 @@ func TestClearDeletesContentButKeepsSchema(t *testing.T) {
 	for _, table := range []string{
 		"book_files",
 		"books",
+		"books_fts",
 		"authors",
 		"authors_fts",
 		"book_file_authors",
@@ -339,6 +341,11 @@ var expectedSchemaTables = []string{
 	"book_file_lsh_buckets",
 	"book_files",
 	"books",
+	"books_fts",
+	"books_fts_config",
+	"books_fts_data",
+	"books_fts_docsize",
+	"books_fts_idx",
 	"scan_runs",
 }
 
@@ -439,6 +446,7 @@ func TestClearCoversEntireSchema(t *testing.T) {
 	for _, table := range []string{
 		"book_files",
 		"books",
+		"books_fts",
 		"authors",
 		"authors_fts",
 		"book_file_authors",
@@ -461,9 +469,9 @@ func TestClearCoversEntireSchema(t *testing.T) {
 	}
 
 	for _, table := range listUserTables(t, conn) {
-		// FTS5 shadow tables are maintained by the authors_fts triggers;
-		// authors_fts itself is the observable index state.
-		if strings.HasPrefix(table, "authors_fts_") {
+		// FTS5 shadow tables are maintained by the books_fts/authors_fts
+		// triggers; the FTS tables themselves are the observable index state.
+		if strings.HasPrefix(table, "authors_fts_") || strings.HasPrefix(table, "books_fts_") {
 			continue
 		}
 		var n int
@@ -486,4 +494,34 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestDownUpRoundTrip guards the migration Down branch against drift: after
+// goose down no user table may remain (this caught the missing books_fts
+// drops), and goose up must restore the full schema afterwards.
+func TestDownUpRoundTrip(t *testing.T) {
+	conn, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatal(err)
+	}
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.Down(conn, "migrations"); err != nil {
+		t.Fatalf("goose down: %v", err)
+	}
+	if got := listUserTables(t, conn); len(got) != 0 {
+		t.Fatalf("expected no user tables after down, got %v", got)
+	}
+	if err := goose.Up(conn, "migrations"); err != nil {
+		t.Fatalf("goose up: %v", err)
+	}
+	if got := listUserTables(t, conn); !equalStrings(got, expectedSchemaTables) {
+		t.Fatalf("schema after down+up holds %v, expected %v", got, expectedSchemaTables)
+	}
 }
