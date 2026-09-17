@@ -24,9 +24,6 @@ type BookReport struct {
 	Files   []BookFileReport `json:"files"`
 }
 
-type bookFileReport = BookFileReport
-type bookReport = BookReport
-
 // WriteBooks writes a JSON report of the books found during the scan to path.
 // Book-level authors and title are picked from the member files with the
 // pickAuthors/pickTitle heuristics; exact duplicates (same content hash) are

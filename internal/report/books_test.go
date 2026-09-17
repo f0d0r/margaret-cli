@@ -163,7 +163,7 @@ func TestWriteBooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestWriteBooksFallsBackToFileName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestWriteBooksCalibreFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestWriteBooksWashAffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +641,7 @@ func TestWriteBooksWashPickedTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +765,7 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +846,7 @@ func TestWriteBooksWashLeavesCleanTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -928,7 +928,7 @@ func TestWriteBooksFilteredKeepsRequestedOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
