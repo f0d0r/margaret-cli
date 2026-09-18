@@ -52,7 +52,7 @@ func runReport(ctx context.Context) error {
 	if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
 		return err
 	}
-	if err := report.WriteBooks(q, booksOut); err != nil {
+	if err := report.WriteBooks(ctx, q, booksOut); err != nil {
 		return err
 	}
 	return nil

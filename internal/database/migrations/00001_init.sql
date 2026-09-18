@@ -4,6 +4,32 @@ CREATE TABLE books (
     title TEXT NOT NULL DEFAULT ''
 );
 
+CREATE VIRTUAL TABLE books_fts USING FTS5(
+    title,
+    content='books',
+    content_rowid='id',
+    tokenize='trigram remove_diacritics 1'
+);
+
+-- +goose StatementBegin
+CREATE TRIGGER books_fts_insert AFTER INSERT ON books BEGIN
+    INSERT INTO books_fts(rowid, title) VALUES (new.id, new.title);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER books_fts_update AFTER UPDATE ON books BEGIN
+    INSERT INTO books_fts(books_fts, rowid, title) VALUES ('delete', old.id, old.title);
+    INSERT INTO books_fts(rowid, title) VALUES (new.id, new.title);
+END;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER books_fts_delete AFTER DELETE ON books BEGIN
+    INSERT INTO books_fts(books_fts, rowid, title) VALUES ('delete', old.id, old.title);
+END;
+-- +goose StatementEnd
+
 CREATE TABLE book_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hash TEXT NOT NULL UNIQUE,
@@ -106,6 +132,10 @@ DROP TABLE IF EXISTS book_book_files;
 DROP TABLE IF EXISTS book_authors;
 DROP TABLE IF EXISTS book_file_duplicates;
 DROP TABLE IF EXISTS book_file_authors;
+DROP TRIGGER IF EXISTS books_fts_delete;
+DROP TRIGGER IF EXISTS books_fts_update;
+DROP TRIGGER IF EXISTS books_fts_insert;
+DROP TABLE IF EXISTS books_fts;
 DROP TRIGGER IF EXISTS authors_fts_delete;
 DROP TRIGGER IF EXISTS authors_fts_update;
 DROP TRIGGER IF EXISTS authors_fts_insert;

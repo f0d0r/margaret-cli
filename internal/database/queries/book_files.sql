@@ -36,3 +36,10 @@ LEFT JOIN book_file_authors bfa ON bfa.book_file_id = bf.id
 LEFT JOIN authors a ON a.id = bfa.author_id
 GROUP BY d.hash, d.path
 ORDER BY bf.path;
+
+-- name: ListBookFileByBookID :many
+SELECT bf.*
+FROM book_files bf
+JOIN book_book_files bbf ON bbf.book_file_id = bf.id
+WHERE bbf.book_id = ?
+ORDER BY bf.id;

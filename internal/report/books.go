@@ -2,54 +2,280 @@ package report
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/tx"
 )
 
-// bookFileReport is the JSON representation of one file belonging to a book.
-type bookFileReport struct {
+// BookFileReport is the JSON representation of one file belonging to a book.
+type BookFileReport struct {
 	Path    string   `json:"path"`
 	Authors []string `json:"authors"`
 	Title   string   `json:"title"`
 }
 
-// bookReport is the JSON representation of one book: the chosen
+// BookReport is the JSON representation of one book: the chosen
 // (book-level) metadata plus every file grouped under it.
-type bookReport struct {
+type BookReport struct {
 	Authors []string         `json:"authors"`
 	Title   string           `json:"title"`
-	Files   []bookFileReport `json:"files"`
+	Files   []BookFileReport `json:"files"`
+}
+
+// Consolidate derives the canonical book-level metadata from the raw
+// per-file metadata and persists it: books.title holds the consensus washed
+// title (updating books_fts via triggers) and book_authors links to the
+// picked, cleaned authors. book_files and book_file_authors are never
+// touched, so the raw extracted metadata is preserved. Finally, authors
+// referenced by neither book_authors nor book_file_authors are deleted
+// (cleaning authors_fts via triggers). The pass is idempotent: it always
+// recomputes from the raw file rows.
+func Consolidate(ctx context.Context, sqldb *sql.DB, q *db.Queries) error {
+	run := func(txCtx context.Context, txQ *db.Queries) error {
+		reports, order, err := buildBookReports(txCtx, txQ)
+		if err != nil {
+			return err
+		}
+		for _, id := range order {
+			r := reports[id]
+			if err := txQ.UpdateBookTitle(txCtx, db.UpdateBookTitleParams{
+				ID:    id,
+				Title: r.Title,
+			}); err != nil {
+				return fmt.Errorf("update book %d title: %w", id, err)
+			}
+			if err := txQ.DeleteBookAuthorsByBookID(txCtx, id); err != nil {
+				return fmt.Errorf("delete book %d authors: %w", id, err)
+			}
+			for _, name := range r.Authors {
+				if err := txQ.CreateAuthor(txCtx, name); err != nil {
+					return fmt.Errorf("create author %q: %w", name, err)
+				}
+				author, err := txQ.GetAuthorByName(txCtx, name)
+				if err != nil {
+					return fmt.Errorf("get author %q: %w", name, err)
+				}
+				if err := txQ.CreateBookAuthor(txCtx, db.CreateBookAuthorParams{
+					BookID:   id,
+					AuthorID: author.ID,
+				}); err != nil {
+					return fmt.Errorf("link book %d author %d: %w", id, author.ID, err)
+				}
+			}
+		}
+		if err := txQ.DeleteOrphanAuthors(txCtx); err != nil {
+			return fmt.Errorf("delete orphan authors: %w", err)
+		}
+		return nil
+	}
+
+	if sqldb != nil {
+		return tx.WithTx(ctx, sqldb, q, func(txCtx context.Context) error {
+			return run(txCtx, tx.QueryFrom(txCtx, q))
+		})
+	}
+	return run(ctx, q)
 }
 
 // WriteBooks writes a JSON report of the books found during the scan to path.
-// Book-level authors and title are picked from the member files with the
-// pickAuthors/pickTitle heuristics; exact duplicates (same content hash) are
+// Book-level title and authors are read from the consolidated books and
+// book_authors tables (populated by Consolidate during scan); file entries
+// keep their raw per-file metadata. Exact duplicates (same content hash) are
 // listed under their parent book, inheriting the canonical file's metadata.
 // When no books were found nothing is written, so no empty file is left
 // behind.
-func WriteBooks(q *db.Queries, path string) error {
-	ctx := context.Background()
+func WriteBooks(ctx context.Context, q *db.Queries, path string) error {
+	books, err := GetBooks(ctx, q)
+	if err != nil {
+		return err
+	}
+	if len(books) == 0 {
+		return nil
+	}
+	data, err := json.MarshalIndent(books, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write books report: %w", err)
+	}
+	return nil
+}
 
+// GetBooks returns the reports of all books in book ID order.
+func GetBooks(ctx context.Context, q *db.Queries) ([]BookReport, error) {
+	ids, err := q.ListBookIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list book ids: %w", err)
+	}
+	out := make([]BookReport, 0, len(ids))
+	for _, id := range ids {
+		r, ok, err := getBookReport(ctx, q, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// GetBooksFiltered returns the book reports for the given book IDs in the
+// requested order. Unknown IDs are skipped. When ids is empty, nil is returned
+// without reading the database.
+//
+// Book-level title and authors are read directly from the consolidated
+// books/book_authors tables (populated by Consolidate during scan); only the
+// requested books are loaded. File entries keep their raw per-file metadata.
+func GetBooksFiltered(ctx context.Context, q *db.Queries, ids []int64) ([]BookReport, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int64]bool, len(ids))
+	var out []BookReport
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		r, ok, err := getBookReport(ctx, q, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// getBookReport reads one consolidated book report: the canonical title and
+// authors plus the raw member files and exact duplicates. It reports false
+// when the book ID is unknown.
+func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bool, error) {
+	book, err := q.GetBookByID(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BookReport{}, false, nil
+	}
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("get book %d: %w", id, err)
+	}
+	authorRows, err := q.ListAuthorsByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list authors of book %d: %w", id, err)
+	}
+	authors := make([]string, 0, len(authorRows))
+	for _, a := range authorRows {
+		authors = append(authors, a.Name)
+	}
+	fileRows, err := q.ListBookFilesWithAuthorsByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list files of book %d: %w", id, err)
+	}
+	files := make([]BookFileReport, 0, len(fileRows))
+	byPath := make(map[string]bool, len(fileRows))
+	for _, r := range fileRows {
+		fileAuthors := filterFileAuthors(r.FileAuthors, r.FileTitle)
+		files = append(files, BookFileReport{
+			Path:    r.FilePath,
+			Authors: fileAuthors,
+			Title:   normalizeMeta(r.FileTitle),
+		})
+		byPath[r.FilePath] = true
+	}
+	if len(files) > 0 {
+		dups, err := q.ListDuplicatesByBookID(ctx, id)
+		if err != nil {
+			return BookReport{}, false, fmt.Errorf("list duplicates of book %d: %w", id, err)
+		}
+		parent := files[0]
+		for _, dupPath := range dups {
+			if byPath[dupPath] {
+				continue
+			}
+			files = append(files, BookFileReport{
+				Path:    dupPath,
+				Authors: parent.Authors,
+				Title:   parent.Title,
+			})
+			byPath[dupPath] = true
+		}
+	}
+	return BookReport{Authors: authors, Title: book.Title, Files: files}, true, nil
+}
+
+// filterFileAuthors splits a GROUP_CONCAT file-authors aggregate the same way
+// buildBookReports does for file entries: placeholders are dropped and
+// converter artifacts echoing the file title are filtered out.
+func filterFileAuthors(aggregate, fileTitle string) []string {
+	authors := splitAuthors(aggregate)
+	fileTitle = normalizeMeta(fileTitle)
+	kept := authors[:0]
+	for _, name := range authors {
+		if !isTitleEcho(name, fileTitle) {
+			kept = append(kept, name)
+		}
+	}
+	if kept == nil {
+		return []string{}
+	}
+	return kept
+}
+
+// WriteBooksFiltered writes the same JSON shape as WriteBooks but only for
+// the given book IDs and in the given order (e.g. FTS relevance order for
+// search results). Unknown IDs are skipped. When the selection is empty
+// nothing is written, so no empty file is left behind.
+func WriteBooksFiltered(ctx context.Context, q *db.Queries, ids []int64, path string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	books, err := GetBooksFiltered(ctx, q, ids)
+	if err != nil {
+		return err
+	}
+	if len(books) == 0 {
+		return nil
+	}
+	data, err := json.MarshalIndent(books, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write books report: %w", err)
+	}
+	return nil
+}
+
+// buildBookReports runs the shared books-report pipeline: it groups member
+// files under their books, attaches exact duplicates and resolves
+// book-level authors and title with the pickAuthors/pickTitle heuristics.
+// It returns the per-book reports keyed by book ID plus the natural
+// (book ID) order.
+func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport, []int64, error) {
 	rows, err := q.ListBooksWithFiles(ctx)
 	if err != nil {
-		return fmt.Errorf("list books with files: %w", err)
+		return nil, nil, fmt.Errorf("list books with files: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil
+		return nil, nil, nil
 	}
 
 	dups, err := q.ListBookFileDuplicatesWithBook(ctx)
 	if err != nil {
-		return fmt.Errorf("list duplicates with book: %w", err)
+		return nil, nil, fmt.Errorf("list duplicates with book: %w", err)
 	}
 
 	type entry struct {
 		titles    []string
 		authorSet [][]string
-		files     []bookFileReport
+		files     []BookFileReport
 		byPath    map[string]bool
 	}
 	books := make(map[int64]*entry)
@@ -78,7 +304,7 @@ func WriteBooks(q *db.Queries, path string) error {
 		}
 		b.titles = append(b.titles, r.FileTitle)
 		b.authorSet = append(b.authorSet, authors)
-		b.files = append(b.files, bookFileReport{
+		b.files = append(b.files, BookFileReport{
 			Path:    r.FilePath,
 			Authors: authors,
 			Title:   fileTitle,
@@ -91,12 +317,12 @@ func WriteBooks(q *db.Queries, path string) error {
 	// authors (same content hash). Orphan duplicates (no parent book, which
 	// cannot happen in a scan but keeps the report robust) are skipped.
 	for _, d := range dups {
-		b, ok := books[d.BookID]
-		if !ok || b.byPath[d.DuplicatePath] {
+		b := books[d.BookID]
+		if b == nil || b.byPath[d.DuplicatePath] {
 			continue
 		}
 		parent := b.files[0]
-		b.files = append(b.files, bookFileReport{
+		b.files = append(b.files, BookFileReport{
 			Path:    d.DuplicatePath,
 			Authors: parent.Authors,
 			Title:   parent.Title,
@@ -104,7 +330,7 @@ func WriteBooks(q *db.Queries, path string) error {
 		b.byPath[d.DuplicatePath] = true
 	}
 
-	report := make([]bookReport, 0, len(order))
+	reports := make(map[int64]BookReport, len(order))
 	for _, id := range order {
 		b := books[id]
 		authors := pickAuthors(b.authorSet)
@@ -175,19 +401,11 @@ func WriteBooks(q *db.Queries, path string) error {
 			}
 			title = washAuthorAffix(title, sets)
 		}
-		report = append(report, bookReport{
+		reports[id] = BookReport{
 			Authors: authors,
 			Title:   title,
 			Files:   b.files,
-		})
+		}
 	}
-
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write books report: %w", err)
-	}
-	return nil
+	return reports, order, nil
 }

@@ -22,7 +22,7 @@ func TestWriteBooksEmpty(t *testing.T) {
 	}()
 
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(db.New(conn), path); err != nil {
+	if err := WriteBooks(context.Background(), db.New(conn), path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -154,8 +154,12 @@ func TestWriteBooks(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,7 +167,7 @@ func TestWriteBooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -242,8 +246,12 @@ func TestWriteBooksFallsBackToFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,7 +259,7 @@ func TestWriteBooksFallsBackToFileName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -491,8 +499,12 @@ func TestWriteBooksCalibreFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,7 +512,7 @@ func TestWriteBooksCalibreFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -563,8 +575,12 @@ func TestWriteBooksWashAffix(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -572,7 +588,7 @@ func TestWriteBooksWashAffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -632,8 +648,12 @@ func TestWriteBooksWashPickedTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -641,7 +661,7 @@ func TestWriteBooksWashPickedTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -756,8 +776,12 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 	addEchoBook("Gajdzsin", "Gajdzsin", "Gajdzsin",
 		"hash-gaj", "/home/attila/books/Regények/J/James Clavel/Gajdzsin_-_James_Clavell.epub")
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -765,7 +789,7 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -837,8 +861,12 @@ func TestWriteBooksWashLeavesCleanTitle(t *testing.T) {
 	addFile("hash-clean-3", "books/glad3.epub", "Egy gladiátor csak egyszer hal meg")
 	addFile("hash-noisy", "books/glad4.prc", "Steven Saylor - Egy gladiátor csak egyszer hal meg")
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -846,7 +874,7 @@ func TestWriteBooksWashLeavesCleanTitle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var report []bookReport
+	var report []BookReport
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
@@ -862,5 +890,112 @@ func TestWriteBooksWashLeavesCleanTitle(t *testing.T) {
 	}
 	if len(b.Files) != 4 || b.Files[3].Title != "Steven Saylor - Egy gladiátor csak egyszer hal meg" {
 		t.Errorf("expected noisy file entry to keep original title, got %+v", b.Files)
+	}
+}
+
+func TestWriteBooksFilteredKeepsRequestedOrder(t *testing.T) {
+	conn, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	q := db.New(conn)
+	ctx := context.Background()
+
+	addBook := func(title, hash, path string, authors []string) int64 {
+		t.Helper()
+		bookID, err := q.CreateBook(ctx, title)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+			Hash:  hash,
+			Path:  path,
+			Title: title,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+			BookID:     bookID,
+			BookFileID: fileID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range authors {
+			if err := q.CreateAuthor(ctx, name); err != nil {
+				t.Fatal(err)
+			}
+			author, err := q.GetAuthorByName(ctx, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := q.CreateBookFileAuthor(ctx, db.CreateBookFileAuthorParams{
+				BookFileID: fileID,
+				AuthorID:   author.ID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// GetBooksFiltered reads the consolidated book_authors links,
+			// so the fixture links them just like Consolidate would.
+			if err := q.CreateBookAuthor(ctx, db.CreateBookAuthorParams{
+				BookID:   bookID,
+				AuthorID: author.ID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return bookID
+	}
+
+	mobyID := addBook("Moby Dick", "hash1", "books/mobydick.epub", []string{"Herman Melville"})
+	duneID := addBook("Dune", "hash2", "books/dune.epub", []string{"Frank Herbert"})
+
+	// Reversed ID order plus an unknown ID: the output must follow the
+	// requested order and skip the unknown ID.
+	out := filepath.Join(t.TempDir(), "search.json")
+	if err := WriteBooksFiltered(ctx, q, []int64{duneID, 9999, mobyID, duneID}, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report []BookReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report) != 2 {
+		t.Fatalf("expected 2 books, got %d", len(report))
+	}
+	if report[0].Title != "Dune" || report[1].Title != "Moby Dick" {
+		t.Fatalf("expected [Dune Moby Dick] order, got [%s %s]", report[0].Title, report[1].Title)
+	}
+	if !reflect.DeepEqual(report[0].Authors, []string{"Frank Herbert"}) {
+		t.Errorf("expected Dune authors [Frank Herbert], got %q", report[0].Authors)
+	}
+	if len(report[0].Files) != 1 || report[0].Files[0].Path != "books/dune.epub" {
+		t.Errorf("expected Dune file entry, got %+v", report[0].Files)
+	}
+}
+
+func TestWriteBooksFilteredEmptyWritesNothing(t *testing.T) {
+	conn, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	out := filepath.Join(t.TempDir(), "search.json")
+	if err := WriteBooksFiltered(context.Background(), db.New(conn), nil, out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("expected no file to be written, stat err = %v", err)
 	}
 }

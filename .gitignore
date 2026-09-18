@@ -1,7 +1,9 @@
 build/
 internal/db/*.go
 !internal/db/*.fts.go
+!internal/db/*_test.go
 failures.json
 duplicates.json
 books.json
+search.json
 margaret.db

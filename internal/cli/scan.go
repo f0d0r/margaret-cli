@@ -145,6 +145,15 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	}()
 
 	err = proc.Process(ctx)
+	if err == nil {
+		// Persist the consensus washed title and cleaned authors so that
+		// books.title (and books_fts via triggers) and book_authors are
+		// consistent before the run is marked finished and reports are
+		// written. The pass is idempotent across resume runs.
+		if cerr := report.Consolidate(ctx, conn, q); cerr != nil {
+			err = fmt.Errorf("consolidate books metadata: %w", cerr)
+		}
+	}
 	status := "completed"
 	if err != nil {
 		status = "failed"
@@ -175,7 +184,7 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 		if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
 			return err
 		}
-		if err := report.WriteBooks(q, booksOut); err != nil {
+		if err := report.WriteBooks(ctx, q, booksOut); err != nil {
 			return err
 		}
 	}
