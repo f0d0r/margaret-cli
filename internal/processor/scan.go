@@ -363,15 +363,12 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 
 		var bookID int64
 		if bestMatchFileID != 0 {
+			// The canonical title is derived later by report.Consolidate
+			// from all member files, so the transient raw title is left
+			// untouched here.
 			existingBookID, err := q.GetBookIDByBookFileID(txCtx, bestMatchFileID)
 			if err == nil {
 				bookID = existingBookID
-				if md.Title != "" {
-					_ = q.UpdateBookTitleIfEmpty(txCtx, db.UpdateBookTitleIfEmptyParams{
-						Title: md.Title,
-						ID:    bookID,
-					})
-				}
 			}
 		}
 

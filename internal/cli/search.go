@@ -11,11 +11,11 @@ import (
 )
 
 var (
-	author  bool
-	title   bool
-	limit   int
-	jsonFlag    bool
-	jsonOut string
+	author   bool
+	title    bool
+	limit    int
+	jsonFlag bool
+	jsonOut  string
 )
 
 var searchCmd = &cobra.Command{

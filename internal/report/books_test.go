@@ -22,7 +22,7 @@ func TestWriteBooksEmpty(t *testing.T) {
 	}()
 
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(db.New(conn), path); err != nil {
+	if err := WriteBooks(context.Background(), db.New(conn), path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -154,8 +154,12 @@ func TestWriteBooks(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,8 +246,12 @@ func TestWriteBooksFallsBackToFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -491,8 +499,12 @@ func TestWriteBooksCalibreFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -563,8 +575,12 @@ func TestWriteBooksWashAffix(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -632,8 +648,12 @@ func TestWriteBooksWashPickedTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -756,8 +776,12 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 	addEchoBook("Gajdzsin", "Gajdzsin", "Gajdzsin",
 		"hash-gaj", "/home/attila/books/Regények/J/James Clavel/Gajdzsin_-_James_Clavell.epub")
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -837,8 +861,12 @@ func TestWriteBooksWashLeavesCleanTitle(t *testing.T) {
 	addFile("hash-clean-3", "books/glad3.epub", "Egy gladiátor csak egyszer hal meg")
 	addFile("hash-noisy", "books/glad4.prc", "Steven Saylor - Egy gladiátor csak egyszer hal meg")
 
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
 	path := filepath.Join(t.TempDir(), "books.json")
-	if err := WriteBooks(q, path); err != nil {
+	if err := WriteBooks(ctx, q, path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -911,6 +939,14 @@ func TestWriteBooksFilteredKeepsRequestedOrder(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			// GetBooksFiltered reads the consolidated book_authors links,
+			// so the fixture links them just like Consolidate would.
+			if err := q.CreateBookAuthor(ctx, db.CreateBookAuthorParams{
+				BookID:   bookID,
+				AuthorID: author.ID,
+			}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return bookID
 	}
@@ -921,7 +957,7 @@ func TestWriteBooksFilteredKeepsRequestedOrder(t *testing.T) {
 	// Reversed ID order plus an unknown ID: the output must follow the
 	// requested order and skip the unknown ID.
 	out := filepath.Join(t.TempDir(), "search.json")
-	if err := WriteBooksFiltered(q, []int64{duneID, 9999, mobyID, duneID}, out); err != nil {
+	if err := WriteBooksFiltered(ctx, q, []int64{duneID, 9999, mobyID, duneID}, out); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(out)
@@ -956,7 +992,7 @@ func TestWriteBooksFilteredEmptyWritesNothing(t *testing.T) {
 	}()
 
 	out := filepath.Join(t.TempDir(), "search.json")
-	if err := WriteBooksFiltered(db.New(conn), nil, out); err != nil {
+	if err := WriteBooksFiltered(context.Background(), db.New(conn), nil, out); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {

@@ -36,10 +36,10 @@ func Search(ctx context.Context, q *db.Queries, author bool, title bool, limit i
 	}
 
 	if json {
-		return printBooksJSON(books, q, jsonOut)
+		return printBooksJSON(ctx, books, q, jsonOut)
 	}
 
-	return printOnScreen(books, q)
+	return printOnScreen(ctx, books, q)
 }
 
 // sanitizeFTSQuery turns raw user input into a safe FTS5 MATCH expression.
@@ -75,7 +75,7 @@ func sanitizeFTSQuery(raw string) (string, error) {
 // printBooksJSON writes the FTS hits in the books.json shape (same pipeline
 // as report.WriteBooks, restricted to the hit IDs in relevance order) to
 // path. With no hits nothing is written.
-func printBooksJSON(books []db.Book, q *db.Queries, path string) error {
+func printBooksJSON(ctx context.Context, books []db.Book, q *db.Queries, path string) error {
 	if len(books) == 0 {
 		return nil
 	}
@@ -83,10 +83,10 @@ func printBooksJSON(books []db.Book, q *db.Queries, path string) error {
 	for _, b := range books {
 		ids = append(ids, b.ID)
 	}
-	return report.WriteBooksFiltered(q, ids, path)
+	return report.WriteBooksFiltered(ctx, q, ids, path)
 }
 
-func printOnScreen(books []db.Book, q *db.Queries) error {
+func printOnScreen(ctx context.Context, books []db.Book, q *db.Queries) error {
 	if len(books) == 0 {
 		return nil
 	}
@@ -94,7 +94,7 @@ func printOnScreen(books []db.Book, q *db.Queries) error {
 	for _, b := range books {
 		ids = append(ids, b.ID)
 	}
-	bookReports, err := report.GetBooksFiltered(q, ids)
+	bookReports, err := report.GetBooksFiltered(ctx, q, ids)
 	if err != nil {
 		return err
 	}
