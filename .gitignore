@@ -1,4 +1,5 @@
 build/
+dist/
 internal/db/*.go
 !internal/db/*.fts.go
 !internal/db/*_test.go
