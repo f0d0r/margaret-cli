@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/processor"
 	"github.com/f0d0r/margaret-cli/internal/report"
+	"github.com/f0d0r/margaret-cli/internal/scanner"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +29,7 @@ var (
 	freshFlag       bool
 	resumeFlag      bool
 	dbPath          string
+	extStats        bool
 )
 
 // scanCmd scans a directory for ebook files.
@@ -54,6 +57,7 @@ unpacked up to the depth given with --archive-depth).`,
 		cfg.Password = archivePassword
 		cfg.FTPUser = ftpUser
 		cfg.FTPPass = ftpPass
+		cfg.CollectExtStats = extStats
 		return runScan(cmd.Context(), args[0], cfg)
 	},
 }
@@ -72,6 +76,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&freshFlag, "fresh", false, "delete existing scan data and start from a clean slate")
 	scanCmd.Flags().BoolVar(&resumeFlag, "resume", false, "keep existing scan data and only process new or changed files")
 	scanCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to use (use \":memory:\" for an ephemeral database)")
+	scanCmd.Flags().BoolVar(&extStats, "ext-stats", false, "print per-extension file counts (supported vs unsupported, archives excluded) after the scan")
 	rootCmd.AddCommand(scanCmd)
 }
 
@@ -177,6 +182,9 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	}
 
 	printReport(stats, time.Since(start))
+	if cfg.CollectExtStats {
+		printExtStats(stats)
+	}
 	if err := report.WriteFailures(failures, failuresOutPath); err != nil {
 		return err
 	}
@@ -201,4 +209,58 @@ func printReport(s processor.Progress, d time.Duration) {
 		fmt.Printf("Skipped    %d\n", s.Skipped)
 	}
 	fmt.Printf("Duration   %s\n", d.Round(time.Millisecond))
+}
+
+// printExtStats prints per-extension file counts (supported vs unsupported,
+// archives excluded) with each extension's share of the counted files.
+// The denominator is len(supported)+len(unsupported), so the percentages
+// sum to 100%.
+func printExtStats(s processor.Progress) {
+	total := int64(0)
+	for _, n := range s.ExtCounts {
+		total += n
+	}
+	fmt.Printf("Extension stats (%d files):\n", total)
+	printExtGroup(s.ExtCounts, total, true)
+	printExtGroup(s.ExtCounts, total, false)
+}
+
+func printExtGroup(counts map[string]int64, total int64, supported bool) {
+	if supported {
+		fmt.Printf("Supported:\n")
+	} else {
+		fmt.Printf("Unsupported:\n")
+	}
+	type entry struct {
+		ext   string
+		count int64
+	}
+	var entries []entry
+	for ext, n := range counts {
+		if scanner.IsSupportedExt(ext) == supported {
+			entries = append(entries, entry{ext: ext, count: n})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].count != entries[j].count {
+			return entries[i].count > entries[j].count
+		}
+		return entries[i].ext < entries[j].ext
+	})
+	for _, e := range entries {
+		fmt.Printf("  %s: %d (%s)\n", e.ext, e.count, formatPercent(e.count, total))
+	}
+}
+
+func formatPercent(count, total int64) string {
+	if total <= 0 {
+		return "0%"
+	}
+	// Whole numbers print as integers (10%), others with one decimal (0.5%).
+	// The integer check uses modulo to avoid float-equality pitfalls.
+	if (count*100)%total == 0 {
+		return fmt.Sprintf("%d%%", count*100/total)
+	}
+	pct := float64(count) * 100 / float64(total)
+	return fmt.Sprintf("%.1f%%", pct)
 }

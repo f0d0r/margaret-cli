@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"runtime"
 	"sync"
@@ -52,6 +53,11 @@ type ScanProcessorConfig struct {
 	// (callers typically Clear the database first).
 	Resume bool
 
+	// CollectExtStats makes Process count per-extension files (supported +
+	// unsupported, archives excluded) on the filesystem and inside
+	// archives. The counts are exposed via Stats().ExtCounts.
+	CollectExtStats bool
+
 	// OnResult is invoked for every successfully parsed ebook.
 	OnResult func(Result)
 
@@ -89,6 +95,9 @@ type ScanProcessor struct {
 	lastScan scanner.Progress
 	failMu   sync.Mutex
 	failures []Failure
+
+	extMu     sync.Mutex
+	extCounts map[string]int64
 
 	active  atomic.Int64
 	curMu   sync.Mutex
@@ -149,6 +158,9 @@ func (p *ScanProcessor) Process(ctx context.Context) error {
 			case work <- r:
 			case <-ctx.Done():
 			}
+		},
+		OnFile: func(name string) {
+			p.recordExt(name)
 		},
 		OnReport: func(sp scanner.Progress) {
 			p.setScanProgress(sp)
@@ -446,6 +458,38 @@ func decodeMinHash(b []byte) []uint64 {
 	return sig
 }
 
+// recordExt counts one file name towards the per-extension statistics.
+// Supported archives are treated as folders and excluded. It is a no-op
+// unless CollectExtStats is enabled. It is safe for concurrent use.
+func (p *ScanProcessor) recordExt(name string) {
+	if !p.cfg.CollectExtStats {
+		return
+	}
+	ext, isArchive := scanner.ExtKey(name)
+	if isArchive {
+		return
+	}
+	p.extMu.Lock()
+	if p.extCounts == nil {
+		p.extCounts = make(map[string]int64)
+	}
+	p.extCounts[ext]++
+	p.extMu.Unlock()
+}
+
+// extCountsCopy returns a copy of the collected extension counts, or nil
+// when collection was disabled or nothing was counted.
+func (p *ScanProcessor) extCountsCopy() map[string]int64 {
+	p.extMu.Lock()
+	defer p.extMu.Unlock()
+	if len(p.extCounts) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(p.extCounts))
+	maps.Copy(out, p.extCounts)
+	return out
+}
+
 // fail records an item that could not be processed.
 func (p *ScanProcessor) fail(path string, err error) {
 	p.failed.Add(1)
@@ -503,12 +547,13 @@ func (p *ScanProcessor) Stats() Progress {
 	cur := append([]string(nil), p.current...)
 	p.curMu.Unlock()
 	return Progress{
-		Scan:    sp,
-		Found:   sp.Found + p.found.Load(),
-		Parsed:  p.parsed.Load(),
-		Failed:  p.failed.Load(),
-		Skipped: p.skipped.Load(),
-		Active:  p.active.Load(),
-		Current: cur,
+		Scan:      sp,
+		Found:     sp.Found + p.found.Load(),
+		Parsed:    p.parsed.Load(),
+		Failed:    p.failed.Load(),
+		Skipped:   p.skipped.Load(),
+		ExtCounts: p.extCountsCopy(),
+		Active:    p.active.Load(),
+		Current:   cur,
 	}
 }

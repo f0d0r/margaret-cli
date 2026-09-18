@@ -216,6 +216,7 @@ func (p *ScanProcessor) handleArchiveFile(displayPath string, depth int) func(co
 		if f.IsDir() {
 			return nil
 		}
+		p.recordExt(f.NameInArchive)
 		if _, ok := scanner.FormatOf(f.NameInArchive); !ok {
 			return nil
 		}
@@ -250,6 +251,7 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 		if zf.FileInfo().IsDir() {
 			continue
 		}
+		p.recordExt(zf.Name)
 		display := displayPath + "!" + zf.Name
 		if _, ok := scanner.FormatOf(zf.Name); !ok {
 			continue
@@ -296,6 +298,7 @@ func (p *ScanProcessor) processTar(ctx context.Context, r io.Reader, displayPath
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
+		p.recordExt(hdr.Name)
 		p.handleMember(ctx, hdr.Name, io.LimitReader(tr, hdr.Size), displayPath, depth+1, hdr.Size)
 	}
 }
@@ -304,6 +307,7 @@ func (p *ScanProcessor) processTar(ctx context.Context, r io.Reader, displayPath
 // whose only member is a single file. Its format is derived from the name
 // with the compression suffix removed.
 func (p *ScanProcessor) processSingleStream(ctx context.Context, r io.Reader, innerPath string, depth int) {
+	p.recordExt(innerPath)
 	format, ok := scanner.FormatOf(innerPath)
 	if !ok {
 		return
@@ -323,7 +327,8 @@ func (p *ScanProcessor) processSingleStream(ctx context.Context, r io.Reader, in
 // handleMember processes a single entry of an unpacked archive. name is the
 // member's name inside the archive; parentPath is the path of the archive
 // that contained it. size is the member's uncompressed size, or -1 when
-// unknown.
+// unknown. Callers record the member via recordExt before invoking
+// handleMember, so it must not record again.
 func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Reader, parentPath string, depth int, size int64) {
 	format, ok := scanner.FormatOf(name)
 	if !ok {

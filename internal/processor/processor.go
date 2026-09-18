@@ -40,6 +40,11 @@ type Progress struct {
 	// already recorded in a previous run.
 	Skipped int64
 
+	// ExtCounts holds per-extension file counts (supported + unsupported,
+	// archives excluded) when collection was enabled. It is nil otherwise.
+	// The map is a copy and safe for the caller to read.
+	ExtCounts map[string]int64
+
 	// Active is the number of units of work currently in flight. Current
 	// holds the paths of the items being processed, newest last, capped so
 	// the report stays small. These let consumers keep showing progress (and

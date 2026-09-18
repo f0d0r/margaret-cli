@@ -122,6 +122,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--limit` | `int` | `0` | Limit the number of search results (`0` = unlimited, search only). |
 | `--fresh` | `bool` | `false` | Delete existing scan data and start from a clean slate. |
 | `--resume` | `bool` | `false` | Keep existing scan data and only process never-seen paths. |
+| `--ext-stats` | `bool` | `false` | Print per-extension file counts (supported vs unsupported) after the scan. |
 | `-h`, `--help` | | | Show help. |
 
 ### `--workers`
@@ -302,6 +303,25 @@ Duration   1ms
 - **Failed** — items that could not be processed.
 - **Skipped** — recorded files passed over without reading (resume runs only).
 - **Duration** — wall-clock time of the scan.
+
+With `--ext-stats` the summary is followed by per-extension file counts,
+split into supported and unsupported. Supported archives are treated as
+folders and excluded; files on disk and inside archives are both counted.
+The percentages sum to 100% over supported + unsupported:
+
+```
+Extension stats (10 files):
+Supported:
+  epub: 3 (30%)
+  mobi: 2 (20%)
+Unsupported:
+  pdf: 4 (40%)
+  txt: 1 (10%)
+```
+
+```sh
+margaret scan ./books --ext-stats
+```
 
 The report is followed by the failures JSON file. Empty output is written even
 when nothing failed:
