@@ -1,5 +1,9 @@
 version: 2
 
+before:
+  hooks:
+    - go tool sqlc generate
+
 builds:
   - id: margaret
     binary: margaret
