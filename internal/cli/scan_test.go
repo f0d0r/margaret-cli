@@ -198,11 +198,13 @@ func TestRunScanExtStatsCollects(t *testing.T) {
 		t.Errorf("archives must be excluded from ext stats, got:\n%s", out)
 	}
 	// Unsupported entries sort by count desc: pdf (3) before txt (2).
-	if strings.Index(out, "pdf: 3") > strings.Index(out, "txt: 2") || strings.Index(out, "pdf: 3") < 0 {
+	if !strings.Contains(out, "pdf: 3") || !strings.Contains(out, "txt: 2") ||
+		strings.Index(out, "pdf: 3") > strings.Index(out, "txt: 2") {
 		t.Errorf("expected pdf before txt by count desc, got:\n%s", out)
 	}
 	// Ext stats come after the existing summary.
-	if strings.Index(out, "Total") > strings.Index(out, "Extension stats") || strings.Index(out, "Extension stats") < 0 {
+	if !strings.Contains(out, "Total") || !strings.Contains(out, "Extension stats") ||
+		strings.Index(out, "Total") > strings.Index(out, "Extension stats") {
 		t.Errorf("expected ext stats after the summary, got:\n%s", out)
 	}
 }
