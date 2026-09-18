@@ -185,3 +185,78 @@ func TestFormatOf(t *testing.T) {
 		}
 	}
 }
+
+func TestExtKey(t *testing.T) {
+	cases := []struct {
+		name      string
+		ext       string
+		isArchive bool
+	}{
+		{"a.epub", "epub", false},
+		{"b.MOBI", "mobi", false},
+		{"c.pdf", "pdf", false},
+		{"d.EXE", "exe", false},
+		{"e.zip", "zip", true},
+		{"f.7z", "7z", true},
+		{"g.tar.gz", "tgz", true},
+		{"h.TGZ", "tgz", true},
+		{"i.tar.bz2", "tbz2", true},
+		{"j.tbz2", "tbz2", true},
+		{"noext", "(noext)", false},
+		{"a.zip!b.pdf", "pdf", false},
+		{"a.zip!b.zip", "zip", true},
+		{"/books/a.epub.gz", "gz", true},
+		// Display paths of nested members are stripped to the innermost
+		// name (processSingleStream records dropSuffix(displayPath)).
+		{"outer.zip!data", "(noext)", false},
+		{"outer.zip!inner.epub", "epub", false},
+		{"outer.zip!data.gz", "gz", true},
+		{"outer.zip!bundle/inner.zip!c.epub", "epub", false},
+		{"outer.zip!bundle/inner.zip!README", "(noext)", false},
+	}
+	for _, c := range cases {
+		ext, isArchive := ExtKey(c.name)
+		if ext != c.ext || isArchive != c.isArchive {
+			t.Errorf("ExtKey(%q) = (%q, %v), want (%q, %v)", c.name, ext, isArchive, c.ext, c.isArchive)
+		}
+	}
+}
+
+func TestIsSupportedExt(t *testing.T) {
+	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc"} {
+		if !IsSupportedExt(ext) {
+			t.Errorf("expected %q to be supported", ext)
+		}
+	}
+	for _, ext := range []string{"pdf", "exe", "txt", "(noext)", "zip"} {
+		if IsSupportedExt(ext) {
+			t.Errorf("expected %q to be unsupported", ext)
+		}
+	}
+}
+
+func TestScanOnFileSeesAllFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.epub", "b.pdf", "c.zip", "noext"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var (
+		mu    sync.Mutex
+		files []string
+	)
+	_, err := New(Config{
+		OnFile: func(name string) {
+			mu.Lock()
+			files = append(files, name)
+			mu.Unlock()
+		},
+	}).Scan(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 4 {
+		t.Fatalf("expected 4 OnFile calls, got %d: %v", len(files), files)
+	}
+}

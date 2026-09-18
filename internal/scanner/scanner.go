@@ -32,6 +32,53 @@ var archiveExtensions = map[string]string{
 	".7z":   "7z",
 }
 
+// NoExtension is the key used in extension statistics for files without an
+// extension.
+const NoExtension = "(noext)"
+
+// ExtKey returns the normalized extension key for statistics and whether the
+// file is a supported archive (which callers treat as a folder and exclude
+// from the counts). The key is lowercase without a leading dot; files
+// without an extension map to NoExtension. Compound suffixes such as
+// ".tar.gz" map to their archive format ("tgz"). Display paths of nested
+// archive members ("outer.zip!inner.epub") are stripped to the innermost
+// name before the extension is derived, so single-stream wrappers (gz/bz2)
+// inside archives are counted by their inner file type.
+func ExtKey(name string) (string, bool) {
+	if i := strings.LastIndex(name, "!"); i >= 0 {
+		name = name[i+1:]
+	}
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"):
+		return "tgz", true
+	case strings.HasSuffix(lower, ".tar.bz2"), strings.HasSuffix(lower, ".tbz2"):
+		return "tbz2", true
+	}
+	ext := filepath.Ext(lower)
+	if ext == "" || ext == "." {
+		return NoExtension, false
+	}
+	if format, ok := archiveExtensions[ext]; ok {
+		return format, true
+	}
+	if format, ok := knownExtensions[ext]; ok {
+		return format, false
+	}
+	return strings.TrimPrefix(ext, "."), false
+}
+
+// IsSupportedExt reports whether an ExtKey result (excluding archives) is a
+// supported ebook extension. It derives from knownExtensions so the two
+// cannot drift apart.
+func IsSupportedExt(ext string) bool {
+	if ext == NoExtension {
+		return false
+	}
+	_, ok := knownExtensions["."+strings.ToLower(ext)]
+	return ok
+}
+
 // IsArchiveFormat reports whether format is a container that needs to be
 // unpacked before its ebooks can be parsed.
 func IsArchiveFormat(format string) bool {
@@ -91,6 +138,11 @@ type Config struct {
 	// OnResult is invoked for every ebook found.
 	OnResult func(Result)
 
+	// OnFile is invoked for every file seen (ebooks, archives and
+	// unsupported files alike). It is used to collect per-extension
+	// statistics and may be called concurrently from multiple walkers.
+	OnFile func(name string)
+
 	// OnReport is invoked after each directory is scanned.
 	OnReport func(Progress)
 
@@ -111,6 +163,7 @@ func New(cfg Config) *Scanner {
 	return &Scanner{
 		workers:  cfg.Workers,
 		onResult: cfg.OnResult,
+		onFile:   cfg.OnFile,
 		onReport: cfg.OnReport,
 		onError:  cfg.OnError,
 		ftpOpts:  cfg.FTPOptions,
@@ -121,6 +174,7 @@ func New(cfg Config) *Scanner {
 type Scanner struct {
 	workers  int
 	onResult func(Result)
+	onFile   func(name string)
 	onReport func(Progress)
 	onError  func(path string, err error)
 	ftpOpts  source.FTPOptions
@@ -249,6 +303,9 @@ func (s *Scanner) scanDir(src source.Source, dir string, dispatch func(string)) 
 			continue
 		}
 		s.files.Add(1)
+		if s.onFile != nil {
+			s.onFile(name)
+		}
 		format, ok := FormatOf(name)
 		if !ok {
 			continue

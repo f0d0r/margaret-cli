@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
@@ -790,4 +791,164 @@ func TestProcessMinHashLSHThresholdBoundary(t *testing.T) {
 	if booksCount != 2 {
 		t.Errorf("expected 2 books, got %d", booksCount)
 	}
+}
+
+func writeZipWithMembers(t *testing.T, path string, members map[string]string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := zip.NewWriter(f)
+	for name, content := range members {
+		fw, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExtStatsCountsFilesystemAndArchiveMembers pins the --ext-stats rule:
+// supported + unsupported files are counted on the filesystem and inside
+// archives, while supported archives are treated as folders and excluded.
+func TestExtStatsCountsFilesystemAndArchiveMembers(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.epub"), []byte("epub-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.pdf"), []byte("pdf-b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "noext"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeZipWithMembers(t, filepath.Join(dir, "c.zip"), map[string]string{
+		"d.epub": "epub-d",
+		"e.pdf":  "pdf-e",
+		"f.txt":  "txt-f",
+	})
+
+	cfg := DefaultScanProcessorConfig()
+	cfg.CollectExtStats = true
+	proc := newTestProcessor(t, cfg, dir)
+	proc.parsers = map[string]parser.Parser{
+		"epub": hashOrFailParser{failSubstr: "\x00-never-matches"},
+	}
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := proc.Stats().ExtCounts
+	want := map[string]int64{
+		"epub":    2,
+		"pdf":     2,
+		"txt":     1,
+		"(noext)": 1,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected ext counts %v, got %v", want, got)
+	}
+	for ext, n := range want {
+		if got[ext] != n {
+			t.Errorf("expected %s=%d, got %d (all: %v)", ext, n, got[ext], got)
+		}
+	}
+	if _, ok := got["zip"]; ok {
+		t.Errorf("archives must be excluded, got zip in %v", got)
+	}
+}
+
+// TestExtStatsDisabledReturnsNil ensures no counting overhead or output data
+// when collection is off.
+func TestExtStatsDisabledReturnsNil(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.epub"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proc := newTestProcessor(t, DefaultScanProcessorConfig(), dir)
+	proc.parsers = map[string]parser.Parser{"epub": hashParser{}}
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc.Stats().ExtCounts; got != nil {
+		t.Fatalf("expected nil ExtCounts when disabled, got %v", got)
+	}
+}
+
+// TestExtStatsIncludesResumeSkipped pins that resume-skipped files are still
+// counted: the second (resume) run must report the same per-extension counts
+// as the first run, even though supported files are skipped without reading.
+func TestExtStatsIncludesResumeSkipped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.epub"), []byte("epub-a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.pdf"), []byte("pdf-b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeZipWithMembers(t, filepath.Join(dir, "c.zip"), map[string]string{
+		"d.epub": "epub-d",
+		"e.pdf":  "pdf-e",
+	})
+
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	newProc := func(resume bool) *ScanProcessor {
+		cfg := DefaultScanProcessorConfig()
+		cfg.Resume = resume
+		cfg.CollectExtStats = true
+		proc := NewScanProcessor(conn, q, cfg, dir)
+		proc.parsers = map[string]parser.Parser{
+			"epub": hashOrFailParser{failSubstr: "\x00-never-matches"},
+		}
+		return proc
+	}
+
+	want := map[string]int64{"epub": 2, "pdf": 2}
+
+	proc1 := newProc(false)
+	if err := proc1.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := proc1.Stats().ExtCounts; !equalExtCounts(got, want) {
+		t.Fatalf("first run: expected ext counts %v, got %v", want, got)
+	}
+
+	proc2 := newProc(true)
+	if err := proc2.Process(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stats2 := proc2.Stats()
+	if stats2.Skipped != 2 {
+		t.Fatalf("resume run: expected 2 skipped (a.epub + c.zip!d.epub), got %+v", stats2)
+	}
+	if !equalExtCounts(stats2.ExtCounts, want) {
+		t.Fatalf("resume run: expected ext counts %v (skipped files included), got %v", want, stats2.ExtCounts)
+	}
+}
+
+func equalExtCounts(got, want map[string]int64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for k, v := range want {
+		if got[k] != v {
+			return false
+		}
+	}
+	return true
 }
