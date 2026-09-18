@@ -1,4 +1,8 @@
-# margaret-cli
+# Margaret CLI
+
+[![Build Status](https://github.com/f0d0r/margaret-cli/actions/workflows/build.yml/badge.svg)](https://github.com/f0d0r/margaret-cli/actions/workflows/build.yml)
+[![Go Version](https://img.shields.io/badge/go-%3E%3D1.26.8-blue)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A command-line tool that scans a directory tree for ebook files, reads their
 metadata (author and title), and reports the results. It searches for ebooks
@@ -9,7 +13,7 @@ configurable depth.
 
 ## Building
 
-Requires Go 1.26+.
+Requires Go 1.26.8+.
 
 ```sh
 make build        # builds ./build/margaret
@@ -40,6 +44,10 @@ margaret search <query> [flags]
 
 `<path>` must be a directory. The scan is recursive: ebooks in subdirectories
 are found too.
+
+```sh
+margaret scan ./books
+```
 
 ### Scanning over FTP
 
@@ -124,6 +132,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--resume` | `bool` | `false` | Keep existing scan data and only process never-seen paths. |
 | `--ext-stats` | `bool` | `false` | Print per-extension file counts (supported vs unsupported) after the scan. |
 | `-h`, `--help` | | | Show help. |
+| `-v`, `--version` | | | Print version. |
 
 ### `--workers`
 
@@ -634,3 +643,9 @@ Write the hits in the `books.json` shape:
 ```sh
 margaret search "Foundation" --json --json-out /tmp/hits.json
 ```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

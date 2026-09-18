@@ -1,6 +1,6 @@
 module github.com/f0d0r/margaret-cli
 
-go 1.26.6
+go 1.26.8
 
 require (
 	github.com/f0d0r/margaret-ebook-library v0.1.0
