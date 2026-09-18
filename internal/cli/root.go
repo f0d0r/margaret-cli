@@ -9,18 +9,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is injected at build time via
+// -ldflags "-X github.com/f0d0r/margaret-cli/internal/cli.version=...".
+// It defaults to "dev" for plain `go build` runs.
+var version = "dev"
+
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:           "margaret",
-	Short:         "A brief description of your application",
+	Short:         "Scan ebook collections and search book metadata",
+	Version:       version,
 	SilenceErrors: true,
 	SilenceUsage:  true,
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Long: `Scans a directory tree for ebook files, reads their author and title
+metadata, and reports the results. Ebooks are found both directly on disk
+and inside archives (nested archives are unpacked up to a configurable
+depth), and scan results are kept in a SQLite database that can be
+regenerated into JSON reports or searched without rescanning.`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },

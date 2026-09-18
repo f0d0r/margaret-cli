@@ -1,6 +1,8 @@
 BINARY := margaret
 BUILD_DIR := build
 MAIN_PKG := ./cmd/margaret-cli
+VERSION ?= dev
+LDFLAGS := -X github.com/f0d0r/margaret-cli/internal/cli.version=$(VERSION)
 
 .PHONY: build clean generate test vet run
 
@@ -8,7 +10,7 @@ generate:
 	go tool sqlc generate
 
 build:
-	go build -o $(BUILD_DIR)/$(BINARY) $(MAIN_PKG)
+	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) $(MAIN_PKG)
 
 run: build
 	./$(BUILD_DIR)/$(BINARY) $(ARGS)

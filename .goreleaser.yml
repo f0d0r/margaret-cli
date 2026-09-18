@@ -1,0 +1,27 @@
+version: 2
+
+builds:
+  - id: margaret
+    binary: margaret
+    main: ./cmd/margaret-cli
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/f0d0r/margaret-cli/internal/cli.version={{.Version}}
+
+archives:
+  - name_template: "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
