@@ -3,7 +3,7 @@ module github.com/f0d0r/margaret-cli
 go 1.26.8
 
 require (
-	github.com/f0d0r/margaret-ebook-library v0.1.0
+	github.com/f0d0r/margaret-ebook-library v0.1.1
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/mholt/archives v0.1.5
 	github.com/pressly/goose/v3 v3.28.0
