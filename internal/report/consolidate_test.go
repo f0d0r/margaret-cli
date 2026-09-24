@@ -93,7 +93,7 @@ func TestConsolidatePersistsFilenameFallbackTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	addConsolidateFile(t, q, ctx, bookID,
-		"hash-fallback", "/home/attila/books/ebooks/spring/Spring in Action 4th edition by Craig Walls.epub",
+		"hash-fallback", "/books/ebooks/spring/Spring in Action 4th edition by Craig Walls.epub",
 		"", nil)
 	consolidateDB(t, conn, q)
 
@@ -153,7 +153,7 @@ func TestConsolidateRecoversCalibreAuthor(t *testing.T) {
 		t.Fatal(err)
 	}
 	addConsolidateFile(t, q, ctx, bookID,
-		"hash-livius", "/home/attila/books/Regények/L/Livius/A romai nep tortenete 1 - Livius, Titus.epub",
+		"hash-livius", "/books/Regények/L/Livius/A romai nep tortenete 1 - Livius, Titus.epub",
 		"Untitled", nil)
 
 	consolidateDB(t, conn, q)
@@ -271,7 +271,7 @@ func TestGetBooksFilteredReadsConsolidated(t *testing.T) {
 		t.Fatal(err)
 	}
 	addConsolidateFile(t, q, ctx, bookID, "h1",
-		"/home/attila/books/11 - Egy gladiátor csak egyszer hal meg - Steven Saylor.epub",
+		"/books/11 - Egy gladiátor csak egyszer hal meg - Steven Saylor.epub",
 		"", []string{"Steven Saylor"})
 	consolidateDB(t, conn, q)
 
