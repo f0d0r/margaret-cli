@@ -199,7 +199,7 @@ func TestTitleFromPath(t *testing.T) {
 		path string
 		want string
 	}{
-		{"plain path", "/home/attila/books/ebooks/spring/Spring in Action 4th edition by Craig Walls.epub", "Spring in Action 4th edition by Craig Walls"},
+		{"plain path", "/books/ebooks/spring/Spring in Action 4th edition by Craig Walls.epub", "Spring in Action 4th edition by Craig Walls"},
 		{"underscores become spaces", "books/Jules_Verne_20_000_Leagues.mobi", "Jules Verne 20 000 Leagues"},
 		{"dots are kept, underscores become spaces", "books/J._Verne.epub", "J. Verne"},
 		{"uppercase extension", "books/Dune.EPUB", "Dune"},
@@ -233,7 +233,7 @@ func TestWriteBooksFallsBackToFileName(t *testing.T) {
 	}
 	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
 		Hash:  "hash-no-title",
-		Path:  "/home/attila/books/ebooks/spring/Spring in Action 4th edition by Craig Walls.epub",
+		Path:  "/books/ebooks/spring/Spring in Action 4th edition by Craig Walls.epub",
 		Title: "",
 	})
 	if err != nil {
@@ -486,7 +486,7 @@ func TestWriteBooksCalibreFallback(t *testing.T) {
 	}
 	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
 		Hash:  "hash-livius",
-		Path:  "/home/attila/books/Regények/L/Livius/A romai nep tortenete 1 - Livius, Titus.epub",
+		Path:  "/books/Regények/L/Livius/A romai nep tortenete 1 - Livius, Titus.epub",
 		Title: "Untitled",
 	})
 	if err != nil {
@@ -549,7 +549,7 @@ func TestWriteBooksWashAffix(t *testing.T) {
 	}
 	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
 		Hash:  "hash-saylor",
-		Path:  "/home/attila/books/11 - Egy gladiátor csak egyszer hal meg - Steven Saylor.epub",
+		Path:  "/books/11 - Egy gladiátor csak egyszer hal meg - Steven Saylor.epub",
 		Title: "",
 	})
 	if err != nil {
@@ -622,7 +622,7 @@ func TestWriteBooksWashPickedTitle(t *testing.T) {
 	}
 	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
 		Hash:  "hash-meadow",
-		Path:  "/home/attila/books/Regények/prc pack/Marcus Meadow - Konnyek varosa.prc",
+		Path:  "/books/Regények/prc pack/Marcus Meadow - Konnyek varosa.prc",
 		Title: "Marcus Meadow - Könnyek városa",
 	})
 	if err != nil {
@@ -772,9 +772,9 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 	}
 
 	addEchoBook("Patkánykirály", "Patkánykirály", "Patkánykirály",
-		"hash-pat", "/home/attila/books/Regények/J/James Clavel/Patkanykiraly_-_James_Clavell.epub")
+		"hash-pat", "/books/Regények/J/James Clavel/Patkanykiraly_-_James_Clavell.epub")
 	addEchoBook("Gajdzsin", "Gajdzsin", "Gajdzsin",
-		"hash-gaj", "/home/attila/books/Regények/J/James Clavel/Gajdzsin_-_James_Clavell.epub")
+		"hash-gaj", "/books/Regények/J/James Clavel/Gajdzsin_-_James_Clavell.epub")
 
 	if err := Consolidate(ctx, conn, q); err != nil {
 		t.Fatal(err)
