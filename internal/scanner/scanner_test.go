@@ -168,6 +168,12 @@ func TestFormatOf(t *testing.T) {
 		ok     bool
 	}{
 		{"a.epub", "epub", true},
+		{"b.fb2", "fb2", true},
+		{"c.fbz", "fb2", true},
+		{"d.fb2.zip", "fb2", true},
+		{"D.FB2.ZIP", "fb2", true},
+		{"e.lit", "lit", true},
+		{"f.kepub", "kepub", true},
 		{"c.tar.gz", "tgz", true},
 		{"d.TGZ", "tgz", true},
 		{"e.tar.bz2", "tbz2", true},
@@ -193,6 +199,12 @@ func TestExtKey(t *testing.T) {
 		isArchive bool
 	}{
 		{"a.epub", "epub", false},
+		{"k.fb2", "fb2", false},
+		{"l.fbz", "fb2", false},
+		{"m.fb2.zip", "fb2", false},
+		{"M.FB2.ZIP", "fb2", false},
+		{"n.lit", "lit", false},
+		{"o.kepub", "kepub", false},
 		{"b.MOBI", "mobi", false},
 		{"c.pdf", "pdf", false},
 		{"d.EXE", "exe", false},
@@ -213,6 +225,8 @@ func TestExtKey(t *testing.T) {
 		{"outer.zip!data.gz", "gz", true},
 		{"outer.zip!bundle/inner.zip!c.epub", "epub", false},
 		{"outer.zip!bundle/inner.zip!README", "(noext)", false},
+		{"outer.zip!book.fb2.zip", "fb2", false},
+		{"outer.zip!book.FBZ", "fb2", false},
 	}
 	for _, c := range cases {
 		ext, isArchive := ExtKey(c.name)
@@ -222,13 +236,28 @@ func TestExtKey(t *testing.T) {
 	}
 }
 
+func TestIsArchiveFormat(t *testing.T) {
+	// Every archive extension value must be an archive format, so the two
+	// cannot drift apart.
+	for ext, format := range archiveExtensions {
+		if !IsArchiveFormat(format) {
+			t.Errorf("expected archiveExtensions[%q] = %q to be an archive format", ext, format)
+		}
+	}
+	for _, format := range []string{"epub", "mobi", "azw3", "azw", "prc", "lit", "fb2", "kepub", "", "pdf"} {
+		if IsArchiveFormat(format) {
+			t.Errorf("expected %q to not be an archive format", format)
+		}
+	}
+}
+
 func TestIsSupportedExt(t *testing.T) {
-	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc"} {
+	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc", "lit", "fb2", "fbz", "fb2.zip", "FB2", "kepub"} {
 		if !IsSupportedExt(ext) {
 			t.Errorf("expected %q to be supported", ext)
 		}
 	}
-	for _, ext := range []string{"pdf", "exe", "txt", "(noext)", "zip"} {
+	for _, ext := range []string{"pdf", "exe", "txt", "(noext)", "zip", "tgz", "tbz2", "gz"} {
 		if IsSupportedExt(ext) {
 			t.Errorf("expected %q to be unsupported", ext)
 		}
