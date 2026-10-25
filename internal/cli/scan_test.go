@@ -3,11 +3,15 @@ package cli
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/processor"
 )
 
@@ -130,6 +134,87 @@ func TestRunScanReportWritesBulkReports(t *testing.T) {
 		if !exists(t, path) {
 			t.Errorf("expected %s to be written with --report", path)
 		}
+	}
+}
+
+// cancelingProcessor blocks until the scan context is canceled and reports one
+// real failure, so the cancellation cleanup path can be exercised without a
+// full filesystem scan.
+type cancelingProcessor struct {
+	started chan struct{}
+}
+
+func (p *cancelingProcessor) Process(ctx context.Context) error {
+	close(p.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *cancelingProcessor) Stats() processor.Progress {
+	return processor.Progress{Parsed: 1, Failed: 1}
+}
+
+func (p *cancelingProcessor) Failures() []processor.Failure {
+	return []processor.Failure{{Path: "/books/broken.epub", Err: errors.New("parse failed")}}
+}
+
+func TestRunScanCancelWritesFailuresAndFinishesRun(t *testing.T) {
+	dir := t.TempDir()
+	failures, duplicates, books := withScanOutputs(t, dir, true)
+	dbPath = filepath.Join(dir, "test.db")
+
+	oldNew := newScanProcessor
+	started := make(chan struct{})
+	newScanProcessor = func(*sql.DB, *db.Queries, processor.ScanProcessorConfig, string) processor.Processor {
+		return &cancelingProcessor{started: started}
+	}
+	t.Cleanup(func() { newScanProcessor = oldNew })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runScan(ctx, filepath.Join(dir, "books"), processor.DefaultScanProcessorConfig())
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("processor never started")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runScan error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runScan did not return after cancellation")
+	}
+
+	if !exists(t, failures) {
+		t.Fatalf("expected %s to be written on cancellation", failures)
+	}
+	data, err := os.ReadFile(failures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "broken.epub") {
+		t.Errorf("failures report does not list the recorded failure: %s", data)
+	}
+	if exists(t, duplicates) || exists(t, books) {
+		t.Error("bulk reports must not be written for a canceled scan")
+	}
+
+	conn := openTestDB(t, dbPath)
+	defer func() { _ = conn.Close() }()
+	var status string
+	if err := conn.QueryRow("SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "canceled" {
+		t.Errorf("scan_runs status = %q, want canceled", status)
 	}
 }
 

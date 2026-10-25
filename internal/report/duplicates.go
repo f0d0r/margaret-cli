@@ -21,8 +21,8 @@ type duplicateReport struct {
 // WriteDuplicates writes a JSON report of the duplicate books found during
 // the scan to path. When no duplicates were found nothing is written, so no
 // empty file is left behind.
-func WriteDuplicates(q *db.Queries, path string) error {
-	rows, err := q.ListBookFileDuplicates(context.Background())
+func WriteDuplicates(ctx context.Context, q *db.Queries, path string) error {
+	rows, err := q.ListBookFileDuplicates(ctx)
 	if err != nil {
 		return fmt.Errorf("list duplicates: %w", err)
 	}

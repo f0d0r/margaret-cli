@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
@@ -46,7 +47,7 @@ type fakeParser struct {
 	failSubstr string
 }
 
-func (f fakeParser) Parse(b book.Blob) (parser.Metadata, error) {
+func (f fakeParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
@@ -153,12 +154,78 @@ func TestProcessCancel(t *testing.T) {
 
 	proc := newTestProcessor(t, ScanProcessorConfig{}, t.TempDir())
 	err := proc.Process(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 	failures := proc.Failures()
 	if len(failures) != 0 {
 		t.Fatalf("expected no failures, got %v", failures)
+	}
+}
+
+// blockingParser waits for cancellation, modeling a parse that is interrupted
+// in flight. Process must not wait for anything else once it returns.
+type blockingParser struct {
+	started chan struct{}
+}
+
+func (p blockingParser) Parse(ctx context.Context, _ book.Blob) (parser.Metadata, error) {
+	select {
+	case p.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return parser.Metadata{}, ctx.Err()
+}
+
+func TestProcessCancellationStopsInFlightParse(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.epub"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{}, 1)
+	proc := newTestProcessor(t, ScanProcessorConfig{ScanWorkers: 1, ParseWorkers: 1}, dir)
+	proc.parsers = map[string]parser.Parser{"epub": blockingParser{started: started}}
+
+	done := make(chan error, 1)
+	go func() { done <- proc.Process(ctx) }()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parser never started")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Process did not return after cancellation")
+	}
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("canceled parse recorded as failure: %v", failures)
+	}
+}
+
+func TestFailDropsCancellationFailures(t *testing.T) {
+	proc := newTestProcessor(t, ScanProcessorConfig{}, t.TempDir())
+
+	proc.ctx = context.Background()
+	proc.fail("wrapped.epub", fmt.Errorf("read: %w", context.Canceled))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	proc.ctx = ctx
+	proc.fail("interrupted.epub", errors.New("i/o error after cancel"))
+
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("cancellation recorded as failure: %v", failures)
 	}
 }
 
@@ -169,7 +236,7 @@ type hashOrFailParser struct {
 	failSubstr string
 }
 
-func (p hashOrFailParser) Parse(b book.Blob) (parser.Metadata, error) {
+func (p hashOrFailParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
@@ -347,7 +414,7 @@ func TestFailedFilesLeaveNoRows(t *testing.T) {
 // create files that share a hash.
 type hashParser struct{}
 
-func (hashParser) Parse(b book.Blob) (parser.Metadata, error) {
+func (hashParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
@@ -555,7 +622,7 @@ type lshMockParser struct {
 	sigs map[string][]uint64
 }
 
-func (m lshMockParser) Parse(b book.Blob) (parser.Metadata, error) {
+func (m lshMockParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err

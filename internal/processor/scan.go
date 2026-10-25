@@ -87,6 +87,10 @@ type ScanProcessor struct {
 	db *sql.DB
 	q  *db.Queries
 
+	// ctx is the context of the current Process call, used to tell
+	// cancellation errors apart from real failures.
+	ctx context.Context
+
 	parsed   atomic.Int64
 	failed   atomic.Int64
 	found    atomic.Int64
@@ -142,6 +146,7 @@ func (p *ScanProcessor) newSource() (source.Source, error) {
 func (p *ScanProcessor) Process(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	p.ctx = ctx
 
 	p.failMu.Lock()
 	p.failures = p.failures[:0]
@@ -220,7 +225,10 @@ func (p *ScanProcessor) Process(ctx context.Context) error {
 	if fatal != nil {
 		return fatal
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // Failures returns the items that could not be processed in the last Process
@@ -235,6 +243,9 @@ func (p *ScanProcessor) Failures() []Failure {
 // an archive to unpack and process. src is the worker's Source, used to open
 // the file on disk or over FTP.
 func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src source.Source) {
+	if ctx.Err() != nil {
+		return
+	}
 	if scanner.IsArchiveFormat(r.Format) {
 		p.processArchive(ctx, r, 0, src)
 		return
@@ -278,13 +289,19 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 	}
 	par := p.parsers[format]
 	if par == nil {
+		if ctx.Err() != nil {
+			return
+		}
 		err := fmt.Errorf("no parser registered for format %q", format)
 		p.fail(displayPath, err)
 		p.report()
 		return
 	}
-	md, err := par.Parse(b)
+	md, err := par.Parse(ctx, b)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		p.fail(displayPath, err)
 		p.report()
 		return
@@ -421,6 +438,9 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		return nil
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		p.fail(displayPath, err)
 		p.report()
 		return
@@ -490,8 +510,15 @@ func (p *ScanProcessor) extCountsCopy() map[string]int64 {
 	return out
 }
 
-// fail records an item that could not be processed.
+// fail records an item that could not be processed. Cancellation is not a
+// failure: an interrupted item is left unrecorded so a resume run retries it.
 func (p *ScanProcessor) fail(path string, err error) {
+	if p.ctx != nil && p.ctx.Err() != nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
 	p.failed.Add(1)
 	p.failMu.Lock()
 	p.failures = append(p.failures, Failure{Path: path, Err: err})

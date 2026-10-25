@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -80,6 +81,11 @@ func init() {
 	rootCmd.AddCommand(scanCmd)
 }
 
+// newScanProcessor is a seam for tests that need to control Process behavior.
+var newScanProcessor = func(conn *sql.DB, q *db.Queries, cfg processor.ScanProcessorConfig, root string) processor.Processor {
+	return processor.NewScanProcessor(conn, q, cfg, root)
+}
+
 func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig) error {
 	start := time.Now()
 
@@ -127,7 +133,7 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 		}
 	}
 
-	var proc processor.Processor = processor.NewScanProcessor(conn, q, cfg, root)
+	proc := newScanProcessor(conn, q, cfg, root)
 
 	// A ticker keeps the bar animating (spinner + in-flight item names) while
 	// a long-running unit of work emits no progress event of its own.
@@ -141,6 +147,11 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 			select {
 			case <-stop:
 				return
+			case <-ctx.Done():
+				if rep != nil {
+					rep.cancel()
+				}
+				return
 			case <-t.C:
 				if rep != nil {
 					rep.tick(proc.Stats())
@@ -150,26 +161,44 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	}()
 
 	err = proc.Process(ctx)
-	if err == nil {
+	canceled := ctx.Err() != nil
+	if !canceled && err == nil {
 		// Persist the consensus washed title and cleaned authors so that
 		// books.title (and books_fts via triggers) and book_authors are
 		// consistent before the run is marked finished and reports are
 		// written. The pass is idempotent across resume runs.
 		if cerr := report.Consolidate(ctx, conn, q); cerr != nil {
-			err = fmt.Errorf("consolidate books metadata: %w", cerr)
+			if ctx.Err() != nil {
+				canceled = true
+			} else {
+				err = fmt.Errorf("consolidate books metadata: %w", cerr)
+			}
 		}
 	}
+	if ctx.Err() != nil {
+		canceled = true
+	}
 	status := "completed"
-	if err != nil {
+	switch {
+	case canceled:
+		status = "canceled"
+	case err != nil:
 		status = "failed"
 	}
-	if ferr := q.FinishScanRun(ctx, db.FinishScanRunParams{
+	if canceled && rep != nil {
+		rep.cancel()
+	}
+
+	// Finishing the run must outlive the cancellation that stopped the scan,
+	// otherwise the run row stays open and the failures report is skipped.
+	// WithoutCancel detaches from Ctrl-C; the timeout bounds the cleanup.
+	finCtx, finCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer finCancel()
+	finErr := q.FinishScanRun(finCtx, db.FinishScanRunParams{
 		Status:     status,
 		FinishedAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
 		ID:         runID,
-	}); ferr != nil {
-		return fmt.Errorf("finish scan run: %w", ferr)
-	}
+	})
 	close(stop)
 	<-tickDone
 	stats := proc.Stats()
@@ -185,11 +214,28 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	if cfg.CollectExtStats {
 		printExtStats(stats)
 	}
+	// The failures report is written on every run, including interrupted
+	// ones: failures are only produced during the scan and cannot be
+	// regenerated later.
 	if err := report.WriteFailures(failures, failuresOutPath); err != nil {
 		return err
 	}
+	if canceled {
+		fmt.Fprintln(os.Stderr, "Scan canceled; partial results are kept.")
+		if finErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: finish scan run: %v\n", finErr)
+		}
+		return ctx.Err()
+	}
+	if finErr != nil {
+		if err == nil {
+			err = fmt.Errorf("finish scan run: %w", finErr)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: finish scan run: %v\n", finErr)
+		}
+	}
 	if reportEnabled {
-		if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
+		if err := report.WriteDuplicates(ctx, q, duplicatesOut); err != nil {
 			return err
 		}
 		if err := report.WriteBooks(ctx, q, booksOut); err != nil {

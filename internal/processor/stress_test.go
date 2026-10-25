@@ -15,7 +15,7 @@ import (
 
 type slowParser struct{}
 
-func (slowParser) Parse(_ book.Blob) (parser.Metadata, error) {
+func (slowParser) Parse(_ context.Context, _ book.Blob) (parser.Metadata, error) {
 	time.Sleep(2 * time.Millisecond)
 	return parser.Metadata{}, nil
 }

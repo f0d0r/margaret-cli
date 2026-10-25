@@ -12,21 +12,31 @@ import (
 // detects the format from the content and extracts author and title metadata.
 type EbookParser struct{}
 
+// parseError prefers the context error: format detection may report its own
+// error when reads are aborted, but callers need to recognize cancellation.
+func parseError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
+}
+
 // Parse reads the e-book from ebookData using the new blob API and returns
 // normalized metadata, a content hash and the MinHash content fingerprint.
-func (ep EbookParser) Parse(ebookData book.Blob) (Metadata, error) {
+func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata, error) {
+	ebookData = withContext(ctx, ebookData)
 	bk, err := ebook.ReadFromBlob(ebookData)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, parseError(ctx, err)
 	}
 	md := bk.Metadata()
 	hash, err := tools.CalculateFileHashFromBlob(ebookData)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, parseError(ctx, err)
 	}
-	fp, err := tools.FingerprintContent(context.Background(), bk)
+	fp, err := tools.FingerprintContent(ctx, bk)
 	if err != nil {
-		return Metadata{}, err
+		return Metadata{}, parseError(ctx, err)
 	}
 	return Metadata{
 		Authors: md.Authors,

@@ -30,19 +30,20 @@ const anSiClearLine = "\x1b[K" // erase to end of line
 // of the file being processed is. It writes to stderr so stdout stays clean
 // for the final report and the failures JSON.
 type progressBar struct {
-	mu       sync.Mutex
-	w        io.Writer
-	desc     string
-	width    int
-	cols     int // terminal width in cells; keeps the line from wrapping
-	max      int64
-	cur      int64
-	throttle time.Duration
-	last     time.Time
-	done     bool
-	spin     int
-	active   bool
-	names    []string
+	mu        sync.Mutex
+	w         io.Writer
+	desc      string
+	width     int
+	cols      int // terminal width in cells; keeps the line from wrapping
+	max       int64
+	cur       int64
+	throttle  time.Duration
+	last      time.Time
+	done      bool
+	spin      int
+	active    bool
+	canceling bool
+	names     []string
 }
 
 func newProgressBar() *progressBar {
@@ -108,6 +109,17 @@ func (b *progressBar) finish() {
 	b.done = true
 	_, _ = io.WriteString(b.w, "\r"+anSiClearLine)
 	_, _ = fmt.Fprintln(b.w)
+}
+
+// renderNow redraws the bar immediately, bypassing the throttle. It is used
+// for state changes that must be visible at once, such as cancellation.
+func (b *progressBar) renderNow() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.done {
+		return
+	}
+	b.render()
 }
 
 // draw redraws the bar in place unless too little time has passed since the
@@ -228,9 +240,21 @@ func (r *progressReporter) tick(p processor.Progress) {
 // applyActive copies the in-flight state from p onto the bar and forces a
 // redraw so a running item stays visible even while the counters are idle.
 func (r *progressReporter) applyActive(p processor.Progress) {
-	r.bar.active = p.Active > 0
+	r.bar.active = p.Active > 0 && !r.bar.canceling
 	r.bar.names = append(r.bar.names[:0], p.Current...)
 	r.bar.draw()
+}
+
+// cancel switches the display to a canceling state. It is called once when
+// the scan context is canceled so the user sees an immediate reaction instead
+// of a spinner that keeps looking like a running scan.
+func (r *progressReporter) cancel() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.bar.canceling = true
+	r.bar.desc = "canceling"
+	r.bar.active = false
+	r.bar.renderNow()
 }
 
 // sync forces the bar to the final totals from stats, so the bar ends at the

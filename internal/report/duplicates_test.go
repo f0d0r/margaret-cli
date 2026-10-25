@@ -21,7 +21,7 @@ func TestWriteDuplicatesEmpty(t *testing.T) {
 	}()
 
 	path := filepath.Join(t.TempDir(), "duplicates.json")
-	if err := WriteDuplicates(db.New(conn), path); err != nil {
+	if err := WriteDuplicates(context.Background(), db.New(conn), path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -72,7 +72,7 @@ func TestWriteDuplicates(t *testing.T) {
 	}
 
 	path := filepath.Join(t.TempDir(), "duplicates.json")
-	if err := WriteDuplicates(q, path); err != nil {
+	if err := WriteDuplicates(context.Background(), q, path); err != nil {
 		t.Fatal(err)
 	}
 

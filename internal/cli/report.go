@@ -49,7 +49,7 @@ func runReport(ctx context.Context) error {
 	if err := requireScannedData(ctx, q, dbPath); err != nil {
 		return err
 	}
-	if err := report.WriteDuplicates(q, duplicatesOut); err != nil {
+	if err := report.WriteDuplicates(ctx, q, duplicatesOut); err != nil {
 		return err
 	}
 	if err := report.WriteBooks(ctx, q, booksOut); err != nil {

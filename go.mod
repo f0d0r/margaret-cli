@@ -1,9 +1,9 @@
 module github.com/f0d0r/margaret-cli
 
-go 1.26.8
+go 1.26.10
 
 require (
-	github.com/f0d0r/margaret-ebook-library v0.1.1
+	github.com/f0d0r/margaret-ebook-library v0.1.2-0.20261023191735-09efcc344f1f
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/mholt/archives v0.1.5
 	github.com/pressly/goose/v3 v3.28.0
@@ -263,7 +263,7 @@ require (
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260908163034-4bcc4b2ee518 // indirect

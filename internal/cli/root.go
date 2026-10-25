@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -34,7 +36,25 @@ regenerated into JSON reports or searched without rescanning.`,
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	cobra.CheckErr(rootCmd.ExecuteContext(ctx))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The first interrupt cancels the running command so it can clean up. A
+	// second one force-exits even if a non-cancellable operation is stuck.
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	go func() {
+		<-sigs
+		cancel()
+		fmt.Fprintln(os.Stderr, "\nCanceling... press Ctrl+C again to force quit.")
+		<-sigs
+		os.Exit(130)
+	}()
+
+	err := rootCmd.ExecuteContext(ctx)
+	if errors.Is(err, context.Canceled) {
+		os.Exit(130)
+	}
+	cobra.CheckErr(err)
 }

@@ -558,8 +558,12 @@ a missing database file.
 
 - The command exits non-zero if the root path is inaccessible or not a
   directory, or if the failures report cannot be written.
-- The scan can be interrupted with `Ctrl-C`; it cancels gracefully and writes
-  the failures report before exiting.
+- The scan can be interrupted with `Ctrl-C`; it cancels gracefully, keeps the
+  files processed so far, marks the run as canceled and writes the failures
+  report before exiting.
+- A second `Ctrl-C` forces an immediate exit with code 130 if an in-flight
+  operation cannot be canceled. This is the escape hatch for a parser or
+  archive extractor stuck outside the cancellation path.
 
 ---
 

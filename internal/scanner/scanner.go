@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,11 +15,19 @@ import (
 )
 
 var knownExtensions = map[string]string{
-	".epub": "epub",
-	".mobi": "mobi",
-	".azw3": "azw3",
-	".azw":  "azw",
-	".prc":  "prc",
+	".epub":  "epub",
+	".mobi":  "mobi",
+	".azw3":  "azw3",
+	".azw":   "azw",
+	".prc":   "prc",
+	".lit":   "lit",
+	".fb2":   "fb2",
+	".fb3":   "fb3",
+	".fbz":   "fb2",
+	".kepub": "kepub",
+	".pdb":   "pdb",
+	".chm":   "chm",
+	".lrf":   "lrf",
 }
 
 var archiveExtensions = map[string]string{
@@ -32,73 +41,42 @@ var archiveExtensions = map[string]string{
 	".7z":   "7z",
 }
 
+// EbookFormats returns the sorted, deduplicated list of ebook formats the
+// scanner recognizes (e.g. "epub", "fb2"). It derives from knownExtensions,
+// whose values are ebook formats by construction (archives live in the
+// separate archiveExtensions map), so it is the single source of truth for
+// the format taxonomy: parser.Parsers builds its registry from it.
+func EbookFormats() []string {
+	seen := make(map[string]struct{}, len(knownExtensions))
+	for _, format := range knownExtensions {
+		seen[format] = struct{}{}
+	}
+	formats := make([]string, 0, len(seen))
+	for format := range seen {
+		formats = append(formats, format)
+	}
+	sort.Strings(formats)
+	return formats
+}
+
 // NoExtension is the key used in extension statistics for files without an
 // extension.
 const NoExtension = "(noext)"
 
-// ExtKey returns the normalized extension key for statistics and whether the
-// file is a supported archive (which callers treat as a folder and exclude
-// from the counts). The key is lowercase without a leading dot; files
-// without an extension map to NoExtension. Compound suffixes such as
-// ".tar.gz" map to their archive format ("tgz"). Display paths of nested
-// archive members ("outer.zip!inner.epub") are stripped to the innermost
-// name before the extension is derived, so single-stream wrappers (gz/bz2)
-// inside archives are counted by their inner file type.
-func ExtKey(name string) (string, bool) {
-	if i := strings.LastIndex(name, "!"); i >= 0 {
-		name = name[i+1:]
-	}
-	lower := strings.ToLower(name)
+// classify maps a lower-cased file name to its format. It is the single
+// source of truth behind FormatOf, ExtKey and IsSupportedExt so the three
+// cannot drift apart. Compound suffixes (".tar.gz", ".fb2.zip") are matched
+// before single extensions because filepath.Ext only returns the last
+// suffix (".gz", ".zip"). The ".fb2.zip" case must stay an ebook: the
+// library reads zipped FB2 natively, so it is never unpacked as an archive.
+func classify(lower string) (string, bool) {
 	switch {
 	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"):
 		return "tgz", true
 	case strings.HasSuffix(lower, ".tar.bz2"), strings.HasSuffix(lower, ".tbz2"):
 		return "tbz2", true
-	}
-	ext := filepath.Ext(lower)
-	if ext == "" || ext == "." {
-		return NoExtension, false
-	}
-	if format, ok := archiveExtensions[ext]; ok {
-		return format, true
-	}
-	if format, ok := knownExtensions[ext]; ok {
-		return format, false
-	}
-	return strings.TrimPrefix(ext, "."), false
-}
-
-// IsSupportedExt reports whether an ExtKey result (excluding archives) is a
-// supported ebook extension. It derives from knownExtensions so the two
-// cannot drift apart.
-func IsSupportedExt(ext string) bool {
-	if ext == NoExtension {
-		return false
-	}
-	_, ok := knownExtensions["."+strings.ToLower(ext)]
-	return ok
-}
-
-// IsArchiveFormat reports whether format is a container that needs to be
-// unpacked before its ebooks can be parsed.
-func IsArchiveFormat(format string) bool {
-	switch format {
-	case "zip", "tar", "tgz", "gz", "bz2", "tbz2", "rar", "7z":
-		return true
-	}
-	return false
-}
-
-// FormatOf returns the format (ebook or archive) of a file name. The second
-// return value is false if the name does not match any known format. Compound
-// suffixes such as ".tar.gz" are matched before single extensions.
-func FormatOf(name string) (string, bool) {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"):
-		return "tgz", true
-	case strings.HasSuffix(lower, ".tar.bz2"), strings.HasSuffix(lower, ".tbz2"):
-		return "tbz2", true
+	case strings.HasSuffix(lower, ".fb2.zip"):
+		return "fb2", true
 	}
 	if format, ok := archiveExtensions[filepath.Ext(lower)]; ok {
 		return format, true
@@ -107,6 +85,62 @@ func FormatOf(name string) (string, bool) {
 		return format, true
 	}
 	return "", false
+}
+
+// ExtKey returns the normalized extension key for statistics and whether the
+// file is a supported archive (which callers treat as a folder and exclude
+// from the counts). The key is lowercase without a leading dot; files
+// without an extension map to NoExtension. Compound suffixes such as
+// ".tar.gz" map to their archive format ("tgz"), ".fb2.zip" maps to the
+// "fb2" ebook format. Display paths of nested
+// archive members ("outer.zip!inner.epub") are stripped to the innermost
+// name before the extension is derived, so single-stream wrappers (gz/bz2)
+// inside archives are counted by their inner file type.
+func ExtKey(name string) (string, bool) {
+	if i := strings.LastIndex(name, "!"); i >= 0 {
+		name = name[i+1:]
+	}
+	lower := strings.ToLower(name)
+	if format, ok := classify(lower); ok {
+		return format, IsArchiveFormat(format)
+	}
+	ext := filepath.Ext(lower)
+	if ext == "" || ext == "." {
+		return NoExtension, false
+	}
+	return strings.TrimPrefix(ext, "."), false
+}
+
+// IsSupportedExt reports whether an ExtKey result (excluding archives) is a
+// supported ebook format. It derives from classify so the two cannot drift
+// apart; compound keys such as "fb2.zip" are accepted as well.
+func IsSupportedExt(ext string) bool {
+	if ext == NoExtension {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimPrefix(ext, "."))
+	format, ok := classify("a." + lower)
+	return ok && !IsArchiveFormat(format)
+}
+
+// IsArchiveFormat reports whether format is a container that needs to be
+// unpacked before its ebooks can be parsed. It derives from
+// archiveExtensions so the two cannot drift apart.
+func IsArchiveFormat(format string) bool {
+	for _, f := range archiveExtensions {
+		if f == format {
+			return true
+		}
+	}
+	return false
+}
+
+// FormatOf returns the format (ebook or archive) of a file name. The second
+// return value is false if the name does not match any known format. It
+// shares classify with ExtKey; unlike ExtKey it never strips "!" display
+// prefixes because the walker and the archive handlers pass bare names.
+func FormatOf(name string) (string, bool) {
+	return classify(strings.ToLower(name))
 }
 
 // Result describes a single ebook or archive file found during a scan.
