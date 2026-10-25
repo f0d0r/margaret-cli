@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
@@ -376,5 +378,40 @@ func TestRunScanResumeDifferentRootGuard(t *testing.T) {
 	err := runScan(context.Background(), other, processor.DefaultScanProcessorConfig())
 	if err == nil || !strings.Contains(err.Error(), "mix") {
 		t.Fatalf("expected different-tree refusal, got %v", err)
+	}
+}
+
+func TestReadAnswer(t *testing.T) {
+	line, err := readAnswer(context.Background(), strings.NewReader("fresh\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if line != "fresh\n" {
+		t.Errorf("readAnswer = %q, want %q", line, "fresh\n")
+	}
+}
+
+func TestReadAnswerCanceled(t *testing.T) {
+	pr, pw := io.Pipe()
+	t.Cleanup(func() {
+		_ = pw.Close()
+		_ = pr.Close()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := readAnswer(ctx, pr)
+		done <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("readAnswer error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("readAnswer did not react to cancellation")
 	}
 }

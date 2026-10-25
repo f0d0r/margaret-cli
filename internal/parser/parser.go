@@ -2,6 +2,8 @@
 package parser
 
 import (
+	"context"
+
 	"github.com/f0d0r/margaret-ebook-library/book"
 )
 
@@ -18,6 +20,8 @@ type Metadata struct {
 // needs and should stop reading once the metadata has been found.
 type Parser interface {
 	// Parse extracts the metadata of the ebook read from ebookData. The format
-	// (such as "epub", "mobi" or "pdf") is detected from the content.
-	Parse(ebookData book.Blob) (Metadata, error)
+	// (such as "epub", "mobi" or "pdf") is detected from the content. Parsing
+	// stops with ctx.Err() once ctx is canceled so an interrupted scan does
+	// not wait for an in-flight file.
+	Parse(ctx context.Context, ebookData book.Blob) (Metadata, error)
 }

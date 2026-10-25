@@ -2,6 +2,8 @@ package parser
 
 import (
 	"archive/zip"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,7 +62,7 @@ func TestEbookParser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "book.epub")
 	writeEPUB(t, path)
 
-	md, err := EbookParser{}.Parse(book.NewPathBlob(path))
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +81,34 @@ func TestEbookParser(t *testing.T) {
 }
 
 func TestEbookParserMissingFile(t *testing.T) {
-	_, err := EbookParser{}.Parse(book.NewPathBlob(filepath.Join(t.TempDir(), "missing.epub")))
+	_, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(filepath.Join(t.TempDir(), "missing.epub")))
 	if err == nil {
 		t.Fatal("expected an error for a missing file")
+	}
+}
+
+func TestEbookParserCanceledContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	writeEPUB(t, path)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := EbookParser{}.Parse(ctx, book.NewPathBlob(path))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestContextBlobCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	b := withContext(ctx, book.NewBytesBlob([]byte("data")))
+	if _, err := b.Size(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Size: expected context.Canceled, got %v", err)
+	}
+	if _, err := b.ReadAt(make([]byte, 4), 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadAt: expected context.Canceled, got %v", err)
 	}
 }

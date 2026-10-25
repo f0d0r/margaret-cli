@@ -25,7 +25,7 @@ import (
 // parser that validates content.
 type stubParser struct{}
 
-func (stubParser) Parse(_ book.Blob) (parser.Metadata, error) {
+func (stubParser) Parse(_ context.Context, _ book.Blob) (parser.Metadata, error) {
 	return parser.Metadata{}, nil
 }
 
@@ -617,7 +617,7 @@ type readerParser struct {
 	failContent string
 }
 
-func (p readerParser) Parse(b book.Blob) (parser.Metadata, error) {
+func (p readerParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	content, err := readBlobAll(b)
 	if err != nil {
 		return parser.Metadata{}, err
@@ -632,7 +632,7 @@ func (p readerParser) Parse(b book.Blob) (parser.Metadata, error) {
 // archive members surface while the member is being spooled to disk.
 type readingParser struct{}
 
-func (readingParser) Parse(b book.Blob) (parser.Metadata, error) {
+func (readingParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	_, err := readBlobAll(b)
 	return parser.Metadata{}, err
 }

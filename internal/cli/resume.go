@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -113,7 +114,7 @@ func promptScanMode(ctx context.Context, q *db.Queries, root string) (scanMode, 
 	fmt.Printf("    to reprocess everything.\n")
 	fmt.Printf("  [f]resh: delete existing data and start from a clean slate.\n")
 	fmt.Printf("  [r]esume (default) / [f]resh: ")
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := readAnswer(ctx, os.Stdin)
 	if err != nil {
 		return modeFresh, fmt.Errorf("read answer: %w", err)
 	}
@@ -124,6 +125,26 @@ func promptScanMode(ctx context.Context, q *db.Queries, root string) (scanMode, 
 		return modeFresh, nil
 	default:
 		return modeFresh, fmt.Errorf("unknown choice %q: expected resume or fresh", strings.TrimSpace(line))
+	}
+}
+
+// readAnswer reads one line in the background so an interrupt at the prompt is
+// not swallowed by a blocking stdin read.
+func readAnswer(ctx context.Context, r io.Reader) (string, error) {
+	type answer struct {
+		line string
+		err  error
+	}
+	answers := make(chan answer, 1)
+	go func() {
+		line, err := bufio.NewReader(r).ReadString('\n')
+		answers <- answer{line: line, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-answers:
+		return res.line, res.err
 	}
 }
 
