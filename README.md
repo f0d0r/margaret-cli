@@ -379,16 +379,34 @@ its own metadata:
   {
     "authors": ["Herman Melville"],
     "title": "Moby Dick",
+    "description": "The story of Captain Ahab's hunt for the white whale.",
+    "series": "",
+    "series_index": "",
+    "subjects": ["Sea stories", "Adventure"],
+    "languages": ["en"],
+    "identifiers": [
+      {"scheme": "ISBN", "value": "9780142437247", "source": "METADATA_AND_TEXT"}
+    ],
+    "publications": [
+      {"publisher": "Harper & Brothers", "publication_date": "1851"},
+      {"publisher": "Penguin Classics", "publication_date": "2003"}
+    ],
     "files": [
       {
         "path": "books/mobydick.epub",
         "authors": ["Herman Melville"],
-        "title": "Moby Dick"
+        "title": "Moby Dick",
+        "identifiers": [
+          {"scheme": "ISBN", "value": "9780142437247", "source": "METADATA_AND_TEXT"}
+        ]
       },
       {
         "path": "backup/mobydick.mobi",
         "authors": ["Herman Melville"],
-        "title": "Moby Dick; Or, The Whale"
+        "title": "Moby Dick; Or, The Whale",
+        "identifiers": [
+          {"scheme": "ISBN", "value": "9780142437247", "source": "METADATA_AND_TEXT"}
+        ]
       }
     ]
   }
@@ -424,10 +442,14 @@ transaction, so results do not depend on worker scheduling.
 
 ### Book-level metadata
 
-`books.json` picks one title and one author list per book; the per-file
-entries keep their original titles (whitespace-normalized) and their
-placeholder-filtered authors. All of the below runs at report time only —
-the database is never rewritten:
+`books.json` picks one title, one author list and the remaining book-level
+metadata per book; the per-file entries keep their original titles
+(whitespace-normalized), their placeholder-filtered authors and their
+identifiers with provenance. The chosen values are computed by `Consolidate`
+after a successful scan and stored in the `books` and `book_*` tables; the
+raw `book_files` metadata is preserved. The reports read the consolidated
+book-level values; file entries read the stored per-file identifiers. All
+comparisons below use normalized keys:
 
 - **Normalization.** Comparisons use trimmed, whitespace-collapsed,
   lower-cased keys; diacritics are folded (NFD mark-stripping for Latin
@@ -471,6 +493,52 @@ the database is never rewritten:
   (whole-word, order-free, diacritic-folded match; the result must stay
   non-empty). Genuine titles such as `Stephen King Goes to the Movies`
   are unaffected.
+- **Description.** HTML markup is converted to plain text before voting
+  (tags become spaces, entities are decoded, and `script`/`style`/`head`
+  contents are dropped). The most common normalized text wins; ties prefer
+  the longer text. The raw `book_files.description` is preserved as
+  extracted.
+- **Publications.** Every distinct publisher/publication-date pair is kept,
+  so different files may contribute different editions of the same book.
+  Publisher names are grouped case-insensitively (diacritics folded) and
+  the first spelling is kept; pairs are deduplicated and emitted in
+  first-seen order. An undated occurrence does not create a separate
+  blank-date entry when the same publisher already has at least one dated
+  entry; if the publisher has no valid date at all, one blank-date entry is
+  kept. A valid date without a publisher is kept as a pair with an empty
+  publisher.
+- **Publication date validation.** Dates are normalized to `YYYY`,
+  `YYYY-MM` or `YYYY-MM-DD`; RFC3339/ISO datetimes are truncated to their
+  date. Impossible dates, free-form values such as `circa 1999` or
+  `1999. május`, and implausible years outside `1000`..current year + 1
+  (for example `0101-01-01`) are dropped. A publisher with no valid date
+  keeps an empty date.
+- **Series.** The most common normalized series name wins. `series_index`
+  is voted only among files that carry the chosen series, so an index can
+  never be paired with a different series.
+- **Subjects.** The union of all files' subjects, deduplicated
+  case-insensitively; the first spelling and order are kept.
+- **Languages.** Only valid BCP 47 tags are kept, canonicalized (for
+  example `en_US` becomes `en-US`). Empty values, invalid codes such as
+  `english`, and the meaningless bases `und`, `mul`, `zxx` and `mis` are
+  dropped. The result is the union of the remaining tags in first-seen
+  order.
+- **Identifiers and source.** Every identifier carries a `source`:
+  `METADATA`, `TEXT` or `METADATA_AND_TEXT`. Book-level identifiers store
+  only ISBNs; file-level identifiers keep other schemes as well. Values are
+  validated, ISBN-10 values are converted to ISBN-13, and the result is
+  deduplicated by value. If the same ISBN comes from both metadata and
+  text, it becomes one entry with `METADATA_AND_TEXT`.
+- **ISBN fallback from text.** The parser always scans plain text for ISBN
+  candidates, even when metadata already has an ISBN. It captures the first
+  64 KiB of the linear reading order; if that yields no ISBN, it checks the
+  first 64 KiB of each non-linear spine item and manifest-only textual
+  resource. The end of the linear text is not scanned. The extraction
+  follows the isbnx approach (ISBN markers, ISBN-10/ISBN-13 patterns,
+  978/979 fallback), converts Arabic-Indic and Persian digits to ASCII,
+  and validates every candidate with the same ISBN parser used for
+  metadata. At most one unique ISBN-13 is added as a file-level ISBN
+  identifier; the linear scan is a separate pass over the reading order.
 
 The rules above naturally cannot guarantee fully correct data: metadata
 incorrectness occurs in a huge variety of forms, so the reports are worth
@@ -503,6 +571,10 @@ paths:
 margaret report
 margaret report --db /tmp/test.db --books-out /tmp/books.json
 ```
+
+`report` reads the consolidated book-level metadata but does not recompute
+it; the values come from the last successful scan. Databases created before
+the metadata columns existed need a fresh scan (`--fresh`) to populate them.
 
 `failures.json` cannot be regenerated: failures are produced during the scan
 and are not stored in the database. Against an empty or missing database the

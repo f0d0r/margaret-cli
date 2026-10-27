@@ -1,18 +1,30 @@
-// Package parser reads author and title metadata out of ebook files.
+// Package parser reads metadata out of ebook files.
 package parser
 
 import (
 	"context"
 
+	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-ebook-library/book"
 )
 
 // Metadata holds the metadata extracted from an ebook file.
 type Metadata struct {
-	Authors []string
-	Title   string
-	Hash    string
-	MinHash []uint64
+	Authors     []string
+	Title       string
+	Description string
+	Subjects    []string
+	Languages   []string
+	// Identifiers holds metadata identifiers plus at most one validated
+	// ISBN-13 extracted from the linear text head or the head of a non-linear
+	// textual resource, with provenance for each value.
+	Identifiers     []identifier.Identifier
+	Publisher       string
+	PublicationDate string
+	Series          string
+	SeriesIndex     string
+	Hash            string
+	MinHash         []uint64
 }
 
 // Parser reads metadata from a single ebook. ebookData provides random access

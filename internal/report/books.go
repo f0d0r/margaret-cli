@@ -9,32 +9,55 @@ import (
 	"os"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/tx"
 )
 
 // BookFileReport is the JSON representation of one file belonging to a book.
 type BookFileReport struct {
-	Path    string   `json:"path"`
-	Authors []string `json:"authors"`
-	Title   string   `json:"title"`
+	Path        string           `json:"path"`
+	Authors     []string         `json:"authors"`
+	Title       string           `json:"title"`
+	Identifiers []BookIdentifier `json:"identifiers"`
+}
+
+// BookIdentifier is the JSON representation of an identifier with provenance.
+type BookIdentifier struct {
+	Scheme string            `json:"scheme"`
+	Value  string            `json:"value"`
+	Source identifier.Source `json:"source"`
+}
+
+// BookPublication is one publisher/publication-date pair of a book.
+type BookPublication struct {
+	Publisher       string `json:"publisher"`
+	PublicationDate string `json:"publication_date"`
 }
 
 // BookReport is the JSON representation of one book: the chosen
 // (book-level) metadata plus every file grouped under it.
 type BookReport struct {
-	Authors []string         `json:"authors"`
-	Title   string           `json:"title"`
-	Files   []BookFileReport `json:"files"`
+	Authors      []string          `json:"authors"`
+	Title        string            `json:"title"`
+	Description  string            `json:"description"`
+	Series       string            `json:"series"`
+	SeriesIndex  string            `json:"series_index"`
+	Subjects     []string          `json:"subjects"`
+	Languages    []string          `json:"languages"`
+	Identifiers  []BookIdentifier  `json:"identifiers"`
+	Publications []BookPublication `json:"publications"`
+	Files        []BookFileReport  `json:"files"`
 }
 
 // Consolidate derives the canonical book-level metadata from the raw
-// per-file metadata and persists it: books.title holds the consensus washed
-// title (updating books_fts via triggers) and book_authors links to the
-// picked, cleaned authors. book_files and book_file_authors are never
-// touched, so the raw extracted metadata is preserved. Finally, authors
-// referenced by neither book_authors nor book_file_authors are deleted
-// (cleaning authors_fts via triggers). The pass is idempotent: it always
-// recomputes from the raw file rows.
+// per-file metadata and persists it: books holds the consensus washed title
+// (updating books_fts via triggers) and the merged, validated metadata;
+// book_authors, book_subjects, book_languages, book_identifiers and
+// book_publications hold the picked values. book_files and its child tables
+// are never touched, so the raw extracted metadata is preserved. Finally,
+// authors referenced by neither book_authors nor book_file_authors are
+// deleted (cleaning authors_fts via triggers). The pass is idempotent: it
+// always recomputes from the raw file rows.
 func Consolidate(ctx context.Context, sqldb *sql.DB, q *db.Queries) error {
 	run := func(txCtx context.Context, txQ *db.Queries) error {
 		reports, order, err := buildBookReports(txCtx, txQ)
@@ -43,11 +66,8 @@ func Consolidate(ctx context.Context, sqldb *sql.DB, q *db.Queries) error {
 		}
 		for _, id := range order {
 			r := reports[id]
-			if err := txQ.UpdateBookTitle(txCtx, db.UpdateBookTitleParams{
-				ID:    id,
-				Title: r.Title,
-			}); err != nil {
-				return fmt.Errorf("update book %d title: %w", id, err)
+			if err := persistBookMetadata(txCtx, txQ, id, r); err != nil {
+				return err
 			}
 			if err := txQ.DeleteBookAuthorsByBookID(txCtx, id); err != nil {
 				return fmt.Errorf("delete book %d authors: %w", id, err)
@@ -82,10 +102,74 @@ func Consolidate(ctx context.Context, sqldb *sql.DB, q *db.Queries) error {
 	return run(ctx, q)
 }
 
+func persistBookMetadata(ctx context.Context, q *db.Queries, id int64, r BookReport) error {
+	if err := q.UpdateBookMetadata(ctx, db.UpdateBookMetadataParams{
+		ID:          id,
+		Title:       r.Title,
+		Description: r.Description,
+		Series:      r.Series,
+		SeriesIndex: r.SeriesIndex,
+	}); err != nil {
+		return fmt.Errorf("update book %d metadata: %w", id, err)
+	}
+	if err := q.DeleteBookSubjectsByBookID(ctx, id); err != nil {
+		return fmt.Errorf("delete book %d subjects: %w", id, err)
+	}
+	for i, name := range r.Subjects {
+		if err := q.CreateBookSubject(ctx, db.CreateBookSubjectParams{
+			BookID:  id,
+			Name:    name,
+			Ordinal: int64(i),
+		}); err != nil {
+			return fmt.Errorf("create book %d subject %q: %w", id, name, err)
+		}
+	}
+	if err := q.DeleteBookLanguagesByBookID(ctx, id); err != nil {
+		return fmt.Errorf("delete book %d languages: %w", id, err)
+	}
+	for i, name := range r.Languages {
+		if err := q.CreateBookLanguage(ctx, db.CreateBookLanguageParams{
+			BookID:  id,
+			Name:    name,
+			Ordinal: int64(i),
+		}); err != nil {
+			return fmt.Errorf("create book %d language %q: %w", id, name, err)
+		}
+	}
+	if err := q.DeleteBookIdentifiersByBookID(ctx, id); err != nil {
+		return fmt.Errorf("delete book %d identifiers: %w", id, err)
+	}
+	for i, identifier := range r.Identifiers {
+		if err := q.CreateBookIdentifier(ctx, db.CreateBookIdentifierParams{
+			BookID:  id,
+			Scheme:  identifier.Scheme,
+			Value:   identifier.Value,
+			Source:  string(identifier.Source),
+			Ordinal: int64(i),
+		}); err != nil {
+			return fmt.Errorf("create book %d identifier %q: %w", id, identifier.Value, err)
+		}
+	}
+	if err := q.DeleteBookPublicationsByBookID(ctx, id); err != nil {
+		return fmt.Errorf("delete book %d publications: %w", id, err)
+	}
+	for i, publication := range r.Publications {
+		if err := q.CreateBookPublication(ctx, db.CreateBookPublicationParams{
+			BookID:          id,
+			Publisher:       publication.Publisher,
+			PublicationDate: publication.PublicationDate,
+			Ordinal:         int64(i),
+		}); err != nil {
+			return fmt.Errorf("create book %d publication %q: %w", id, publication.Publisher, err)
+		}
+	}
+	return nil
+}
+
 // WriteBooks writes a JSON report of the books found during the scan to path.
-// Book-level title and authors are read from the consolidated books and
-// book_authors tables (populated by Consolidate during scan); file entries
-// keep their raw per-file metadata. Exact duplicates (same content hash) are
+// Book-level metadata is read from the consolidated books and book_* tables
+// (populated by Consolidate during scan); file entries keep their raw
+// per-file metadata. Exact duplicates (same content hash) are
 // listed under their parent book, inheriting the canonical file's metadata.
 // When no books were found nothing is written, so no empty file is left
 // behind.
@@ -130,9 +214,9 @@ func GetBooks(ctx context.Context, q *db.Queries) ([]BookReport, error) {
 // requested order. Unknown IDs are skipped. When ids is empty, nil is returned
 // without reading the database.
 //
-// Book-level title and authors are read directly from the consolidated
-// books/book_authors tables (populated by Consolidate during scan); only the
-// requested books are loaded. File entries keep their raw per-file metadata.
+// Book-level metadata is read directly from the consolidated books/book_*
+// tables (populated by Consolidate during scan); only the requested books are
+// loaded. File entries keep their raw per-file metadata.
 func GetBooksFiltered(ctx context.Context, q *db.Queries, ids []int64) ([]BookReport, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -155,9 +239,9 @@ func GetBooksFiltered(ctx context.Context, q *db.Queries, ids []int64) ([]BookRe
 	return out, nil
 }
 
-// getBookReport reads one consolidated book report: the canonical title and
-// authors plus the raw member files and exact duplicates. It reports false
-// when the book ID is unknown.
+// getBookReport reads one consolidated book report: the canonical metadata
+// plus the raw member files and exact duplicates. It reports false when the
+// book ID is unknown.
 func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bool, error) {
 	book, err := q.GetBookByID(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -174,6 +258,55 @@ func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bo
 	for _, a := range authorRows {
 		authors = append(authors, a.Name)
 	}
+	subjects, err := q.ListBookSubjectsByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list subjects of book %d: %w", id, err)
+	}
+	if subjects == nil {
+		subjects = []string{}
+	}
+	languages, err := q.ListBookLanguagesByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list languages of book %d: %w", id, err)
+	}
+	if languages == nil {
+		languages = []string{}
+	}
+	identifierRows, err := q.ListBookIdentifiersByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list identifiers of book %d: %w", id, err)
+	}
+	identifiers := make([]BookIdentifier, 0, len(identifierRows))
+	for _, row := range identifierRows {
+		identifiers = append(identifiers, BookIdentifier{
+			Scheme: row.Scheme,
+			Value:  row.Value,
+			Source: identifier.Source(row.Source),
+		})
+	}
+	fileIdentifierRows, err := q.ListBookFileIdentifiersByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list file identifiers of book %d: %w", id, err)
+	}
+	fileIdentifiers := make(map[int64][]BookIdentifier)
+	for _, row := range fileIdentifierRows {
+		fileIdentifiers[row.BookFileID] = append(fileIdentifiers[row.BookFileID], BookIdentifier{
+			Scheme: row.Scheme,
+			Value:  row.Value,
+			Source: identifier.Source(row.Source),
+		})
+	}
+	publicationRows, err := q.ListBookPublicationsByBookID(ctx, id)
+	if err != nil {
+		return BookReport{}, false, fmt.Errorf("list publications of book %d: %w", id, err)
+	}
+	publications := make([]BookPublication, 0, len(publicationRows))
+	for _, publication := range publicationRows {
+		publications = append(publications, BookPublication{
+			Publisher:       publication.Publisher,
+			PublicationDate: publication.PublicationDate,
+		})
+	}
 	fileRows, err := q.ListBookFilesWithAuthorsByBookID(ctx, id)
 	if err != nil {
 		return BookReport{}, false, fmt.Errorf("list files of book %d: %w", id, err)
@@ -182,10 +315,15 @@ func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bo
 	byPath := make(map[string]bool, len(fileRows))
 	for _, r := range fileRows {
 		fileAuthors := filterFileAuthors(r.FileAuthors, r.FileTitle)
+		ids := fileIdentifiers[r.FileID]
+		if ids == nil {
+			ids = []BookIdentifier{}
+		}
 		files = append(files, BookFileReport{
-			Path:    r.FilePath,
-			Authors: fileAuthors,
-			Title:   normalizeMeta(r.FileTitle),
+			Path:        r.FilePath,
+			Authors:     fileAuthors,
+			Title:       normalizeMeta(r.FileTitle),
+			Identifiers: ids,
 		})
 		byPath[r.FilePath] = true
 	}
@@ -200,14 +338,26 @@ func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bo
 				continue
 			}
 			files = append(files, BookFileReport{
-				Path:    dupPath,
-				Authors: parent.Authors,
-				Title:   parent.Title,
+				Path:        dupPath,
+				Authors:     parent.Authors,
+				Title:       parent.Title,
+				Identifiers: append([]BookIdentifier{}, parent.Identifiers...),
 			})
 			byPath[dupPath] = true
 		}
 	}
-	return BookReport{Authors: authors, Title: book.Title, Files: files}, true, nil
+	return BookReport{
+		Authors:      authors,
+		Title:        book.Title,
+		Description:  book.Description,
+		Series:       book.Series,
+		SeriesIndex:  book.SeriesIndex,
+		Subjects:     subjects,
+		Languages:    languages,
+		Identifiers:  identifiers,
+		Publications: publications,
+		Files:        files,
+	}, true, nil
 }
 
 // filterFileAuthors splits a GROUP_CONCAT file-authors aggregate the same way
@@ -254,10 +404,10 @@ func WriteBooksFiltered(ctx context.Context, q *db.Queries, ids []int64, path st
 }
 
 // buildBookReports runs the shared books-report pipeline: it groups member
-// files under their books, attaches exact duplicates and resolves
-// book-level authors and title with the pickAuthors/pickTitle heuristics.
-// It returns the per-book reports keyed by book ID plus the natural
-// (book ID) order.
+// files under their books, attaches exact duplicates, merges and validates
+// the remaining metadata, and resolves book-level authors and title with the
+// pickAuthors/pickTitle heuristics. It returns the per-book reports keyed by
+// book ID plus the natural (book ID) order.
 func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport, []int64, error) {
 	rows, err := q.ListBooksWithFiles(ctx)
 	if err != nil {
@@ -272,11 +422,46 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 		return nil, nil, fmt.Errorf("list duplicates with book: %w", err)
 	}
 
+	subjectRows, err := q.ListBookFileSubjectsWithBook(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list file subjects with book: %w", err)
+	}
+	subjectsByBook := make(map[int64][]string)
+	for _, r := range subjectRows {
+		subjectsByBook[r.BookID] = append(subjectsByBook[r.BookID], r.Name)
+	}
+
+	languageRows, err := q.ListBookFileLanguagesWithBook(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list file languages with book: %w", err)
+	}
+	languagesByBook := make(map[int64][]string)
+	for _, r := range languageRows {
+		languagesByBook[r.BookID] = append(languagesByBook[r.BookID], r.Name)
+	}
+
+	identifierRows, err := q.ListBookFileIdentifiersWithBook(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list file identifiers with book: %w", err)
+	}
+	identifiersByBook := make(map[int64][]BookIdentifier)
+	fileIdentifiers := make(map[int64][]BookIdentifier)
+	for _, r := range identifierRows {
+		item := BookIdentifier{
+			Scheme: r.Scheme,
+			Value:  r.Value,
+			Source: identifier.Source(r.Source),
+		}
+		identifiersByBook[r.BookID] = append(identifiersByBook[r.BookID], item)
+		fileIdentifiers[r.BookFileID] = append(fileIdentifiers[r.BookFileID], item)
+	}
+
 	type entry struct {
-		titles    []string
-		authorSet [][]string
-		files     []BookFileReport
-		byPath    map[string]bool
+		titles        []string
+		authorSet     [][]string
+		metadataFiles []fileMetadata
+		files         []BookFileReport
+		byPath        map[string]bool
 	}
 	books := make(map[int64]*entry)
 	var order []int64
@@ -304,10 +489,22 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 		}
 		b.titles = append(b.titles, r.FileTitle)
 		b.authorSet = append(b.authorSet, authors)
+		b.metadataFiles = append(b.metadataFiles, fileMetadata{
+			description:     r.FileDescription,
+			publisher:       r.FilePublisher,
+			publicationDate: r.FilePublicationDate,
+			series:          r.FileSeries,
+			seriesIndex:     r.FileSeriesIndex,
+		})
+		ids := fileIdentifiers[r.FileID]
+		if ids == nil {
+			ids = []BookIdentifier{}
+		}
 		b.files = append(b.files, BookFileReport{
-			Path:    r.FilePath,
-			Authors: authors,
-			Title:   fileTitle,
+			Path:        r.FilePath,
+			Authors:     authors,
+			Title:       fileTitle,
+			Identifiers: ids,
 		})
 		b.byPath[r.FilePath] = true
 	}
@@ -323,9 +520,10 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 		}
 		parent := b.files[0]
 		b.files = append(b.files, BookFileReport{
-			Path:    d.DuplicatePath,
-			Authors: parent.Authors,
-			Title:   parent.Title,
+			Path:        d.DuplicatePath,
+			Authors:     parent.Authors,
+			Title:       parent.Title,
+			Identifiers: append([]BookIdentifier{}, parent.Identifiers...),
 		})
 		b.byPath[d.DuplicatePath] = true
 	}
@@ -401,10 +599,23 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 			}
 			title = washAuthorAffix(title, sets)
 		}
+		metadata := mergeBookMetadata(
+			b.metadataFiles,
+			subjectsByBook[id],
+			languagesByBook[id],
+			identifiersByBook[id],
+		)
 		reports[id] = BookReport{
-			Authors: authors,
-			Title:   title,
-			Files:   b.files,
+			Authors:      authors,
+			Title:        title,
+			Description:  metadata.description,
+			Series:       metadata.series,
+			SeriesIndex:  metadata.seriesIndex,
+			Subjects:     metadata.subjects,
+			Languages:    metadata.languages,
+			Identifiers:  metadata.identifiers,
+			Publications: metadata.publications,
+			Files:        b.files,
 		}
 	}
 	return reports, order, nil
