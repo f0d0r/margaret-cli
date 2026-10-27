@@ -333,10 +333,15 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		}
 
 		bookFileID, err := q.CreateBookFile(txCtx, db.CreateBookFileParams{
-			Hash:    md.Hash,
-			Path:    displayPath,
-			Title:   md.Title,
-			Minhash: encodeMinHash(md.MinHash),
+			Hash:            md.Hash,
+			Path:            displayPath,
+			Title:           md.Title,
+			Minhash:         encodeMinHash(md.MinHash),
+			Description:     md.Description,
+			Publisher:       md.Publisher,
+			PublicationDate: md.PublicationDate,
+			Series:          md.Series,
+			SeriesIndex:     md.SeriesIndex,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := q.CreateBookFileDuplicate(txCtx, db.CreateBookFileDuplicateParams{
@@ -349,6 +354,10 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		}
 		if err != nil {
 			return fmt.Errorf("create book file: %w", err)
+		}
+
+		if err := storeBookFileMetadata(txCtx, q, bookFileID, md); err != nil {
+			return err
 		}
 
 		for _, authorID := range authorIDs {
@@ -451,6 +460,40 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		p.onResult(Result{File: scanner.Result{Path: displayPath, Format: format}, Metadata: md})
 	}
 	p.report()
+}
+
+// storeBookFileMetadata stores the multi-valued metadata of a book file.
+func storeBookFileMetadata(ctx context.Context, q *db.Queries, bookFileID int64, md parser.Metadata) error {
+	for i, name := range md.Subjects {
+		if err := q.CreateBookFileSubject(ctx, db.CreateBookFileSubjectParams{
+			BookFileID: bookFileID,
+			Name:       name,
+			Ordinal:    int64(i),
+		}); err != nil {
+			return fmt.Errorf("store subject %q: %w", name, err)
+		}
+	}
+	for i, name := range md.Languages {
+		if err := q.CreateBookFileLanguage(ctx, db.CreateBookFileLanguageParams{
+			BookFileID: bookFileID,
+			Name:       name,
+			Ordinal:    int64(i),
+		}); err != nil {
+			return fmt.Errorf("store language %q: %w", name, err)
+		}
+	}
+	for i, identifier := range md.Identifiers {
+		if err := q.CreateBookFileIdentifier(ctx, db.CreateBookFileIdentifierParams{
+			BookFileID: bookFileID,
+			Scheme:     identifier.Scheme,
+			Value:      identifier.Value,
+			Source:     string(identifier.Source),
+			Ordinal:    int64(i),
+		}); err != nil {
+			return fmt.Errorf("store identifier %s:%s: %w", identifier.Scheme, identifier.Value, err)
+		}
+	}
+	return nil
 }
 
 // encodeMinHash encodes a MinHash signature ([]uint64) as a BLOB (little-endian).

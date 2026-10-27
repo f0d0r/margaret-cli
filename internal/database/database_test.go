@@ -338,8 +338,15 @@ var expectedSchemaTables = []string{
 	"book_book_files",
 	"book_file_authors",
 	"book_file_duplicates",
+	"book_file_identifiers",
+	"book_file_languages",
 	"book_file_lsh_buckets",
+	"book_file_subjects",
 	"book_files",
+	"book_identifiers",
+	"book_languages",
+	"book_publications",
+	"book_subjects",
 	"books",
 	"books_fts",
 	"books_fts_config",
@@ -440,6 +447,23 @@ func TestClearCoversEntireSchema(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	metadataInserts := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO book_file_subjects (book_file_id, name) VALUES (?, ?)`, []any{fileID, "Sea stories"}},
+		{`INSERT INTO book_file_languages (book_file_id, name) VALUES (?, ?)`, []any{fileID, "en"}},
+		{`INSERT INTO book_file_identifiers (book_file_id, scheme, value) VALUES (?, ?, ?)`, []any{fileID, "ISBN", "9780000000000"}},
+		{`INSERT INTO book_subjects (book_id, name) VALUES (?, ?)`, []any{bookID, "Sea stories"}},
+		{`INSERT INTO book_languages (book_id, name) VALUES (?, ?)`, []any{bookID, "en"}},
+		{`INSERT INTO book_identifiers (book_id, scheme, value) VALUES (?, ?, ?)`, []any{bookID, "ISBN", "9780000000000"}},
+		{`INSERT INTO book_publications (book_id, publisher, publication_date) VALUES (?, ?, ?)`, []any{bookID, "Test Press", "2020"}},
+	}
+	for _, insert := range metadataInserts {
+		if _, err := conn.Exec(insert.query, insert.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// Sanity check: every content table really holds a row, so the emptiness
 	// assertions below are meaningful.
@@ -451,8 +475,15 @@ func TestClearCoversEntireSchema(t *testing.T) {
 		"authors_fts",
 		"book_file_authors",
 		"book_file_duplicates",
+		"book_file_identifiers",
+		"book_file_languages",
+		"book_file_subjects",
 		"book_book_files",
 		"book_authors",
+		"book_identifiers",
+		"book_languages",
+		"book_publications",
+		"book_subjects",
 		"book_file_lsh_buckets",
 	} {
 		var n int
@@ -496,9 +527,9 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// TestDownUpRoundTrip guards the migration Down branch against drift: after
-// goose down no user table may remain (this caught the missing books_fts
-// drops), and goose up must restore the full schema afterwards.
+// TestDownUpRoundTrip guards the migration Down branches against drift: after
+// resetting all migrations no user table may remain (this caught the missing
+// books_fts drops), and goose up must restore the full schema afterwards.
 func TestDownUpRoundTrip(t *testing.T) {
 	conn, err := Open(":memory:")
 	if err != nil {
@@ -512,16 +543,78 @@ func TestDownUpRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	goose.SetBaseFS(migrationsFS)
-	if err := goose.Down(conn, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
+	if err := goose.Reset(conn, "migrations"); err != nil {
+		t.Fatalf("goose reset: %v", err)
 	}
 	if got := listUserTables(t, conn); len(got) != 0 {
-		t.Fatalf("expected no user tables after down, got %v", got)
+		t.Fatalf("expected no user tables after reset, got %v", got)
 	}
 	if err := goose.Up(conn, "migrations"); err != nil {
 		t.Fatalf("goose up: %v", err)
 	}
 	if got := listUserTables(t, conn); !equalStrings(got, expectedSchemaTables) {
 		t.Fatalf("schema after down+up holds %v, expected %v", got, expectedSchemaTables)
+	}
+}
+
+func TestIdentifierSources(t *testing.T) {
+	conn, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ctx := context.Background()
+	q := db.New(conn)
+	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+		Hash: "source-hash",
+		Path: "books/source.epub",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookID, err := q.CreateBook(ctx, "Source Book")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookFileIdentifier(ctx, db.CreateBookFileIdentifierParams{
+		BookFileID: fileID,
+		Scheme:     "ISBN",
+		Value:      "9780306406157",
+		Source:     "TEXT",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookIdentifier(ctx, db.CreateBookIdentifierParams{
+		BookID: bookID,
+		Scheme: "ISBN",
+		Value:  "9780306406157",
+		Source: "METADATA_AND_TEXT",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var fileSource, bookSource string
+	if err := conn.QueryRow(
+		`SELECT source FROM book_file_identifiers WHERE book_file_id = ? AND scheme = 'ISBN'`,
+		fileID,
+	).Scan(&fileSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(
+		`SELECT source FROM book_identifiers WHERE book_id = ? AND scheme = 'ISBN'`,
+		bookID,
+	).Scan(&bookSource); err != nil {
+		t.Fatal(err)
+	}
+	if fileSource != "TEXT" || bookSource != "METADATA_AND_TEXT" {
+		t.Errorf("sources = (%q, %q), want (%q, %q)", fileSource, bookSource, "TEXT", "METADATA_AND_TEXT")
+	}
+
+	if _, err := conn.Exec(
+		`INSERT INTO book_identifiers (book_id, scheme, value, source) VALUES (?, 'ISBN', '9780000000000', 'BOGUS')`,
+		bookID,
+	); err == nil {
+		t.Error("expected invalid source to be rejected")
 	}
 }

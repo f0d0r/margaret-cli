@@ -11,6 +11,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	ident "github.com/f0d0r/margaret-cli/internal/identifier"
 )
 
 func openConsolidateDB(t *testing.T) (*sql.DB, *db.Queries, func()) {
@@ -31,11 +32,24 @@ func consolidateDB(t *testing.T, conn *sql.DB, q *db.Queries) {
 
 func addConsolidateFile(t *testing.T, q *db.Queries, ctx context.Context, bookID int64, hash, path, title string, authors []string) {
 	t.Helper()
-	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+	addConsolidateFileWithMetadata(t, q, ctx, bookID, db.CreateBookFileParams{
 		Hash:  hash,
 		Path:  path,
 		Title: title,
-	})
+	}, authors, nil, nil, nil)
+}
+
+func addConsolidateFileWithMetadata(
+	t *testing.T,
+	q *db.Queries,
+	ctx context.Context,
+	bookID int64,
+	params db.CreateBookFileParams,
+	authors, subjects, languages []string,
+	identifiers []ident.Identifier,
+) {
+	t.Helper()
+	fileID, err := q.CreateBookFile(ctx, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +58,35 @@ func addConsolidateFile(t *testing.T, q *db.Queries, ctx context.Context, bookID
 		BookFileID: fileID,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	for i, subject := range subjects {
+		if err := q.CreateBookFileSubject(ctx, db.CreateBookFileSubjectParams{
+			BookFileID: fileID,
+			Name:       subject,
+			Ordinal:    int64(i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, language := range languages {
+		if err := q.CreateBookFileLanguage(ctx, db.CreateBookFileLanguageParams{
+			BookFileID: fileID,
+			Name:       language,
+			Ordinal:    int64(i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, identifier := range identifiers {
+		if err := q.CreateBookFileIdentifier(ctx, db.CreateBookFileIdentifierParams{
+			BookFileID: fileID,
+			Scheme:     identifier.Scheme,
+			Value:      identifier.Value,
+			Source:     string(identifier.Source),
+			Ordinal:    int64(i),
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, name := range authors {
 		if err := q.CreateAuthor(ctx, name); err != nil {
@@ -140,6 +183,293 @@ func TestConsolidateCleansBookAuthors(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 file rows, got %d", len(rows))
+	}
+}
+
+func TestConsolidatePersistsBookMetadata(t *testing.T) {
+	conn, q, cleanup := openConsolidateDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bookID, err := q.CreateBook(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addConsolidateFileWithMetadata(t, q, ctx, bookID, db.CreateBookFileParams{
+		Hash:            "h1",
+		Path:            "books/dune.epub",
+		Title:           "Dune",
+		Description:     "<p>Short</p>",
+		Publisher:       "Penguin",
+		PublicationDate: "1999-05-04T00:00:00Z",
+		Series:          "Saga",
+		SeriesIndex:     "1",
+	}, []string{"Frank Herbert"},
+		[]string{"Fiction", "Adventure"},
+		[]string{"en"},
+		[]ident.Identifier{
+			{Scheme: "ISBN", Value: "9780306406157", Source: ident.SourceMetadata},
+			{Scheme: "DOI", Value: "10.1000/test", Source: ident.SourceMetadata},
+			{Scheme: "ISBN", Value: "9780375704024", Source: ident.SourceMetadata},
+		})
+	addConsolidateFileWithMetadata(t, q, ctx, bookID, db.CreateBookFileParams{
+		Hash:            "h2",
+		Path:            "books/dune.mobi",
+		Title:           "Dune",
+		Description:     "<div>A much longer description</div>",
+		Publisher:       "Penguin",
+		PublicationDate: "1999",
+		Series:          "Saga",
+		SeriesIndex:     "2",
+	}, []string{"Frank Herbert"},
+		[]string{"fiction", "Science"},
+		[]string{"en-US", "english", "und"},
+		[]ident.Identifier{
+			{Scheme: "ISBN", Value: "9780306406157", Source: ident.SourceText},
+			{Scheme: "ISBN", Value: "9780375704024", Source: ident.SourceText},
+			{Scheme: "ISBN", Value: "9780306406158", Source: ident.SourceMetadata},
+		})
+
+	consolidateDB(t, conn, q)
+
+	book, err := q.GetBookByID(ctx, bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if book.Title != "Dune" {
+		t.Errorf("title = %q", book.Title)
+	}
+	if book.Description != "A much longer description" {
+		t.Errorf("description = %q", book.Description)
+	}
+	if book.Series != "Saga" || book.SeriesIndex != "1" {
+		t.Errorf("series = %q, index = %q", book.Series, book.SeriesIndex)
+	}
+	if got := bookAuthors(t, q, bookID); !reflect.DeepEqual(got, []string{"Frank Herbert"}) {
+		t.Errorf("authors = %q", got)
+	}
+
+	var rawDescription string
+	if err := conn.QueryRow(
+		`SELECT description FROM book_files WHERE hash = 'h1'`,
+	).Scan(&rawDescription); err != nil {
+		t.Fatal(err)
+	}
+	if rawDescription != "<p>Short</p>" {
+		t.Errorf("raw description not preserved: %q", rawDescription)
+	}
+
+	subjects, err := q.ListBookSubjectsByBookID(ctx, bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Fiction", "Adventure", "Science"}; !reflect.DeepEqual(subjects, want) {
+		t.Errorf("subjects = %v, want %v", subjects, want)
+	}
+	languages, err := q.ListBookLanguagesByBookID(ctx, bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"en", "en-US"}; !reflect.DeepEqual(languages, want) {
+		t.Errorf("languages = %v, want %v", languages, want)
+	}
+	identifiers, err := q.ListBookIdentifiersByBookID(ctx, bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIdentifiers := []db.ListBookIdentifiersByBookIDRow{
+		{Scheme: "ISBN", Value: "9780306406157", Source: string(ident.SourceMetadataAndText)},
+		{Scheme: "ISBN", Value: "9780375704024", Source: string(ident.SourceMetadataAndText)},
+	}
+	if !reflect.DeepEqual(identifiers, wantIdentifiers) {
+		t.Errorf("identifiers = %v, want %v", identifiers, wantIdentifiers)
+	}
+	publications, err := q.ListBookPublicationsByBookID(ctx, bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPublications := []db.ListBookPublicationsByBookIDRow{
+		{Publisher: "Penguin", PublicationDate: "1999-05-04"},
+		{Publisher: "Penguin", PublicationDate: "1999"},
+	}
+	if !reflect.DeepEqual(publications, wantPublications) {
+		t.Errorf("publications = %v, want %v", publications, wantPublications)
+	}
+
+	var rawDOI int
+	if err := conn.QueryRow(
+		`SELECT count(*) FROM book_file_identifiers WHERE scheme = 'DOI'`,
+	).Scan(&rawDOI); err != nil {
+		t.Fatal(err)
+	}
+	if rawDOI != 1 {
+		t.Errorf("raw DOI identifier not preserved: %d", rawDOI)
+	}
+
+	reports, err := GetBooks(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(reports))
+	}
+	report := reports[0]
+	if report.Description != book.Description ||
+		report.Series != book.Series ||
+		report.SeriesIndex != book.SeriesIndex {
+		t.Errorf("report metadata does not match book: %+v", report)
+	}
+	if !reflect.DeepEqual(report.Subjects, subjects) ||
+		!reflect.DeepEqual(report.Languages, languages) {
+		t.Errorf("report subjects/languages do not match book: %+v", report)
+	}
+	if want := []BookIdentifier{
+		{Scheme: "ISBN", Value: "9780306406157", Source: ident.SourceMetadataAndText},
+		{Scheme: "ISBN", Value: "9780375704024", Source: ident.SourceMetadataAndText},
+	}; !reflect.DeepEqual(report.Identifiers, want) {
+		t.Errorf("report identifiers = %v, want %v", report.Identifiers, want)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("expected 2 report files, got %d", len(report.Files))
+	}
+	wantFileIdentifiers := [][]BookIdentifier{
+		{
+			{Scheme: "ISBN", Value: "9780306406157", Source: ident.SourceMetadata},
+			{Scheme: "DOI", Value: "10.1000/test", Source: ident.SourceMetadata},
+			{Scheme: "ISBN", Value: "9780375704024", Source: ident.SourceMetadata},
+		},
+		{
+			{Scheme: "ISBN", Value: "9780306406157", Source: ident.SourceText},
+			{Scheme: "ISBN", Value: "9780375704024", Source: ident.SourceText},
+			{Scheme: "ISBN", Value: "9780306406158", Source: ident.SourceMetadata},
+		},
+	}
+	for i, want := range wantFileIdentifiers {
+		if !reflect.DeepEqual(report.Files[i].Identifiers, want) {
+			t.Errorf("file %d identifiers = %v, want %v", i, report.Files[i].Identifiers, want)
+		}
+	}
+	if want := []BookPublication{
+		{Publisher: "Penguin", PublicationDate: "1999-05-04"},
+		{Publisher: "Penguin", PublicationDate: "1999"},
+	}; !reflect.DeepEqual(report.Publications, want) {
+		t.Errorf("report publications = %v, want %v", report.Publications, want)
+	}
+
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"description", "series", "series_index", "subjects", "languages",
+		"identifiers", "publications",
+	} {
+		if _, ok := object[key]; !ok {
+			t.Errorf("report JSON missing %q: %s", key, data)
+		}
+	}
+	for _, key := range []string{"publisher", "publication_date"} {
+		if _, ok := object[key]; ok {
+			t.Errorf("report JSON still has scalar %q: %s", key, data)
+		}
+	}
+
+	consolidateDB(t, conn, q)
+	if got, err := q.ListBookSubjectsByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if !reflect.DeepEqual(got, subjects) {
+		t.Errorf("second run changed subjects: %v -> %v", subjects, got)
+	}
+	if got, err := q.ListBookLanguagesByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if !reflect.DeepEqual(got, languages) {
+		t.Errorf("second run changed languages: %v -> %v", languages, got)
+	}
+	if got, err := q.ListBookIdentifiersByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if !reflect.DeepEqual(got, identifiers) {
+		t.Errorf("second run changed identifiers: %v -> %v", identifiers, got)
+	}
+	if got, err := q.ListBookPublicationsByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if !reflect.DeepEqual(got, publications) {
+		t.Errorf("second run changed publications: %v -> %v", publications, got)
+	}
+}
+
+func TestConsolidateRefreshesBookMetadata(t *testing.T) {
+	conn, q, cleanup := openConsolidateDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	bookID, err := q.CreateBook(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.UpdateBookMetadata(ctx, db.UpdateBookMetadataParams{
+		ID:          bookID,
+		Title:       "stale",
+		Description: "stale",
+		Series:      "stale",
+		SeriesIndex: "9",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookSubject(ctx, db.CreateBookSubjectParams{
+		BookID: bookID, Name: "stale", Ordinal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookLanguage(ctx, db.CreateBookLanguageParams{
+		BookID: bookID, Name: "und", Ordinal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookIdentifier(ctx, db.CreateBookIdentifierParams{
+		BookID: bookID, Scheme: "ISBN", Value: "stale", Source: string(ident.SourceMetadata), Ordinal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookPublication(ctx, db.CreateBookPublicationParams{
+		BookID: bookID, Publisher: "stale", PublicationDate: "1999", Ordinal: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	addConsolidateFile(t, q, ctx, bookID, "h1", "books/dune.epub", "Dune", nil)
+	consolidateDB(t, conn, q)
+
+	book, err := q.GetBookByID(ctx, bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if book.Title != "Dune" || book.Description != "" ||
+		book.Series != "" || book.SeriesIndex != "" {
+		t.Errorf("stale metadata not cleared: %+v", book)
+	}
+	if subjects, err := q.ListBookSubjectsByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if len(subjects) != 0 {
+		t.Errorf("stale subjects not cleared: %v", subjects)
+	}
+	if languages, err := q.ListBookLanguagesByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if len(languages) != 0 {
+		t.Errorf("stale languages not cleared: %v", languages)
+	}
+	if identifiers, err := q.ListBookIdentifiersByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if len(identifiers) != 0 {
+		t.Errorf("stale identifiers not cleared: %v", identifiers)
+	}
+	if publications, err := q.ListBookPublicationsByBookID(ctx, bookID); err != nil {
+		t.Fatal(err)
+	} else if len(publications) != 0 {
+		t.Errorf("stale publications not cleared: %v", publications)
 	}
 }
 
