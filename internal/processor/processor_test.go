@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-ebook-library/book"
 )
@@ -426,6 +428,27 @@ func (hashParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error)
 	}, nil
 }
 
+type metadataParser struct{}
+
+func (metadataParser) Parse(_ context.Context, _ book.Blob) (parser.Metadata, error) {
+	return parser.Metadata{
+		Authors:     []string{"Author"},
+		Title:       "Title",
+		Description: "Description",
+		Subjects:    []string{"Fiction", "Adventure"},
+		Languages:   []string{"en", "hu"},
+		Identifiers: []identifier.Identifier{
+			{Scheme: "ISBN", Value: "9780000000000", Source: identifier.SourceMetadata},
+			{Scheme: "DOI", Value: "10.1000/test", Source: identifier.SourceMetadata},
+		},
+		Publisher:       "Publisher",
+		PublicationDate: "2020-01-02",
+		Series:          "Series",
+		SeriesIndex:     "2",
+		Hash:            "hash-metadata",
+	}, nil
+}
+
 // TestResumeSkipsDuplicates pins the duplicate resume path: a recorded
 // duplicate is skipped by path existence instead of being reparsed (which
 // previously also failed on reinserting the duplicate row with a UNIQUE
@@ -577,6 +600,110 @@ func TestProcessStoresInDatabase(t *testing.T) {
 	}
 	if bookLinks != 2 {
 		t.Errorf("expected 2 book links, got %d", bookLinks)
+	}
+}
+
+func TestProcessStoresBookFileMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.epub")
+	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	proc := NewScanProcessor(conn, db.New(conn), DefaultScanProcessorConfig(), dir)
+	proc.parsers = map[string]parser.Parser{"epub": metadataParser{}}
+
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+
+	var description, publisher, publicationDate, series, seriesIndex string
+	if err := conn.QueryRow(
+		`SELECT description, publisher, publication_date, series, series_index
+		 FROM book_files WHERE path = ?`,
+		path,
+	).Scan(&description, &publisher, &publicationDate, &series, &seriesIndex); err != nil {
+		t.Fatal(err)
+	}
+	if description != "Description" {
+		t.Errorf("expected description %q, got %q", "Description", description)
+	}
+	if publisher != "Publisher" {
+		t.Errorf("expected publisher %q, got %q", "Publisher", publisher)
+	}
+	if publicationDate != "2020-01-02" {
+		t.Errorf("expected publication date %q, got %q", "2020-01-02", publicationDate)
+	}
+	if series != "Series" {
+		t.Errorf("expected series %q, got %q", "Series", series)
+	}
+	if seriesIndex != "2" {
+		t.Errorf("expected series index %q, got %q", "2", seriesIndex)
+	}
+
+	readOrdered := func(query string) ([]string, []int64) {
+		t.Helper()
+		rows, err := conn.Query(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		var values []string
+		var ordinals []int64
+		for rows.Next() {
+			var value string
+			var ordinal int64
+			if err := rows.Scan(&value, &ordinal); err != nil {
+				t.Fatal(err)
+			}
+			values = append(values, value)
+			ordinals = append(ordinals, ordinal)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return values, ordinals
+	}
+
+	subjects, subjectOrdinals := readOrdered(`SELECT name, ordinal FROM book_file_subjects ORDER BY ordinal`)
+	if want := []string{"Fiction", "Adventure"}; !slices.Equal(subjects, want) {
+		t.Errorf("expected subjects %v, got %v", want, subjects)
+	}
+	if want := []int64{0, 1}; !slices.Equal(subjectOrdinals, want) {
+		t.Errorf("expected subject ordinals %v, got %v", want, subjectOrdinals)
+	}
+
+	languages, languageOrdinals := readOrdered(`SELECT name, ordinal FROM book_file_languages ORDER BY ordinal`)
+	if want := []string{"en", "hu"}; !slices.Equal(languages, want) {
+		t.Errorf("expected languages %v, got %v", want, languages)
+	}
+	if want := []int64{0, 1}; !slices.Equal(languageOrdinals, want) {
+		t.Errorf("expected language ordinals %v, got %v", want, languageOrdinals)
+	}
+
+	identifiers, identifierOrdinals := readOrdered(
+		`SELECT scheme || ':' || value || ':' || source, ordinal FROM book_file_identifiers ORDER BY ordinal`,
+	)
+	if want := []string{"ISBN:9780000000000:METADATA", "DOI:10.1000/test:METADATA"}; !slices.Equal(identifiers, want) {
+		t.Errorf("expected identifiers %v, got %v", want, identifiers)
+	}
+	if want := []int64{0, 1}; !slices.Equal(identifierOrdinals, want) {
+		t.Errorf("expected identifier ordinals %v, got %v", want, identifierOrdinals)
 	}
 }
 

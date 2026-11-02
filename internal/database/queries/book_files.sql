@@ -1,6 +1,16 @@
 -- name: CreateBookFile :one
-INSERT INTO book_files (hash, path, title, minhash)
-VALUES (?, ?, ?, ?)
+INSERT INTO book_files (
+    hash,
+    path,
+    title,
+    minhash,
+    description,
+    publisher,
+    publication_date,
+    series,
+    series_index
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(hash) DO NOTHING
 RETURNING id;
 
@@ -15,6 +25,21 @@ SELECT count(*) FROM book_files;
 
 -- name: CreateBookFileAuthor :exec
 INSERT INTO book_file_authors (book_file_id, author_id) VALUES (?, ?);
+
+-- name: CreateBookFileSubject :exec
+INSERT INTO book_file_subjects (book_file_id, name, ordinal)
+VALUES (?, ?, ?)
+ON CONFLICT(book_file_id, name) DO NOTHING;
+
+-- name: CreateBookFileLanguage :exec
+INSERT INTO book_file_languages (book_file_id, name, ordinal)
+VALUES (?, ?, ?)
+ON CONFLICT(book_file_id, name) DO NOTHING;
+
+-- name: CreateBookFileIdentifier :exec
+INSERT INTO book_file_identifiers (book_file_id, scheme, value, source, ordinal)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(book_file_id, scheme, value) DO NOTHING;
 
 -- name: CreateBookFileDuplicate :exec
 INSERT INTO book_file_duplicates (hash, path)

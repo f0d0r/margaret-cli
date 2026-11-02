@@ -163,8 +163,8 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	err = proc.Process(ctx)
 	canceled := ctx.Err() != nil
 	if !canceled && err == nil {
-		// Persist the consensus washed title and cleaned authors so that
-		// books.title (and books_fts via triggers) and book_authors are
+		// Persist the consensus washed title, cleaned authors and merged
+		// metadata so that books, book_* (and books_fts via triggers) are
 		// consistent before the run is marked finished and reports are
 		// written. The pass is idempotent across resume runs.
 		if cerr := report.Consolidate(ctx, conn, q); cerr != nil {
