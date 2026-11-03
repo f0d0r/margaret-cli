@@ -18,6 +18,7 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/source"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/mholt/archives"
+	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 )
 
@@ -383,27 +384,21 @@ func decodeZipName(f *zip.File) string {
 		return f.Name
 	}
 
-	best := f.Name
-	bestScore := -1
-
-	// CP852 (standard legacy DOS code page used in Central European archives)
-	if d, err := charmap.CodePage852.NewDecoder().Bytes(raw); err == nil && utf8.Valid(d) {
+	decoders := []*encoding.Decoder{
+		charmap.CodePage852.NewDecoder(), // DOS Latin-2, common in HU archives
+		charmap.Windows1250.NewDecoder(), // Windows Central European
+	}
+	best, bestScore := f.Name, -1
+	for _, dec := range decoders {
+		d, err := dec.Bytes(raw)
+		if err != nil || !utf8.Valid(d) {
+			continue
+		}
 		s := string(d)
 		if sc := scoreHungarianFilename(s); sc > bestScore {
-			best = s
-			bestScore = sc
+			best, bestScore = s, sc
 		}
 	}
-
-	// Windows-1250 (Windows Central European)
-	if d, err := charmap.Windows1250.NewDecoder().Bytes(raw); err == nil && utf8.Valid(d) {
-		s := string(d)
-		if sc := scoreHungarianFilename(s); sc > bestScore {
-			best = s
-			bestScore = sc
-		}
-	}
-
 	return best
 }
 
