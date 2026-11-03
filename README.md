@@ -109,16 +109,27 @@ archive without being extracted to disk. Archives may be nested inside other
 archives, up to the depth given by `--archive-depth`.
 
 Plain-text books are read with a dedicated parser. It detects the encoding
-(UTF-8 and UTF-16 BOMs, and legacy single-byte charsets such as ISO-8859-2 and
-windows-1250), takes a title and authors from a header block at the start of
-the text (`Title:`, `Author:`, `Authors:`, the Hungarian MEK `TI:`/`AU:`
-keys, YAML front matter or a Project Gutenberg preamble) or from Calibre's
-title-page layout, and extracts at most one validated ISBN from the first
-64 KiB. The whole decoded text feeds the
-same 128-hash MinHash fingerprint as the other formats. Files smaller than
-`--min-txt-size` (15 KiB by default) are treated as distribution metadata
-or fragments rather than books and are counted as skipped. Empty and binary
-files are reported as failures.
+(UTF-8 and UTF-16 BOMs, and legacy code pages from the detector's candidates,
+validated by language identification), takes a title and authors from a header
+block at the start of the text (`Title:`, `Author:`, `Authors:`, legacy
+`TI:`/`AU:` header keys, YAML front matter or a Project Gutenberg preamble) or
+from Calibre's title-page layout, and extracts at most one validated ISBN from
+the first 64 KiB. The whole decoded text feeds the same 128-hash MinHash
+fingerprint as the other formats. Files smaller than `--min-txt-size`
+(15 KiB by default) are treated as distribution metadata or fragments rather
+than books and are counted as skipped. Empty and binary files are reported as
+failures.
+
+Every ebook's language is verified from its reading-order text with
+language-agnostic detection. A missing language is filled in, and a declared
+language is replaced only when the detected language is clearly different and
+the detector is confident; regional tags that agree with the detection are
+kept unchanged.
+
+Metadata and encoding detection are language- and country-independent.
+Structural signals (Unicode categories, line shape, file names) come first;
+keyword lists are additive hints that no feature requires, so a language
+without hints still works.
 
 ---
 

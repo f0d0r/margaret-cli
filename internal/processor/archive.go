@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/f0d0r/margaret-cli/internal/scanner"
@@ -371,10 +372,22 @@ func zipMemberError(err error) error {
 	return fmt.Errorf("zip member: %w", err)
 }
 
+// legacyNameEncodings are tried when a zip member name is not UTF-8. CP437 is
+// the ZIP specification's default for names without the UTF-8 flag; the other
+// code pages cover common mis-flagged DOS and Windows archives.
+var legacyNameEncodings = []encoding.Encoding{
+	charmap.CodePage437,
+	charmap.CodePage850,
+	charmap.CodePage852,
+	charmap.Windows1250,
+	charmap.Windows1252,
+}
+
 // decodeZipName recovers the filename of a zip member. Legacy zip archives
-// created on DOS or Windows often contain filenames encoded in CP852 (DOS
-// Latin-2) or Windows-1250 without the 0x800 UTF-8 flag, which Go's
-// archive/zip leaves as raw bytes, turning accents into replacement runes.
+// created on DOS or Windows often contain filenames without the 0x800 UTF-8
+// flag, which Go's archive/zip leaves as raw bytes. The candidate decodings are
+// scored by text quality only, so the choice is independent of the archive's
+// language.
 func decodeZipName(f *zip.File) string {
 	if !f.NonUTF8 && utf8.ValidString(f.Name) {
 		return f.Name
@@ -384,36 +397,70 @@ func decodeZipName(f *zip.File) string {
 		return f.Name
 	}
 
-	decoders := []*encoding.Decoder{
-		charmap.CodePage852.NewDecoder(), // DOS Latin-2, common in HU archives
-		charmap.Windows1250.NewDecoder(), // Windows Central European
-	}
-	best, bestScore := f.Name, -1
-	for _, dec := range decoders {
-		d, err := dec.Bytes(raw)
+	best, bestScore := f.Name, scoreLegacyName(f.Name)
+	for _, enc := range legacyNameEncodings {
+		d, err := enc.NewDecoder().Bytes(raw)
 		if err != nil || !utf8.Valid(d) {
 			continue
 		}
 		s := string(d)
-		if sc := scoreHungarianFilename(s); sc > bestScore {
+		if sc := scoreLegacyName(s); sc > bestScore {
 			best, bestScore = s, sc
 		}
 	}
 	return best
 }
 
-func scoreHungarianFilename(s string) int {
+// scoreLegacyName rates a decoded filename by Unicode category and script
+// consistency: names are mostly letters, digits and punctuation in a single
+// script, while a wrong code page produces box-drawing symbols, control
+// characters or letters from an unrelated script.
+func scoreLegacyName(s string) int {
+	dominant, dominantCount := "", 0
+	scriptCounts := make(map[string]int)
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			script := runeScript(r)
+			scriptCounts[script]++
+			if scriptCounts[script] > dominantCount {
+				dominant, dominantCount = script, scriptCounts[script]
+			}
+		}
+	}
+
 	score := 0
 	for _, r := range s {
-		switch r {
-		case 'á', 'é', 'í', 'ó', 'ö', 'ő', 'ú', 'ü', 'ű',
-			'Á', 'É', 'Í', 'Ó', 'Ö', 'Ő', 'Ú', 'Ü', 'Ű':
+		switch {
+		case r == utf8.RuneError:
+			score -= 20
+		case unicode.IsLetter(r):
+			if runeScript(r) != dominant {
+				score -= 6
+			} else {
+				score += 3
+			}
+		case unicode.IsDigit(r):
 			score += 2
-		case '‚', '“', '”', '„', 'ˇ', 'ß', '§', '°':
-			score -= 5
-		case utf8.RuneError:
-			score -= 10
+		case unicode.IsSpace(r), unicode.IsPunct(r):
+			score++
+		case unicode.IsSymbol(r):
+			score -= 4
+		case unicode.IsControl(r):
+			score -= 20
+		default:
+			score -= 4
 		}
 	}
 	return score
+}
+
+// runeScript returns the Unicode script name of r, or an empty string for
+// characters shared by several scripts.
+func runeScript(r rune) string {
+	for name, table := range unicode.Scripts {
+		if unicode.Is(table, r) {
+			return name
+		}
+	}
+	return ""
 }

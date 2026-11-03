@@ -37,13 +37,13 @@ func TestExtractMetadata(t *testing.T) {
 			authors: []string{"Jane Doe", "John Smith"},
 		},
 		{
-			name:    "mek header",
+			name:    "legacy ti au header",
 			head:    "TI: Erdélyi József, a feltámadt Petőfi\nTI: Piros Pünkösd\nAU: Károlyi Amy\n\nA vers szövege.\n",
 			title:   "Erdélyi József, a feltámadt Petőfi",
 			authors: []string{"Károlyi Amy"},
 		},
 		{
-			name:    "mek header with unknown fields",
+			name:    "legacy ti au header with unknown fields",
 			head:    "TI: Zöld barackok\nAU: Karinthy Frigyes\nNA: Kiss Gábor (begépelő)\nDT: vers\nSO: http://example.org/x\n\nA novella szövege.\n",
 			title:   "Zöld barackok",
 			authors: []string{"Karinthy Frigyes"},

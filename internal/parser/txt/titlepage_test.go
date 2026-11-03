@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// TestHungarianTitlePage pins the Hungarian fallback conventions observed in
-// the corpus: author/title in either order, one-line pairs, NNCL headers and
-// names or titles wrapped over two lines. The fallback only fills empty fields
-// and never guesses when both orientations are equally plausible.
-func TestHungarianTitlePage(t *testing.T) {
+// TestTitlePageConventions pins the title-page layouts observed in plain-text
+// libraries: author/title in either order, one-line pairs, legacy TI:/AU:
+// headers and names or titles wrapped over two lines. The fallback only fills
+// empty fields and never guesses when both orientations are equally plausible.
+func TestTitlePageConventions(t *testing.T) {
 	cases := []struct {
 		name    string
 		head    string
@@ -88,9 +88,9 @@ func TestHungarianTitlePage(t *testing.T) {
 	}
 }
 
-// TestHungarianFallbackRespectsOtherSources pins that the fallback never
+// TestTitlePageFallbackRespectsOtherSources pins that the fallback never
 // overrides YAML front matter or a Project Gutenberg preamble.
-func TestHungarianFallbackRespectsOtherSources(t *testing.T) {
+func TestTitlePageFallbackRespectsOtherSources(t *testing.T) {
 	cases := []struct {
 		name    string
 		head    string

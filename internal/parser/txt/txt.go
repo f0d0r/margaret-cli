@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
+	"github.com/f0d0r/margaret-cli/internal/langid"
 	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-ebook-library/tools"
@@ -114,6 +115,8 @@ func (p TxtParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	}
 
 	md := extractMetadata(head)
+	detected, detectedOK := langid.DetectProse(head)
+	md.Languages = parser.ApplyDetectedLanguage(md.Languages, detected, detectedOK)
 	md.Hash = hash
 	md.MinHash = fingerprint.MinHash
 	md.Identifiers = textIdentifiers(head)

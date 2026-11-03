@@ -9,7 +9,7 @@ func TestScoreName(t *testing.T) {
 		want bool
 	}{
 		{"two tokens", "Herman Melville", true},
-		{"hungarian order", "Móricz Zsigmond", true},
+		{"natural order", "Móricz Zsigmond", true},
 		{"middle initial", "Philip K. Dick", true},
 		{"initials", "J. R. R. Tolkien", true},
 		{"last first", "Smith, John", true},
@@ -48,7 +48,7 @@ func TestScoreTitle(t *testing.T) {
 		{"with article and lowercase", "Az arany ember", true},
 		{"single word", "Favágó", true},
 		{"title inversion", "Great Slow Kings, The", true},
-		{"long hungarian title", "Bűn és bűnhődés", true},
+		{"long title", "Bűn és bűnhődés", true},
 		{"year title", "1984", true},
 		{"pure name", "Herman Melville", false},
 		{"pure name two tokens", "Moby Dick", false},

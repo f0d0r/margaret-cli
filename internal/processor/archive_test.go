@@ -656,9 +656,24 @@ func TestDecodeZipName(t *testing.T) {
 			want:   "zárdában írtam.txt",
 		},
 		{
+			name:   "cp437 spec default",
+			header: zip.FileHeader{Name: "Caf\x82.txt", NonUTF8: true},
+			want:   "Café.txt",
+		},
+		{
+			name:   "cp850 decoded",
+			header: zip.FileHeader{Name: "Gr\x81\xe1e.txt", NonUTF8: true},
+			want:   "Grüße.txt",
+		},
+		{
 			name:   "windows-1250 decoded",
 			header: zip.FileHeader{Name: "k\xf6nyv \xe9s novella.txt", NonUTF8: true},
 			want:   "könyv és novella.txt",
+		},
+		{
+			name:   "windows-1250 double accents",
+			header: zip.FileHeader{Name: "\xd5rj\xedt\xf5 szenved\xe9ly.txt", NonUTF8: true},
+			want:   "Őrjítő szenvedély.txt",
 		},
 	}
 	for _, c := range cases {

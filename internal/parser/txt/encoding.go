@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/f0d0r/margaret-cli/internal/langid"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/gogs/chardet"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/htmlindex"
-	"golang.org/x/text/encoding/unicode"
+	xunicode "golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
 )
 
@@ -21,6 +23,12 @@ const (
 	// headLimit is how many decoded bytes are kept for metadata and ISBN
 	// extraction.
 	headLimit = 64 << 10
+	// candidateLimit bounds how many detector candidates are decoded and
+	// scored for a non-UTF-8 file.
+	candidateLimit = 6
+	// minTextQuality rejects decodings dominated by control characters,
+	// replacement runes or unassigned code points.
+	minTextQuality = -20
 )
 
 var (
@@ -37,8 +45,9 @@ type detectedEncoding struct {
 }
 
 // detectEncoding picks the text encoding of a file: a BOM wins, then valid
-// UTF-8, then statistical detection, then the windows-1252 fallback Calibre
-// also uses.
+// UTF-8, then the statistical detector's candidates, each validated and
+// identified by language. No language-specific scoring is applied here: any
+// script is handled the same way.
 func detectEncoding(b book.Blob, size int64) (detectedEncoding, error) {
 	sample := make([]byte, min(size, sampleLimit))
 	if _, err := io.ReadFull(io.NewSectionReader(b, 0, int64(len(sample))), sample); err != nil {
@@ -47,104 +56,154 @@ func detectEncoding(b book.Blob, size int64) (detectedEncoding, error) {
 
 	switch {
 	case bytes.HasPrefix(sample, utf8BOM):
-		return detectedEncoding{enc: unicode.UTF8, bom: int64(len(utf8BOM))}, nil
+		return detectedEncoding{enc: xunicode.UTF8, bom: int64(len(utf8BOM))}, nil
 	case bytes.HasPrefix(sample, utf16LEBOM):
-		return detectedEncoding{enc: unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM), bom: int64(len(utf16LEBOM))}, nil
+		return detectedEncoding{enc: xunicode.UTF16(xunicode.LittleEndian, xunicode.IgnoreBOM), bom: int64(len(utf16LEBOM))}, nil
 	case bytes.HasPrefix(sample, utf16BEBOM):
-		return detectedEncoding{enc: unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM), bom: int64(len(utf16BEBOM))}, nil
+		return detectedEncoding{enc: xunicode.UTF16(xunicode.BigEndian, xunicode.IgnoreBOM), bom: int64(len(utf16BEBOM))}, nil
 	}
 	if utf8.Valid(sample) || validTruncatedUTF8(sample, size) {
-		return detectedEncoding{enc: unicode.UTF8}, nil
+		return detectedEncoding{enc: xunicode.UTF8}, nil
 	}
-
-	label := ""
-	if result, err := chardet.NewTextDetector().DetectBest(sample); err == nil && result != nil {
-		label = result.Charset
-	}
-	return detectedEncoding{enc: resolveSingleByte(sample, label)}, nil
+	return detectedEncoding{enc: detectLegacy(sample)}, nil
 }
 
-// resolveSingleByte refines a single-byte detection with Hungarian-specific
-// scoring. chardet often labels Hungarian ISO-8859-2 or windows-1250 text as
-// windows-1252, which turns ő/ű into õ/û. The detector's own choice is kept
-// unless another candidate scores clearly better.
-func resolveSingleByte(sample []byte, label string) encoding.Encoding {
-	detected := encodingForLabel(label)
-	if !evaluateSingleByte(label) {
-		return detected
+// legacyCandidate is one detector candidate decoded and scored generically.
+type legacyCandidate struct {
+	enc        encoding.Encoding
+	confidence int
+	quality    int
+	lang       langid.Result
+	hasLang    bool
+}
+
+// detectLegacy decodes the detector's best candidates and chooses the one
+// whose text is both well-formed and most plausibly a natural language. The
+// detector's confidence only breaks ties, so a mislabelled legacy encoding can
+// be corrected without hardcoding any language's character set.
+func detectLegacy(sample []byte) encoding.Encoding {
+	results, err := chardet.NewTextDetector().DetectAll(sample)
+	if err != nil {
+		return charmap.Windows1252
 	}
-	best, bestScore := detected, scoreDecoded(sample, detected)
-	for _, cand := range singleByteCandidates {
-		if strings.EqualFold(cand.name, label) {
+	seen := make(map[string]struct{}, len(results))
+	var candidates []legacyCandidate
+	for _, result := range results {
+		label := strings.TrimSpace(result.Charset)
+		key := strings.ToLower(label)
+		if _, dup := seen[key]; dup || key == "" {
 			continue
 		}
-		if score := scoreDecoded(sample, cand.enc); score > bestScore+2 {
-			best, bestScore = cand.enc, score
+		seen[key] = struct{}{}
+		enc, ok := encodingForLabel(label)
+		if !ok {
+			continue
+		}
+		candidate, ok := evaluateCandidate(sample, enc, result.Confidence)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, candidate)
+		if len(candidates) >= candidateLimit {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return charmap.Windows1252
+	}
+	return pickCandidate(candidates).enc
+}
+
+// evaluateCandidate decodes sample with enc and rejects decodings that are not
+// well-formed text. A sample cut in the middle of a multi-byte sequence is
+// retried without its tail.
+func evaluateCandidate(sample []byte, enc encoding.Encoding, confidence int) (legacyCandidate, bool) {
+	text, ok := decodeSample(sample, enc)
+	if !ok {
+		return legacyCandidate{}, false
+	}
+	quality := textQuality(text)
+	if quality < minTextQuality {
+		return legacyCandidate{}, false
+	}
+	candidate := legacyCandidate{enc: enc, confidence: confidence, quality: quality}
+	if result, ok := langid.Detect(text); ok {
+		candidate.lang, candidate.hasLang = result, true
+	}
+	return candidate, true
+}
+
+// decodeSample decodes sample, tolerating a truncated trailing sequence.
+func decodeSample(sample []byte, enc encoding.Encoding) (string, bool) {
+	decoder := enc.NewDecoder()
+	for trim := 0; trim <= utf8.UTFMax && trim <= len(sample); trim++ {
+		raw := sample[:len(sample)-trim]
+		out, _, err := transform.String(decoder, string(raw))
+		if err == nil {
+			return out, true
+		}
+	}
+	return "", false
+}
+
+// pickCandidate prefers the decoding with the most confident language, then
+// the cleanest text, then the detector's own ranking.
+func pickCandidate(candidates []legacyCandidate) legacyCandidate {
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if betterCandidate(candidate, best) {
+			best = candidate
 		}
 	}
 	return best
 }
 
-// evaluateSingleByte reports whether label denotes a single-byte encoding
-// whose ambiguity Hungarian scoring can resolve.
-func evaluateSingleByte(label string) bool {
-	switch strings.ToLower(strings.TrimSpace(label)) {
-	case "", "utf-8", "utf8", "ascii", "us-ascii",
-		"windows-1250", "cp1250", "windows-1252", "cp1252",
-		"iso-8859-1", "iso8859-1", "latin1",
-		"iso-8859-2", "iso8859-2", "latin2":
-		return true
+func betterCandidate(a, b legacyCandidate) bool {
+	if a.hasLang != b.hasLang {
+		return a.hasLang
 	}
-	return false
+	if a.hasLang {
+		// Confidence values are probabilities; smaller differences are
+		// noise and should not override the detector's ranking.
+		if diff := a.lang.Confidence - b.lang.Confidence; diff > 0.05 {
+			return true
+		} else if diff < -0.05 {
+			return false
+		}
+	}
+	if a.quality != b.quality {
+		return a.quality > b.quality
+	}
+	return a.confidence > b.confidence
 }
 
-// singleByteCandidates are the encodings Hungarian legacy texts use.
-var singleByteCandidates = []struct {
-	name string
-	enc  encoding.Encoding
-}{
-	{"iso-8859-2", charmap.ISO8859_2},
-	{"windows-1250", charmap.Windows1250},
-	{"windows-1252", charmap.Windows1252},
-}
-
-// hungarianStopwords carry most of the signal when a sample has few accented
-// characters.
-var hungarianStopwords = map[string]struct{}{
-	"a": {}, "az": {}, "és": {}, "hogy": {}, "nem": {}, "van": {},
-	"egy": {}, "még": {}, "csak": {}, "mint": {}, "vagy": {}, "már": {},
-	"el": {}, "meg": {}, "fel": {}, "le": {}, "be": {}, "ki": {},
-}
-
-// scoreDecoded rates how plausibly sample decodes as Hungarian text.
-func scoreDecoded(sample []byte, enc encoding.Encoding) int {
-	s, _, err := transform.String(enc.NewDecoder(), string(sample))
-	if err != nil {
+// textQuality rates a decoding by Unicode category alone: all scripts are
+// treated equally. Control characters, replacement runes and unassigned code
+// points are penalized; letters, digits, punctuation and whitespace are not.
+func textQuality(s string) int {
+	total, letters, good, bad := 0, 0, 0, 0
+	for _, r := range s {
+		total++
+		switch {
+		case r == utf8.RuneError:
+			bad += 5
+		case unicode.IsLetter(r), unicode.IsDigit(r), unicode.IsSpace(r), unicode.IsPunct(r):
+			good++
+		case unicode.IsControl(r):
+			bad += 5
+		case unicode.Is(unicode.Co, r), unicode.Is(unicode.Cs, r), unicode.Is(unicode.Cn, r):
+			bad += 5
+		default:
+			bad++
+		}
+		if unicode.IsLetter(r) {
+			letters++
+		}
+	}
+	if total == 0 || letters == 0 {
 		return -1000
 	}
-	score := 0
-	for _, r := range s {
-		switch r {
-		case 'ő', 'ű', 'Ő', 'Ű':
-			score += 2
-		case 'á', 'é', 'í', 'ó', 'ö', 'ú', 'ü', 'Á', 'É', 'Í', 'Ó', 'Ö', 'Ú', 'Ü':
-			score++
-		case 'õ', 'û', 'Õ', 'Û':
-			score -= 2
-		case utf8.RuneError:
-			score -= 10
-		}
-		if r < 0x20 && r != '\n' && r != '\r' && r != '\t' && r != '\f' {
-			score -= 10
-		}
-	}
-	for _, w := range strings.Fields(strings.ToLower(s)) {
-		w = strings.Trim(w, "….,;:!?\"'()[]{}—-–")
-		if _, ok := hungarianStopwords[w]; ok {
-			score++
-		}
-	}
-	return score
+	return good*100/total - bad*200/total
 }
 
 // validTruncatedUTF8 reports whether sample is a UTF-8 prefix cut at the
@@ -161,23 +220,17 @@ func validTruncatedUTF8(sample []byte, size int64) bool {
 	return false
 }
 
-// encodingForLabel maps a detector label to an x/text encoding. Unknown
-// labels fall back to windows-1252 so decoding always makes progress.
-func encodingForLabel(label string) encoding.Encoding {
-	switch strings.ToLower(strings.TrimSpace(label)) {
-	case "utf-8", "utf8", "ascii", "us-ascii":
-		return unicode.UTF8
-	case "utf-16le", "utf-16-le":
-		return unicode.UTF16(unicode.LittleEndian, unicode.IgnoreBOM)
-	case "utf-16be", "utf-16-be":
-		return unicode.UTF16(unicode.BigEndian, unicode.IgnoreBOM)
-	case "utf-16":
-		return unicode.UTF16(unicode.BigEndian, unicode.UseBOM)
-	}
+// encodingForLabel maps a detector label to an x/text encoding. Labels the
+// WHATWG index does not know are rejected rather than guessed.
+func encodingForLabel(label string) (encoding.Encoding, bool) {
 	if enc, err := htmlindex.Get(label); err == nil {
-		return enc
+		return enc, true
 	}
-	return charmap.Windows1252
+	switch strings.ToLower(strings.TrimSpace(label)) {
+	case "iso-8859-8-i":
+		return charmap.ISO8859_8, true
+	}
+	return nil, false
 }
 
 // decodedReader returns the whole file decoded to UTF-8, starting after the

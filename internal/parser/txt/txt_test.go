@@ -210,3 +210,30 @@ func TestParseNilBlob(t *testing.T) {
 		t.Fatal("expected an error for a nil blob")
 	}
 }
+
+func TestParseDetectsLanguage(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"hungarian", encodedText, "hu"},
+		{"english", "The quick brown fox jumps over the lazy dog. This plain text " +
+			"book contains enough English words for the language detector to work.\n", "en"},
+		{"arabic", "اللغة العربية هي واحدة من أكثر اللغات انتشارا في العالم، ويتحدث بها " +
+			"ملايين الناس في الوطن العربي. هذا النص مكتوب لاختبار التعرف على اللغة.\n", "ar"},
+		{"chinese", "中文是世界上使用人数最多的语言之一，主要在中国和世界各地的华人社区中使用。" +
+			"这段文字只是为了测试语言识别系统而写的，包含常见的汉语词汇和句式。\n", "zh"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			md, err := parseText(t, context.Background(), []byte(c.text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{c.want}; !slices.Equal(md.Languages, want) {
+				t.Errorf("languages = %v, want %v", md.Languages, want)
+			}
+		})
+	}
+}

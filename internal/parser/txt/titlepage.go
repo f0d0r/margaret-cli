@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	// titlePageCandidateLimit bounds how many leading lines the Hungarian
+	// titlePageCandidateLimit bounds how many leading lines the title-page
 	// fallback considers. Title pages are short; body text must never be
 	// scanned.
 	titlePageCandidateLimit = 6
@@ -17,12 +17,18 @@ const (
 	pairScoreThreshold = 6
 )
 
-// hungarianTitlePage extracts a title/author pair from the title page of a
-// plain Hungarian book. It deliberately returns nothing when the two lines
-// are equally plausible in both orders: a missing author is better than a
-// swapped one. Standalone titles are not extracted; the report falls back to
-// the file name for those.
-func hungarianTitlePage(lines []string) (title string, authors []string, ok bool) {
+// titlePagePair extracts a title/author pair from the title page of a plain
+// text book. It deliberately returns nothing when the two lines are equally
+// plausible in both orders: a missing author is better than a swapped one.
+// Standalone titles are not extracted; the report falls back to the file name
+// for those.
+//
+// The layouts handled here (author and title in either order, one-line
+// "Author: Title" / "Author - Title" pairs, names or titles wrapped over two
+// lines) are common in plain-text books in many languages. Nothing in this
+// file is tied to a particular language; plausibility comes from the
+// structural scoring in the metaheur package.
+func titlePagePair(lines []string) (title string, authors []string, ok bool) {
 	candidates := titlePageCandidates(lines)
 	if len(candidates) == 0 {
 		return "", nil, false

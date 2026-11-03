@@ -27,8 +27,7 @@ var (
 
 var titleKeys = map[string]struct{}{
 	"title": {}, "cím": {}, "cim": {}, "könyv címe": {}, "konyv cime": {},
-	// MEK (Magyar Elektronikus Könyvtár) header keys used by the Hungarian
-	// plain-text corpus.
+	// Legacy TI:/AU: header keys used by some plain-text libraries.
 	"ti": {},
 }
 
@@ -36,7 +35,7 @@ var authorKeys = map[string]struct{}{
 	"author": {}, "authors": {}, "by": {}, "creator": {},
 	"szerző": {}, "szerzo": {}, "szerzők": {}, "szerzok": {},
 	"író": {}, "iro": {},
-	// MEK header key for the author.
+	// Legacy TI:/AU: header key for the author.
 	"au": {},
 }
 
@@ -72,8 +71,8 @@ func extractMetadata(head string) parser.Metadata {
 
 	if !hasYAMLFrontMatter(lines) && startMarkerIndex(lines) < 0 &&
 		(md.Title == "" || len(md.Authors) == 0) {
-		if title, authors, ok := hungarianTitlePage(lines); ok {
-			md = mergeHungarianMetadata(md, title, authors)
+		if title, authors, ok := titlePagePair(lines); ok {
+			md = mergeTitlePageMetadata(md, title, authors)
 		}
 	}
 
@@ -120,10 +119,10 @@ func hasYAMLFrontMatter(lines []string) bool {
 	return false
 }
 
-// mergeHungarianMetadata fills only empty fields. When the other field is
-// already known, the Hungarian pair must agree with it, so a title from one
+// mergeTitlePageMetadata fills only empty fields. When the other field is
+// already known, the title-page pair must agree with it, so a title from one
 // source is never combined with an author from another book.
-func mergeHungarianMetadata(md parser.Metadata, title string, authors []string) parser.Metadata {
+func mergeTitlePageMetadata(md parser.Metadata, title string, authors []string) parser.Metadata {
 	if md.Title == "" && title != "" {
 		if len(md.Authors) == 0 || len(authors) == 0 || authorsAgree(md.Authors, authors) {
 			md.Title = title
@@ -230,7 +229,7 @@ func leadingBlock(lines []string) []string {
 }
 
 // parseLabels extracts the first title and the first author list from the
-// known label keys in lines. Hungarian keys are accepted alongside the
+// known label keys in lines. Additional label keys are accepted alongside the
 // English ones.
 func parseLabels(lines []string) (title string, authors []string) {
 	for _, line := range lines {
@@ -266,9 +265,9 @@ func isAuthorKey(key string) bool {
 }
 
 // isKnownLabelLine reports a line that is a structured metadata label: a
-// title or author key, or an all-caps header prefix such as the MEK "DT:" or
-// "SO:" lines. Such lines must never become title-page candidates, otherwise
-// the bare prefix ("TI") is read as a title and its value as an author.
+// title or author key, or an all-caps header prefix such as "DT:" or "SO:".
+// Such lines must never become title-page candidates, otherwise the bare
+// prefix ("TI") is read as a title and its value as an author.
 func isKnownLabelLine(line string) bool {
 	line = strings.TrimSpace(line)
 	if upperLabel.MatchString(line) {

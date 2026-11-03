@@ -562,7 +562,7 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 		// title never replaces a title that came from the files.
 		if needTitle || len(authors) == 0 {
 			for _, f := range b.files {
-				parsedTitle, parsedAuthor, ok := parseHungarianFilename(f.Path)
+				parsedTitle, parsedAuthor, ok := parseNaturalFilename(f.Path)
 				if !ok {
 					continue
 				}

@@ -1000,7 +1000,7 @@ func TestWriteBooksFilteredEmptyWritesNothing(t *testing.T) {
 	}
 }
 
-func TestParseHungarianFilename(t *testing.T) {
+func TestParseNaturalFilename(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		path      string
@@ -1019,9 +1019,9 @@ func TestParseHungarianFilename(t *testing.T) {
 		{"subtitle not split", "/books/A nagy kaland - ami elmaradt.epub", "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			title, auth, ok := parseHungarianFilename(tc.path)
+			title, auth, ok := parseNaturalFilename(tc.path)
 			if title != tc.wantTitle || auth != tc.wantAuth || ok != tc.wantOK {
-				t.Errorf("parseHungarianFilename(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				t.Errorf("parseNaturalFilename(%q) = (%q, %q, %v), want (%q, %q, %v)",
 					tc.path, title, auth, ok, tc.wantTitle, tc.wantAuth, tc.wantOK)
 			}
 		})

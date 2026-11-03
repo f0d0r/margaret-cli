@@ -3,10 +3,11 @@ module github.com/f0d0r/margaret-cli
 go 1.26.10
 
 require (
-	github.com/f0d0r/margaret-ebook-library v0.1.2-0.20261027211024-cf1cdac9624e
+	github.com/f0d0r/margaret-ebook-library v0.1.2-0.20261103204806-c73ab7aac617
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/mholt/archives v0.1.5
+	github.com/pemistahl/lingua-go v1.4.0
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.62.0
@@ -216,6 +217,7 @@ require (
 	github.com/sashamelentyev/usestdlibvars v1.29.0 // indirect
 	github.com/securego/gosec/v2 v2.28.0 // indirect
 	github.com/sethvargo/go-retry v0.4.0 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/sirupsen/logrus v1.10.1 // indirect
 	github.com/sivchari/containedctx v1.0.3 // indirect
 	github.com/sonatard/noctx v0.5.1 // indirect

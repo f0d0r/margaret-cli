@@ -271,12 +271,12 @@ func calibreAuthorShape(s string) bool {
 	return true
 }
 
-// parseHungarianFilename splits the natural-order "Author - Title" and
-// "Title - Author" spellings common in Hungarian libraries. Both sides are
+// parseNaturalFilename splits the natural-order "Author - Title" and
+// "Title - Author" spellings common in sideloaded libraries. Both sides are
 // validated as a name and a title; when both orientations are plausible the
 // file name is left alone, so a missing author is preferable to a swapped
 // one. The Calibre "Last, First" form is handled by parseCalibreFilename.
-func parseHungarianFilename(path string) (title, author string, ok bool) {
+func parseNaturalFilename(path string) (title, author string, ok bool) {
 	stem := normalizeMeta(cleanStem(path))
 	for _, pair := range splitFilenamePairs(stem) {
 		left, right := pair[0], pair[1]
@@ -325,8 +325,8 @@ func splitFilenamePairs(stem string) [][2]string {
 	return out
 }
 
-// normalizeTitleArticle moves a trailing ", The" (or its Hungarian and
-// English variants) to the front: "Great Slow Kings, The" becomes "The Great
+// normalizeTitleArticle moves a trailing ", The" (or another article in the
+// same position) to the front: "Great Slow Kings, The" becomes "The Great
 // Slow Kings". Only filename-derived titles go through this; author names are
 // never passed here.
 func normalizeTitleArticle(title string) string {
@@ -476,7 +476,7 @@ func filenamePairAuthor(component string) (string, bool) {
 	if _, author, ok := parseCalibreFilename(component); ok {
 		return author, true
 	}
-	if _, author, ok := parseHungarianFilename(component); ok {
+	if _, author, ok := parseNaturalFilename(component); ok {
 		return author, true
 	}
 	return "", false
@@ -971,7 +971,7 @@ func pickTitle(candidates []string, authors []string) string {
 
 // canonicalAuthorName returns the comparison form of an author name:
 // "Last, First" becomes "First Last" (flipped around the first comma).
-// Names without a comma (including Hungarian "Last First" order, which has
+// Names without a comma (including natural "Last First" order, which has
 // no comma to mark it) are returned as-is. Only the voting key uses this;
 // display keeps the first-seen original spelling.
 func canonicalAuthorName(name string) string {
