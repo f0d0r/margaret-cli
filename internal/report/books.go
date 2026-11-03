@@ -547,7 +547,8 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 			}
 		}
 		title := pickTitle(b.titles, authorNames)
-		needTitle := title == ""
+		titleFromMetadata := title != ""
+		needTitle := !titleFromMetadata
 		if needTitle && len(b.files) > 0 {
 			// No file carried a usable title: fall back to the first
 			// file's name. Book-level only; the file entries keep their
@@ -555,10 +556,33 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 			title = titleFromPath(b.files[0].Path)
 		}
 		calibreAuthor := ""
+		// Natural-order "Author - Title" names are the strongest remaining
+		// source: they can supply both fields when the metadata has
+		// neither, and an author when only the title survived. A filename
+		// title never replaces a title that came from the files.
+		if needTitle || len(authors) == 0 {
+			for _, f := range b.files {
+				parsedTitle, parsedAuthor, ok := parseNaturalFilename(f.Path)
+				if !ok {
+					continue
+				}
+				if titleFromMetadata && !titlesAgree(parsedTitle, title) {
+					continue
+				}
+				if needTitle {
+					title = parsedTitle
+				}
+				if len(authors) == 0 {
+					authors = []string{parsedAuthor}
+					calibreAuthor = parsedAuthor
+				}
+				break
+			}
+		}
 		if len(authors) == 0 {
 			if needTitle {
 				// Neither usable authors nor a usable title: a strict
-				// Calibre-style "Title - Author" file name is the best
+				// Calibre-style "Title - Last, First" file name is the best
 				// remaining source for both.
 				for _, f := range b.files {
 					if t, a, ok := parseCalibreFilename(f.Path); ok {
@@ -579,6 +603,17 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 						calibreAuthor = a
 						break
 					}
+				}
+			}
+		}
+		if len(authors) == 0 {
+			// Last resort: the parent directory or archive name often holds
+			// the author, especially in unpacked author/year layouts.
+			for _, f := range b.files {
+				if a, ok := authorFromPath(f.Path, title); ok {
+					authors = []string{a}
+					calibreAuthor = a
+					break
 				}
 			}
 		}

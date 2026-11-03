@@ -28,6 +28,8 @@ var knownExtensions = map[string]string{
 	".pdb":   "pdb",
 	".chm":   "chm",
 	".lrf":   "lrf",
+	".txt":   "txt",
+	".text":  "txt",
 }
 
 var archiveExtensions = map[string]string{
@@ -45,7 +47,7 @@ var archiveExtensions = map[string]string{
 // scanner recognizes (e.g. "epub", "fb2"). It derives from knownExtensions,
 // whose values are ebook formats by construction (archives live in the
 // separate archiveExtensions map), so it is the single source of truth for
-// the format taxonomy: parser.Parsers builds its registry from it.
+// the format taxonomy: the parser registry builds its mapping from it.
 func EbookFormats() []string {
 	seen := make(map[string]struct{}, len(knownExtensions))
 	for _, format := range knownExtensions {

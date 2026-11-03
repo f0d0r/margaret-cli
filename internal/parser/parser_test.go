@@ -394,11 +394,114 @@ func TestContextBlobCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	b := withContext(ctx, book.NewBytesBlob([]byte("data")))
+	b := WithContext(ctx, book.NewBytesBlob([]byte("data")))
 	if _, err := b.Size(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Size: expected context.Canceled, got %v", err)
 	}
 	if _, err := b.ReadAt(make([]byte, 4), 0); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadAt: expected context.Canceled, got %v", err)
+	}
+}
+
+// opfForLanguage builds a minimal EPUB package document with an optional
+// dc:language declaration and a single spine item.
+func opfForLanguage(lang string) string {
+	language := ""
+	if lang != "" {
+		language = "<dc:language>" + lang + "</dc:language>"
+	}
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Language Book</dc:title>` + language + `
+  </metadata>
+  <manifest>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+  </spine>
+</package>`
+}
+
+const sampleChapter = "A magyar nyelv az uráli nyelvcsalád tagja, és a honfoglalás óta " +
+	"több mint ezer éve beszélik a Kárpát-medencében. A magyar irodalom gazdag " +
+	"hagyományokkal rendelkezik, a népmeséktől a modern regényekig. Ez a fejezet " +
+	"kizárólag annak érdekében íródott, hogy a nyelvfelismerés működését ellenőrizni lehessen."
+
+func TestEbookParserFillsMissingLanguage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	writeEPUBWithPages(t, path, opfForLanguage(""), []epubPage{
+		{"OEBPS/c1.xhtml", xhtmlPage("<p>" + strings.Repeat(sampleChapter+" ", 6) + "</p>")},
+	})
+
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"hu"}; !slices.Equal(md.Languages, want) {
+		t.Errorf("languages = %v, want %v", md.Languages, want)
+	}
+}
+
+func TestEbookParserCorrectsWrongLanguage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	writeEPUBWithPages(t, path, opfForLanguage("en"), []epubPage{
+		{"OEBPS/c1.xhtml", xhtmlPage("<p>" + strings.Repeat(sampleChapter+" ", 6) + "</p>")},
+	})
+
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"hu"}; !slices.Equal(md.Languages, want) {
+		t.Errorf("languages = %v, want %v", md.Languages, want)
+	}
+}
+
+func TestEbookParserKeepsMatchingLanguage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	writeEPUBWithPages(t, path, opfForLanguage("hu-HU"), []epubPage{
+		{"OEBPS/c1.xhtml", xhtmlPage("<p>" + strings.Repeat(sampleChapter+" ", 6) + "</p>")},
+	})
+
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"hu-HU"}; !slices.Equal(md.Languages, want) {
+		t.Errorf("languages = %v, want %v", md.Languages, want)
+	}
+}
+
+func TestEbookParserKeepsLanguageWhenTextIsTooShort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	writeEPUBWithPages(t, path, opfForLanguage("en"), []epubPage{
+		{"OEBPS/c1.xhtml", xhtmlPage("<p>Short.</p>")},
+	})
+
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"en"}; !slices.Equal(md.Languages, want) {
+		t.Errorf("languages = %v, want %v", md.Languages, want)
+	}
+}
+
+func TestEbookParserIgnoresEmbeddedStylesForLanguage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	style := `<style>@page { margin-bottom: 5pt; } ` +
+		`@font-face { font-family: Helvetica } body { font-family: Helvetica; }</style>`
+	writeEPUBWithPages(t, path, opfForLanguage("en"), []epubPage{
+		{"OEBPS/c1.xhtml", xhtmlPage(style + "<p>" + strings.Repeat(sampleChapter+" ", 6) + "</p>")},
+	})
+
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"hu"}; !slices.Equal(md.Languages, want) {
+		t.Errorf("languages = %v, want %v", md.Languages, want)
 	}
 }

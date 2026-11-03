@@ -46,7 +46,7 @@ func collectResultsWithParser(t *testing.T, cfg ScanProcessorConfig, dir string,
 		mu.Unlock()
 	}
 	proc := newTestProcessor(t, cfg, dir)
-	proc.parsers = map[string]parser.Parser{"epub": p, "mobi": p}
+	proc.parsers = map[string]parser.Parser{"epub": p, "mobi": p, "txt": p}
 	err := proc.Process(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func stageFixture(t *testing.T, dir, name string) string {
 func TestProcessZip(t *testing.T) {
 	dir := t.TempDir()
 	writeZip(t, filepath.Join(dir, "bundle.zip"), map[string]string{
-		"readme.txt": "ignore me",
+		"readme.pdf": "ignore me",
 		"sub/a.epub": "a",
 		"sub/b.mobi": "b",
 	})
@@ -314,7 +314,7 @@ func TestProcessTar(t *testing.T) {
 	}
 	tw := tar.NewWriter(f)
 	for _, m := range []struct{ name, content string }{
-		{"readme.txt", "ignore"},
+		{"readme.pdf", "ignore"},
 		{"a.epub", "a"},
 		{"sub/b.mobi", "b"},
 	} {
@@ -423,6 +423,7 @@ func TestProcessRar(t *testing.T) {
 	got := pathsOf(results)
 	want := []string{
 		path + "!a.epub",
+		path + "!readme.txt",
 		path + "!sub/b.mobi",
 	}
 	if len(got) != len(want) {
@@ -446,6 +447,7 @@ func TestProcess7z(t *testing.T) {
 	got := pathsOf(results)
 	want := []string{
 		path + "!a.epub",
+		path + "!readme.txt",
 		path + "!sub/b.mobi",
 	}
 	if len(got) != len(want) {
@@ -477,8 +479,8 @@ func TestNoTempFilesLeaked(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
-	if len(results) != 5 {
-		t.Fatalf("expected 5 results, got %d: %v", len(results), pathsOf(results))
+	if len(results) != 7 {
+		t.Fatalf("expected 7 results, got %d: %v", len(results), pathsOf(results))
 	}
 
 	after, err := os.ReadDir(os.TempDir())
@@ -635,4 +637,51 @@ type readingParser struct{}
 func (readingParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, error) {
 	_, err := readBlobAll(b)
 	return parser.Metadata{}, err
+}
+
+func TestDecodeZipName(t *testing.T) {
+	cases := []struct {
+		name   string
+		header zip.FileHeader
+		want   string
+	}{
+		{
+			name:   "utf8 valid",
+			header: zip.FileHeader{Name: "könyv.epub", NonUTF8: false},
+			want:   "könyv.epub",
+		},
+		{
+			name:   "cp852 decoded",
+			header: zip.FileHeader{Name: "z\xa0rd\xa0ban \xa1rtam.txt", NonUTF8: true},
+			want:   "zárdában írtam.txt",
+		},
+		{
+			name:   "cp437 spec default",
+			header: zip.FileHeader{Name: "Caf\x82.txt", NonUTF8: true},
+			want:   "Café.txt",
+		},
+		{
+			name:   "cp850 decoded",
+			header: zip.FileHeader{Name: "Gr\x81\xe1e.txt", NonUTF8: true},
+			want:   "Grüße.txt",
+		},
+		{
+			name:   "windows-1250 decoded",
+			header: zip.FileHeader{Name: "k\xf6nyv \xe9s novella.txt", NonUTF8: true},
+			want:   "könyv és novella.txt",
+		},
+		{
+			name:   "windows-1250 double accents",
+			header: zip.FileHeader{Name: "\xd5rj\xedt\xf5 szenved\xe9ly.txt", NonUTF8: true},
+			want:   "Őrjítő szenvedély.txt",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			zf := &zip.File{FileHeader: c.header}
+			if got := decodeZipName(zf); got != c.want {
+				t.Errorf("decodeZipName() = %q, want %q", got, c.want)
+			}
+		})
+	}
 }

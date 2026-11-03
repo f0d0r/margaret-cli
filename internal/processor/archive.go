@@ -12,11 +12,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/f0d0r/margaret-cli/internal/scanner"
 	"github.com/f0d0r/margaret-cli/internal/source"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/mholt/archives"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // processArchive unpacks an archive and processes every ebook and nested
@@ -251,9 +255,10 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 		if zf.FileInfo().IsDir() {
 			continue
 		}
-		p.recordExt(zf.Name)
-		display := displayPath + "!" + zf.Name
-		if _, ok := scanner.FormatOf(zf.Name); !ok {
+		name := decodeZipName(zf)
+		p.recordExt(name)
+		display := displayPath + "!" + name
+		if _, ok := scanner.FormatOf(name); !ok {
 			continue
 		}
 		if p.shouldSkip(ctx, display) {
@@ -273,10 +278,8 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 			p.report()
 			continue
 		}
-		p.handleMember(ctx, zf.Name, rc, displayPath, depth+1, int64(zf.UncompressedSize64))
-		func() {
-			_ = rc.Close()
-		}()
+		p.handleMember(ctx, name, rc, displayPath, depth+1, int64(zf.UncompressedSize64))
+		_ = rc.Close()
 	}
 }
 
@@ -339,6 +342,10 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
+	if p.belowMinSize(format, size) {
+		p.skip()
+		return
+	}
 	if p.shouldSkip(ctx, display) {
 		p.skip()
 		return
@@ -363,4 +370,97 @@ func zipMemberError(err error) error {
 		return fmt.Errorf("zip member uses an unsupported compression or encryption algorithm: %w", err)
 	}
 	return fmt.Errorf("zip member: %w", err)
+}
+
+// legacyNameEncodings are tried when a zip member name is not UTF-8. CP437 is
+// the ZIP specification's default for names without the UTF-8 flag; the other
+// code pages cover common mis-flagged DOS and Windows archives.
+var legacyNameEncodings = []encoding.Encoding{
+	charmap.CodePage437,
+	charmap.CodePage850,
+	charmap.CodePage852,
+	charmap.Windows1250,
+	charmap.Windows1252,
+}
+
+// decodeZipName recovers the filename of a zip member. Legacy zip archives
+// created on DOS or Windows often contain filenames without the 0x800 UTF-8
+// flag, which Go's archive/zip leaves as raw bytes. The candidate decodings are
+// scored by text quality only, so the choice is independent of the archive's
+// language.
+func decodeZipName(f *zip.File) string {
+	if !f.NonUTF8 && utf8.ValidString(f.Name) {
+		return f.Name
+	}
+	raw := []byte(f.Name)
+	if utf8.Valid(raw) {
+		return f.Name
+	}
+
+	best, bestScore := f.Name, scoreLegacyName(f.Name)
+	for _, enc := range legacyNameEncodings {
+		d, err := enc.NewDecoder().Bytes(raw)
+		if err != nil || !utf8.Valid(d) {
+			continue
+		}
+		s := string(d)
+		if sc := scoreLegacyName(s); sc > bestScore {
+			best, bestScore = s, sc
+		}
+	}
+	return best
+}
+
+// scoreLegacyName rates a decoded filename by Unicode category and script
+// consistency: names are mostly letters, digits and punctuation in a single
+// script, while a wrong code page produces box-drawing symbols, control
+// characters or letters from an unrelated script.
+func scoreLegacyName(s string) int {
+	dominant, dominantCount := "", 0
+	scriptCounts := make(map[string]int)
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			script := runeScript(r)
+			scriptCounts[script]++
+			if scriptCounts[script] > dominantCount {
+				dominant, dominantCount = script, scriptCounts[script]
+			}
+		}
+	}
+
+	score := 0
+	for _, r := range s {
+		switch {
+		case r == utf8.RuneError:
+			score -= 20
+		case unicode.IsLetter(r):
+			if runeScript(r) != dominant {
+				score -= 6
+			} else {
+				score += 3
+			}
+		case unicode.IsDigit(r):
+			score += 2
+		case unicode.IsSpace(r), unicode.IsPunct(r):
+			score++
+		case unicode.IsSymbol(r):
+			score -= 4
+		case unicode.IsControl(r):
+			score -= 20
+		default:
+			score -= 4
+		}
+	}
+	return score
+}
+
+// runeScript returns the Unicode script name of r, or an empty string for
+// characters shared by several scripts.
+func runeScript(r rune) string {
+	for name, table := range unicode.Scripts {
+		if unicode.Is(table, r) {
+			return name
+		}
+	}
+	return ""
 }

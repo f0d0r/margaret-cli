@@ -90,6 +90,8 @@ Ebooks (metadata is read from these):
 - `.azw3`
 - `.azw`
 - `.prc`
+- `.txt`
+- `.text`
 
 Archives (searched for ebooks inside):
 
@@ -106,6 +108,29 @@ Ebooks nested inside archives are handled in place — they are read from the
 archive without being extracted to disk. Archives may be nested inside other
 archives, up to the depth given by `--archive-depth`.
 
+Plain-text books are read with a dedicated parser. It detects the encoding
+(UTF-8 and UTF-16 BOMs, and legacy code pages from the detector's candidates,
+validated by language identification), takes a title and authors from a header
+block at the start of the text (`Title:`, `Author:`, `Authors:`, legacy
+`TI:`/`AU:` header keys, YAML front matter or a Project Gutenberg preamble) or
+from Calibre's title-page layout, and extracts at most one validated ISBN from
+the first 64 KiB. The whole decoded text feeds the same 128-hash MinHash
+fingerprint as the other formats. Files smaller than `--min-txt-size`
+(15 KiB by default) are treated as distribution metadata or fragments rather
+than books and are counted as skipped. Empty and binary files are reported as
+failures.
+
+Every ebook's language is verified from its reading-order text with
+language-agnostic detection. A missing language is filled in, and a declared
+language is replaced only when the detected language is clearly different and
+the detector is confident; regional tags that agree with the detection are
+kept unchanged.
+
+Metadata and encoding detection are language- and country-independent.
+Structural signals (Unicode categories, line shape, file names) come first;
+keyword lists are additive hints that no feature requires, so a language
+without hints still works.
+
 ---
 
 ## Flags
@@ -116,6 +141,7 @@ archives, up to the depth given by `--archive-depth`.
 | `--archive-depth` | `int` | `2` | Maximum archive nesting depth to unpack. |
 | `--archive-password` | `string` | `""` | Password for encrypted rar and 7z archives. |
 | `--spool-mem-limit` | `int` | `67108864` | Max bytes per archive member buffered in memory before spilling to a temp file. |
+| `--min-txt-size` | `int` | `15360` | Minimum size in bytes for a plain-text file to be treated as a book (`0` = default, negative = disable). |
 | `--ftp-user` | `string` | `anonymous` | FTP username for `ftp://` scans. |
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
@@ -165,6 +191,27 @@ in memory before the rest is spilled to a temporary file (see
 a value of `0` restores the default of 64 MiB. Only members that exceed the
 limit create a temp file, and those files are deleted as soon as the member is
 done processing.
+
+### `--min-txt-size`
+
+Sets the minimum size in bytes for a plain-text file to be treated as a book.
+Plain-text collections often contain tiny side files (`nncl.txt`,
+`olvasd_el.txt`, `_adatlap.txt`, chapter fragments) next to the actual books;
+these are skipped and counted in **Skipped** instead of becoming books on their
+own. The default is 15 KiB (15360 bytes) because plain-text side files (readmes,
+blurbs, file lists) are typically smaller than real books. A value of `0` uses
+the default; a negative value disables the size filter entirely.
+
+```sh
+# keep only plain-text files of at least 32 KiB
+margaret scan ./books --min-txt-size 32768
+
+# disable the size filter
+margaret scan ./books --min-txt-size -1
+```
+
+Robust content checks still reject HTML sources, HTTP cache dumps, credit
+pages, blurbs and tables of contents regardless of their file name.
 
 ### `--failures-out`
 
@@ -310,7 +357,9 @@ Duration   1ms
 - **Total** — total number of ebook files encountered (succeeded + failed + skipped).
 - **Succeeded** — ebooks whose metadata was read successfully.
 - **Failed** — items that could not be processed.
-- **Skipped** — recorded files passed over without reading (resume runs only).
+- **Skipped** — files passed over without being parsed: already-recorded files
+  in resume runs, and plain-text files that are too small or otherwise not
+  books.
 - **Duration** — wall-clock time of the scan.
 
 With `--ext-stats` the summary is followed by per-extension file counts,
@@ -323,9 +372,9 @@ Extension stats (10 files):
 Supported:
   epub: 3 (30%)
   mobi: 2 (20%)
+  txt: 1 (10%)
 Unsupported:
   pdf: 4 (40%)
-  txt: 1 (10%)
 ```
 
 ```sh
