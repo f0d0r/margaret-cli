@@ -6,6 +6,15 @@ import (
 	"github.com/f0d0r/margaret-ebook-library/book"
 )
 
+// ContextError prefers the context error: parsers may report their own error
+// when reads are aborted, but callers need to recognize cancellation.
+func ContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
+}
+
 // contextBlob stops reads once the context is done. The ebook library reads
 // through book.Blob, so wrapping the blob makes format detection, hashing and
 // resource extraction abandon the current file on cancellation.
@@ -14,7 +23,9 @@ type contextBlob struct {
 	b   book.Blob
 }
 
-func withContext(ctx context.Context, b book.Blob) book.Blob {
+// WithContext returns b wrapped so that reads fail with ctx.Err() once ctx is
+// done. It returns b unchanged when ctx or b is nil.
+func WithContext(ctx context.Context, b book.Blob) book.Blob {
 	if ctx == nil || b == nil {
 		return b
 	}

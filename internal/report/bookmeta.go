@@ -6,6 +6,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/f0d0r/margaret-cli/internal/metaheur"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 )
@@ -154,6 +155,7 @@ var ebookExtensions = map[string]struct{}{
 	".fb2":  {},
 	".djvu": {},
 	".txt":  {},
+	".text": {},
 }
 
 // titleFromPath derives a last-resort book title from a file path (Calibre
@@ -223,19 +225,16 @@ func parseCalibre(path string, strict bool) (title, author string, ok bool) {
 		return "", "", false
 	}
 	if strict {
-		if !strings.Contains(author, ",") {
-			return "", "", false
+		// "Title - Last, First" is the Calibre default. When the left side
+		// is the comma-form name instead, accept the swapped author-first
+		// spelling only if the right side is clearly a title.
+		if calibreAuthorShape(author) && metaheur.IsName(author) {
+			return normalizeTitleArticle(title), author, true
 		}
-		parts := strings.FieldsFunc(author, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
-		if len(parts) < 2 || len(parts) > 4 {
-			return "", "", false
+		if calibreAuthorShape(title) && metaheur.IsName(title) && metaheur.IsTitle(author) {
+			return normalizeTitleArticle(author), title, true
 		}
-		for _, p := range parts {
-			if runeLen(p) < 2 {
-				return "", "", false
-			}
-		}
-		return title, author, true
+		return "", "", false
 	}
 	parts := strings.Fields(author)
 	if len(parts) != 2 {
@@ -246,7 +245,334 @@ func parseCalibre(path string, strict bool) (title, author string, ok bool) {
 			return "", "", false
 		}
 	}
-	return title, author, true
+	if !metaheur.IsName(author) {
+		return "", "", false
+	}
+	return normalizeTitleArticle(title), author, true
+}
+
+// calibreAuthorShape reports whether s has the "Last, First" shape Calibre
+// uses: one comma and two to four name-sized tokens. It only validates the
+// shape; metaheur.IsName separately rules out titles that happen to contain a
+// comma.
+func calibreAuthorShape(s string) bool {
+	if !strings.Contains(s, ",") {
+		return false
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	if len(parts) < 2 || len(parts) > 4 {
+		return false
+	}
+	for _, p := range parts {
+		if runeLen(p) < 2 {
+			return false
+		}
+	}
+	return true
+}
+
+// parseHungarianFilename splits the natural-order "Author - Title" and
+// "Title - Author" spellings common in Hungarian libraries. Both sides are
+// validated as a name and a title; when both orientations are plausible the
+// file name is left alone, so a missing author is preferable to a swapped
+// one. The Calibre "Last, First" form is handled by parseCalibreFilename.
+func parseHungarianFilename(path string) (title, author string, ok bool) {
+	stem := normalizeMeta(cleanStem(path))
+	for _, pair := range splitFilenamePairs(stem) {
+		left, right := pair[0], pair[1]
+		if isPlaceholderTitle(left) || isPlaceholderTitle(right) {
+			continue
+		}
+		leftName, rightName := metaheur.IsName(left), metaheur.IsName(right)
+		leftTitle, rightTitle := metaheur.IsTitle(left), metaheur.IsTitle(right)
+		authorLeft, authorRight := leftName && rightTitle, rightName && leftTitle
+		switch {
+		case authorLeft && !authorRight && !containsGenericPathWord(left):
+			return normalizeTitleArticle(right), left, true
+		case authorRight && !authorLeft && !containsGenericPathWord(right):
+			return normalizeTitleArticle(left), right, true
+		}
+	}
+	return "", "", false
+}
+
+// splitFilenamePairs returns the first and last dash-separated splits of a
+// file stem, deduplicated. Titles may contain a dash, so both ends are
+// considered instead of trusting a single separator position.
+func splitFilenamePairs(stem string) [][2]string {
+	var out [][2]string
+	seen := make(map[[2]string]struct{})
+	add := func(left, right string) {
+		left, right = normalizeMeta(left), normalizeMeta(right)
+		if left == "" || right == "" {
+			return
+		}
+		pair := [2]string{left, right}
+		if _, ok := seen[pair]; ok {
+			return
+		}
+		seen[pair] = struct{}{}
+		out = append(out, pair)
+	}
+	for _, sep := range calibreSeparators {
+		if i := strings.Index(stem, sep); i >= 0 {
+			add(stem[:i], stem[i+len(sep):])
+		}
+		if i := strings.LastIndex(stem, sep); i >= 0 {
+			add(stem[:i], stem[i+len(sep):])
+		}
+	}
+	return out
+}
+
+// normalizeTitleArticle moves a trailing ", The" (or its Hungarian and
+// English variants) to the front: "Great Slow Kings, The" becomes "The Great
+// Slow Kings". Only filename-derived titles go through this; author names are
+// never passed here.
+func normalizeTitleArticle(title string) string {
+	title = normalizeMeta(title)
+	for _, article := range []string{"The", "An", "A", "Az", "Egy"} {
+		suffix := ", " + article
+		if len(title) > len(suffix) && strings.HasSuffix(strings.ToLower(title), strings.ToLower(suffix)) {
+			rest := normalizeMeta(title[:len(title)-len(suffix)])
+			if rest != "" {
+				return article + " " + rest
+			}
+		}
+	}
+	return title
+}
+
+// archiveExtensions are stripped from path components before they are
+// considered as author or "Author - Title" candidates.
+var archiveExtensions = map[string]struct{}{
+	".zip": {}, ".rar": {}, ".7z": {}, ".tar": {}, ".gz": {}, ".bz2": {},
+	".tgz": {}, ".tbz2": {},
+}
+
+// genericPathWords are folder words that say nothing about the author. Any
+// candidate containing one is rejected, so "Science Fiction" or "Regények"
+// never becomes an author.
+var genericPathWords = map[string]struct{}{
+	"author": {}, "authors": {}, "writer": {}, "writers": {},
+	"book": {}, "books": {}, "ebook": {}, "ebooks": {}, "library": {},
+	"series": {}, "collection": {}, "collections": {},
+	"fiction": {}, "nonfiction": {}, "novel": {}, "novels": {},
+	"story": {}, "stories": {}, "poetry": {}, "drama": {},
+	"history": {}, "biography": {}, "children": {}, "young": {}, "adult": {},
+	"comics": {}, "magazine": {}, "magazines": {}, "misc": {}, "other": {},
+	"various": {}, "download": {}, "downloads": {}, "incoming": {},
+	"temp": {}, "tmp": {}, "archive": {}, "archives": {}, "backup": {},
+	"old": {}, "new": {}, "test": {}, "tests": {}, "source": {}, "sources": {},
+	"docs": {}, "documents": {}, "data": {}, "files": {}, "resources": {},
+	"media": {}, "video": {}, "music": {}, "scanned": {}, "digital": {},
+	"unknown": {}, "publisher": {}, "publishers": {}, "press": {},
+	"star": {}, "wars": {}, "trek": {}, "harry": {}, "potter": {},
+	"pokemon": {}, "disney": {}, "marvel": {}, "anime": {}, "manga": {},
+	"chronicles": {}, "saga": {}, "trilogy": {}, "tetralogy": {}, "cycle": {},
+	"omnibus": {}, "anthology": {}, "box": {}, "boxed": {}, "set": {},
+	"complete": {}, "collected": {}, "selected": {}, "works": {},
+	"regeny": {}, "regenyek": {}, "irodalom": {}, "konyv": {}, "konyvek": {},
+	"sorozat": {}, "novella": {}, "novellak": {}, "vers": {}, "versek": {},
+	"tortenelem": {}, "eletrajz": {}, "gyerek": {}, "gyerekek": {},
+	"ifjusagi": {}, "krimi": {}, "scifi": {}, "fantasy": {}, "magazin": {},
+	"ujsag": {}, "cikk": {}, "cikkek": {}, "tanulmany": {}, "tanulmanyok": {},
+	"gyujtemeny": {}, "gyujtemenyek": {}, "egyeb": {}, "vegyes": {},
+	"angol": {}, "nemet": {}, "francia": {}, "olasz": {}, "orosz": {},
+	"spanyol": {}, "magyar": {}, "nyelv": {}, "nyelvu": {}, "forditas": {},
+	"nyers": {}, "forras": {}, "letoltes": {}, "letoltott": {},
+	"archivum": {}, "mentes": {}, "uj": {}, "regi": {}, "teszt": {},
+	"kezirat": {}, "kiadas": {}, "kiado": {},
+}
+
+// authorFromPath recovers an author from a parent directory or an archive
+// name when the files themselves carry none. Candidates are tried from the
+// nearest directory outward. A candidate must look like a personal name, must
+// not be a generic collection word, and must not simply repeat the title.
+func authorFromPath(path, title string) (string, bool) {
+	for _, component := range pathComponentsNearestFirst(path) {
+		for _, candidate := range pathAuthorCandidates(component) {
+			if name, ok := filenamePairAuthor(candidate); ok && usablePathAuthor(name, title) {
+				return name, true
+			}
+			if usablePathAuthor(candidate, title) {
+				return candidate, true
+			}
+		}
+	}
+	return "", false
+}
+
+// pathComponentsNearestFirst returns the directory and archive names of a
+// display path from the file's parent outward.
+func pathComponentsNearestFirst(path string) []string {
+	parts := strings.Split(path, "!")
+	var out []string
+	for i := len(parts) - 1; i >= 0; i-- {
+		segments := strings.FieldsFunc(parts[i], func(r rune) bool {
+			return r == '/' || r == '\\'
+		})
+		if i == len(parts)-1 && len(segments) > 0 {
+			segments = segments[:len(segments)-1]
+		}
+		for j := len(segments) - 1; j >= 0; j-- {
+			out = append(out, segments[j])
+		}
+	}
+	return out
+}
+
+// pathAuthorCandidates expands one path component into its archive-stem form
+// and, when present, the stem without a trailing language or edition
+// qualifier ("Zelazny, Roger angolul" -> "Zelazny, Roger"). Raw component
+// names with an archive extension are never returned: a trailing ".zip" would
+// otherwise make an unrelated folder look like a four-token name.
+func pathAuthorCandidates(component string) []string {
+	component = normalizeMeta(component)
+	if component == "" {
+		return nil
+	}
+	base := component
+	if ext := strings.ToLower(filepath.Ext(base)); ext != "" {
+		if _, ok := archiveExtensions[ext]; ok {
+			base = normalizeMeta(base[:len(base)-len(ext)])
+		}
+	}
+	if base == "" {
+		return nil
+	}
+	out := []string{base}
+	if stripped := stripEditionSuffix(base); stripped != "" && stripped != base {
+		out = append(out, stripped)
+	}
+	return out
+}
+
+// editionSuffixes are trailing words that describe the language or edition of
+// a file rather than the person who wrote it.
+var editionSuffixes = map[string]struct{}{
+	"angolul": {}, "magyarul": {}, "nemetul": {}, "franciaul": {},
+	"olaszul": {}, "oroszul": {}, "spanyolul": {}, "latinul": {},
+	"english": {}, "hungarian": {}, "german": {}, "french": {},
+	"italian": {}, "russian": {}, "spanish": {}, "translated": {},
+	"forditas": {}, "forditva": {}, "kiadas": {}, "edition": {},
+}
+
+// stripEditionSuffix removes trailing language/edition words from a candidate.
+func stripEditionSuffix(s string) string {
+	words := strings.Fields(s)
+	for len(words) > 0 {
+		if _, ok := editionSuffixes[foldName(words[len(words)-1])]; !ok {
+			break
+		}
+		words = words[:len(words)-1]
+	}
+	return strings.Join(words, " ")
+}
+
+// filenamePairAuthor extracts the author from an "Author - Title" or
+// "Title - Author" component.
+func filenamePairAuthor(component string) (string, bool) {
+	if _, author, ok := parseCalibreFilename(component); ok {
+		return author, true
+	}
+	if _, author, ok := parseHungarianFilename(component); ok {
+		return author, true
+	}
+	return "", false
+}
+
+// usablePathAuthor reports whether a path-derived candidate is safe to use as
+// an author name.
+func usablePathAuthor(candidate, title string) bool {
+	candidate = normalizeMeta(candidate)
+	if candidate == "" || !metaheur.IsName(candidate) || isPlaceholderAuthor(candidate) ||
+		!pathNameShapeOK(candidate) || containsGenericPathWord(candidate) {
+		return false
+	}
+	for _, r := range candidate {
+		// Replacement runes come from undecodable archive names; control
+		// characters never belong to a person's name.
+		if r == utf8.RuneError || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return title == "" || !pathCandidateInTitle(candidate, title)
+}
+
+// pathNameShapeOK rejects path candidates that mix a name with a title. Real
+// author names are either comma-form, at most two words ("Móricz Zsigmond"),
+// or carry initials ("Griffin W E B"). Three or more full words ("Lem
+// Stanislaw Kiberiáda") are far more likely an archive name that concatenates
+// author and title without a separator.
+func pathNameShapeOK(s string) bool {
+	if strings.Contains(s, ",") {
+		return true
+	}
+	words := strings.Fields(s)
+	if len(words) <= 2 {
+		return true
+	}
+	for _, w := range words[2:] {
+		if runeLen(trimWord(w)) > 3 {
+			return false
+		}
+	}
+	return true
+}
+
+// containsGenericPathWord reports whether s contains a folder word that says
+// nothing about the author.
+func containsGenericPathWord(s string) bool {
+	folded := foldName(s)
+	for _, word := range strings.FieldsFunc(folded, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if _, ok := genericPathWords[word]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// trimWord strips surrounding punctuation from a name token.
+func trimWord(w string) string {
+	return strings.Trim(w, `"'()[]{}.,;:!?`)
+}
+
+// pathCandidateInTitle reports whether every distinctive token of candidate
+// already appears in title, which makes the candidate part of the title
+// rather than its author.
+func pathCandidateInTitle(candidate, title string) bool {
+	tokens := matchTokens(candidate)
+	if len(tokens) == 0 {
+		return false
+	}
+	titleSet := tokenSetOf(matchTokens(title))
+	for _, token := range tokens {
+		if _, ok := titleSet[token]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// titlesAgree reports whether a filename-derived title is compatible with a
+// known title: equal, or one is a whole-word phrase of the other. Single-word
+// titles are only accepted on equality.
+func titlesAgree(a, b string) bool {
+	fa, fb := foldName(a), foldName(b)
+	if fa == "" || fb == "" {
+		return false
+	}
+	if fa == fb {
+		return true
+	}
+	if len(strings.Fields(fa)) < 2 || len(strings.Fields(fb)) < 2 {
+		return false
+	}
+	return strings.Contains(" "+fa+" ", " "+fb+" ") ||
+		strings.Contains(" "+fb+" ", " "+fa+" ")
 }
 
 // stemTok is one token of a filename stem: either a word or a separator run.

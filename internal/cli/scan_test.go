@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,8 +23,10 @@ func withScanOutputs(t *testing.T, dir string, report bool) (failures, duplicate
 	t.Helper()
 
 	oldDB, oldFailures, oldDuplicates, oldBooks, oldReport, oldExt := dbPath, failuresOutPath, duplicatesOut, booksOut, reportEnabled, extStats
+	oldMinTxtSize := minTxtSize
 	t.Cleanup(func() {
 		dbPath, failuresOutPath, duplicatesOut, booksOut, reportEnabled, extStats = oldDB, oldFailures, oldDuplicates, oldBooks, oldReport, oldExt
+		minTxtSize = oldMinTxtSize
 	})
 
 	dbPath = ":memory:"
@@ -101,6 +104,16 @@ func exists(t *testing.T, path string) bool {
 	}
 	t.Fatal(err)
 	return false
+}
+
+func TestScanMinTxtSizeFlag(t *testing.T) {
+	flag := scanCmd.Flags().Lookup("min-txt-size")
+	if flag == nil {
+		t.Fatal("min-txt-size flag is not registered")
+	}
+	if want := strconv.FormatInt(processor.DefaultMinTxtSize, 10); flag.DefValue != want {
+		t.Errorf("min-txt-size default = %q, want %q", flag.DefValue, want)
+	}
 }
 
 func TestRunScanDefaultSkipsBulkReports(t *testing.T) {
@@ -266,14 +279,15 @@ func TestRunScanExtStatsCollects(t *testing.T) {
 	})
 
 	// 1 epub + 2 pdf + 1 txt on disk + 1 pdf + 1 txt in the zip = 6 files;
-	// the zip itself is treated as a folder and excluded.
+	// the zip itself is treated as a folder and excluded. The txt files are
+	// supported ebooks now, so they sort into the supported group by count.
 	for _, want := range []string{
 		"Extension stats (6 files):",
 		"Supported:",
+		"  txt: 2 (33.3%)",
 		"  epub: 1 (16.7%)",
 		"Unsupported:",
 		"  pdf: 3 (50%)",
-		"  txt: 2 (33.3%)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -282,10 +296,12 @@ func TestRunScanExtStatsCollects(t *testing.T) {
 	if strings.Contains(out, "zip:") {
 		t.Errorf("archives must be excluded from ext stats, got:\n%s", out)
 	}
-	// Unsupported entries sort by count desc: pdf (3) before txt (2).
-	if !strings.Contains(out, "pdf: 3") || !strings.Contains(out, "txt: 2") ||
-		strings.Index(out, "pdf: 3") > strings.Index(out, "txt: 2") {
-		t.Errorf("expected pdf before txt by count desc, got:\n%s", out)
+	// Supported entries sort by count desc (txt before epub) and the groups
+	// keep supported before unsupported.
+	if !strings.Contains(out, "txt: 2") || !strings.Contains(out, "epub: 1") ||
+		strings.Index(out, "txt: 2") > strings.Index(out, "epub: 1") ||
+		strings.Index(out, "epub: 1") > strings.Index(out, "pdf: 3") {
+		t.Errorf("expected txt, epub, then pdf order, got:\n%s", out)
 	}
 	// Ext stats come after the existing summary.
 	if !strings.Contains(out, "Total") || !strings.Contains(out, "Extension stats") ||

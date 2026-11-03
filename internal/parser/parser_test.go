@@ -394,7 +394,7 @@ func TestContextBlobCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	b := withContext(ctx, book.NewBytesBlob([]byte("data")))
+	b := WithContext(ctx, book.NewBytesBlob([]byte("data")))
 	if _, err := b.Size(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Size: expected context.Canceled, got %v", err)
 	}

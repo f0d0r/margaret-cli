@@ -4,6 +4,7 @@ go 1.26.10
 
 require (
 	github.com/f0d0r/margaret-ebook-library v0.1.2-0.20261027211024-cf1cdac9624e
+	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f
 	github.com/jlaffaye/ftp v0.2.4
 	github.com/mholt/archives v0.1.5
 	github.com/pressly/goose/v3 v3.28.0

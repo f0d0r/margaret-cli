@@ -12,11 +12,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/f0d0r/margaret-cli/internal/scanner"
 	"github.com/f0d0r/margaret-cli/internal/source"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/mholt/archives"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // processArchive unpacks an archive and processes every ebook and nested
@@ -251,9 +253,10 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 		if zf.FileInfo().IsDir() {
 			continue
 		}
-		p.recordExt(zf.Name)
-		display := displayPath + "!" + zf.Name
-		if _, ok := scanner.FormatOf(zf.Name); !ok {
+		name := decodeZipName(zf)
+		p.recordExt(name)
+		display := displayPath + "!" + name
+		if _, ok := scanner.FormatOf(name); !ok {
 			continue
 		}
 		if p.shouldSkip(ctx, display) {
@@ -273,10 +276,8 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 			p.report()
 			continue
 		}
-		p.handleMember(ctx, zf.Name, rc, displayPath, depth+1, int64(zf.UncompressedSize64))
-		func() {
-			_ = rc.Close()
-		}()
+		p.handleMember(ctx, name, rc, displayPath, depth+1, int64(zf.UncompressedSize64))
+		_ = rc.Close()
 	}
 }
 
@@ -339,6 +340,10 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
+	if p.belowMinSize(format, size) {
+		p.skip()
+		return
+	}
 	if p.shouldSkip(ctx, display) {
 		p.skip()
 		return
@@ -363,4 +368,57 @@ func zipMemberError(err error) error {
 		return fmt.Errorf("zip member uses an unsupported compression or encryption algorithm: %w", err)
 	}
 	return fmt.Errorf("zip member: %w", err)
+}
+
+// decodeZipName recovers the filename of a zip member. Legacy zip archives
+// created on DOS or Windows often contain filenames encoded in CP852 (DOS
+// Latin-2) or Windows-1250 without the 0x800 UTF-8 flag, which Go's
+// archive/zip leaves as raw bytes, turning accents into replacement runes.
+func decodeZipName(f *zip.File) string {
+	if !f.NonUTF8 && utf8.ValidString(f.Name) {
+		return f.Name
+	}
+	raw := []byte(f.Name)
+	if utf8.Valid(raw) {
+		return f.Name
+	}
+
+	best := f.Name
+	bestScore := -1
+
+	// CP852 (standard legacy DOS code page used in Central European archives)
+	if d, err := charmap.CodePage852.NewDecoder().Bytes(raw); err == nil && utf8.Valid(d) {
+		s := string(d)
+		if sc := scoreHungarianFilename(s); sc > bestScore {
+			best = s
+			bestScore = sc
+		}
+	}
+
+	// Windows-1250 (Windows Central European)
+	if d, err := charmap.Windows1250.NewDecoder().Bytes(raw); err == nil && utf8.Valid(d) {
+		s := string(d)
+		if sc := scoreHungarianFilename(s); sc > bestScore {
+			best = s
+			bestScore = sc
+		}
+	}
+
+	return best
+}
+
+func scoreHungarianFilename(s string) int {
+	score := 0
+	for _, r := range s {
+		switch r {
+		case 'á', 'é', 'í', 'ó', 'ö', 'ő', 'ú', 'ü', 'ű',
+			'Á', 'É', 'Í', 'Ó', 'Ö', 'Ő', 'Ú', 'Ü', 'Ű':
+			score += 2
+		case '‚', '“', '”', '„', 'ˇ', 'ß', '§', '°':
+			score -= 5
+		case utf8.RuneError:
+			score -= 10
+		}
+	}
+	return score
 }

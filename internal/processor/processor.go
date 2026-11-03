@@ -36,8 +36,9 @@ type Progress struct {
 	Parsed int64
 	Failed int64
 
-	// Skipped counts files that resume mode passed over without reading:
-	// already recorded in a previous run.
+	// Skipped counts files that were passed over without being parsed: files
+	// already recorded in a previous resume run, and plain-text files that are
+	// too small or otherwise not books.
 	Skipped int64
 
 	// ExtCounts holds per-extension file counts (supported + unsupported,

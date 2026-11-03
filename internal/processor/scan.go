@@ -15,6 +15,8 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/lsh"
 	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/parser/registry"
+	"github.com/f0d0r/margaret-cli/internal/parser/txt"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
 	"github.com/f0d0r/margaret-cli/internal/source"
 	"github.com/f0d0r/margaret-cli/internal/tx"
@@ -37,6 +39,11 @@ type ScanProcessorConfig struct {
 	// buffered in memory; anything beyond is spilled to a temporary file. A
 	// zero value uses the default (64 MiB).
 	SpoolMemLimit int64
+
+	// MinTxtSize is the minimum size in bytes for a plain-text file to be
+	// treated as a book. Zero uses DefaultMinTxtSize; a negative value
+	// disables the size filter.
+	MinTxtSize int64
 
 	// Password decrypts password-protected rar and 7z archives. The
 	// standard library cannot decrypt AES-encrypted zip members, so those
@@ -65,6 +72,10 @@ type ScanProcessorConfig struct {
 	OnProgress func(Progress)
 }
 
+// DefaultMinTxtSize is the default minimum size of a plain-text book. It
+// mirrors txt.DefaultMinSize so callers do not need to import the parser.
+const DefaultMinTxtSize = txt.DefaultMinSize
+
 // DefaultScanProcessorConfig returns the default Processor configuration.
 func DefaultScanProcessorConfig() ScanProcessorConfig {
 	n := runtime.NumCPU()
@@ -73,6 +84,7 @@ func DefaultScanProcessorConfig() ScanProcessorConfig {
 		ParseWorkers: n,
 		QueueSize:    n * 2,
 		MaxDepth:     2,
+		MinTxtSize:   DefaultMinTxtSize,
 	}
 }
 
@@ -124,7 +136,7 @@ func NewScanProcessor(sqldb *sql.DB, q *db.Queries, cfg ScanProcessorConfig, roo
 		cfg.MaxDepth = 0
 	}
 	return &ScanProcessor{
-		parsers:    parser.Parsers(),
+		parsers:    registry.ParsersWithOptions(registry.Options{MinTxtSize: cfg.MinTxtSize}),
 		cfg:        cfg,
 		root:       root,
 		onResult:   cfg.OnResult,
@@ -239,6 +251,25 @@ func (p *ScanProcessor) Failures() []Failure {
 	return append([]Failure(nil), p.failures...)
 }
 
+// belowMinSize lets a format-specific parser reject files that are too small
+// to be a book before the processor opens or spools them. Unknown sizes are
+// checked by the parser after reading.
+func (p *ScanProcessor) belowMinSize(format string, size int64) bool {
+	if size < 0 {
+		return false
+	}
+	par := p.parsers[format]
+	if par == nil {
+		return false
+	}
+	filter, ok := par.(parser.SizeFilter)
+	if !ok {
+		return false
+	}
+	min := filter.MinSize()
+	return min > 0 && size < min
+}
+
 // processSource handles a single unit of work: either an ebook to parse or
 // an archive to unpack and process. src is the worker's Source, used to open
 // the file on disk or over FTP.
@@ -248,6 +279,10 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 	}
 	if scanner.IsArchiveFormat(r.Format) {
 		p.processArchive(ctx, r, 0, src)
+		return
+	}
+	if p.belowMinSize(r.Format, r.Size) {
+		p.skip()
 		return
 	}
 	if p.shouldSkip(ctx, r.Path) {
@@ -300,6 +335,10 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 	md, err := par.Parse(ctx, b)
 	if err != nil {
 		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, parser.ErrNotABook) {
+			p.skip()
 			return
 		}
 		p.fail(displayPath, err)

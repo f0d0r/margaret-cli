@@ -999,3 +999,205 @@ func TestWriteBooksFilteredEmptyWritesNothing(t *testing.T) {
 		t.Fatalf("expected no file to be written, stat err = %v", err)
 	}
 }
+
+func TestParseHungarianFilename(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		path      string
+		wantTitle string
+		wantAuth  string
+		wantOK    bool
+	}{
+		{"author then title", "/books/Dick, Philip K - Az ingázó.epub", "Az ingázó", "Dick, Philip K", true},
+		{"title then author", "/books/A máltai orvos - Evelyn Marsh.txt", "A máltai orvos", "Evelyn Marsh", true},
+		{"natural order", "/books/Evelyn Marsh - A máltai orvos.txt", "A máltai orvos", "Evelyn Marsh", true},
+		{"title inversion", "/books/Zelazny, Roger - Great Slow Kings, The.txt", "The Great Slow Kings", "Zelazny, Roger", true},
+		{"both sides are names", "/books/Moby Dick - Herman Melville.epub", "", "", false},
+		{"no separator", "/books/Dune.epub", "", "", false},
+		{"placeholder skipped", "/books/Untitled - Evelyn Marsh.epub", "", "", false},
+		{"series marker is not an author", "/books/Star Trek - Az új nemzedék.epub", "", "", false},
+		{"subtitle not split", "/books/A nagy kaland - ami elmaradt.epub", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			title, auth, ok := parseHungarianFilename(tc.path)
+			if title != tc.wantTitle || auth != tc.wantAuth || ok != tc.wantOK {
+				t.Errorf("parseHungarianFilename(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.path, title, auth, ok, tc.wantTitle, tc.wantAuth, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestParseCalibreFilenameSwapped(t *testing.T) {
+	path := "/books/Z.zip!Z/Zelazny, Roger angolul.zip!Zelazny, Roger - Great Slow Kings, The.txt"
+	title, auth, ok := parseCalibreFilename(path)
+	if !ok || title != "The Great Slow Kings" || auth != "Zelazny, Roger" {
+		t.Fatalf("parseCalibreFilename(%q) = (%q, %q, %v)", path, title, auth, ok)
+	}
+}
+
+func TestNormalizeTitleArticle(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"Great Slow Kings, The", "The Great Slow Kings"},
+		{"Dune", "Dune"},
+		{"Az arany ember", "Az arany ember"},
+		{"Utolsó pad, A", "A Utolsó pad"},
+		{"", ""},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := normalizeTitleArticle(tc.in); got != tc.want {
+				t.Errorf("normalizeTitleArticle(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthorFromPath(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		path  string
+		title string
+		want  string
+		ok    bool
+	}{
+		{
+			name:  "parent directory",
+			path:  "/books/Regények/Mega-Giga mini könyv pack-agika26/Evelyn Marsh/A máltai orvos.txt",
+			title: "A máltai orvos",
+			want:  "Evelyn Marsh",
+			ok:    true,
+		},
+		{
+			name:  "archive member directory",
+			path:  "/books/D.zip!D/Dick, Philip K/Dick, Philip K - Kissebb írások.zip!Dick, Philip K _ Az ingázó.txt",
+			title: "Az ingázó",
+			want:  "Dick, Philip K",
+			ok:    true,
+		},
+		{
+			name:  "generic folder rejected",
+			path:  "/books/Regények/Science Fiction/Dune.txt",
+			title: "Dune",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "series folder rejected",
+			path:  "/books/Z.zip!Z/Zelazny, Roger angolul.zip!Amber Chronicles/02 - Guns Of Avalon/Goa1.txt",
+			title: "Goa1",
+			want:  "Zelazny, Roger",
+			ok:    true,
+		},
+		{
+			name:  "archive extension is not a name",
+			path:  "/books/K.zip!K/Keegan Josh Anthico.zip!keegan_josh_anthico.txt",
+			title: "keegan josh anthico",
+			want:  "",
+			ok:    false,
+		},
+		{
+			name:  "author title archive name rejected",
+			path:  "/books/L.zip!L/Lem, Stanislaw/Lem Stanislaw Kiberiáda.zip!01.txt",
+			title: "01",
+			want:  "Lem, Stanislaw",
+			ok:    true,
+		},
+		{
+			name:  "title echo rejected",
+			path:  "/books/Moby Dick/Moby Dick.txt",
+			title: "Moby Dick",
+			want:  "",
+			ok:    false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := authorFromPath(tc.path, tc.title)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("authorFromPath(%q, %q) = (%q, %v), want (%q, %v)",
+					tc.path, tc.title, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestWriteBooksFallsBackToParentDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		path      string
+		wantTitle string
+		wantAuth  string
+	}{
+		{
+			name:      "author directory",
+			path:      "/books/Regények/Mega-Giga mini könyv pack-agika26/Evelyn Marsh/A máltai orvos.txt",
+			wantTitle: "A máltai orvos",
+			wantAuth:  "Evelyn Marsh",
+		},
+		{
+			name:      "swapped calibre filename",
+			path:      "/books/Z.zip!Z/Zelazny, Roger angolul.zip!Zelazny, Roger - Great Slow Kings, The.txt",
+			wantTitle: "The Great Slow Kings",
+			wantAuth:  "Zelazny, Roger",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, err := database.Open(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_ = conn.Close()
+			}()
+
+			q := db.New(conn)
+			ctx := context.Background()
+
+			bookID, err := q.CreateBook(ctx, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+				Hash:  "hash-" + tc.name,
+				Path:  tc.path,
+				Title: "",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+				BookID:     bookID,
+				BookFileID: fileID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := Consolidate(ctx, conn, q); err != nil {
+				t.Fatal(err)
+			}
+
+			out := filepath.Join(t.TempDir(), "books.json")
+			if err := WriteBooks(ctx, q, out); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report []BookReport
+			if err := json.Unmarshal(data, &report); err != nil {
+				t.Fatal(err)
+			}
+			if len(report) != 1 {
+				t.Fatalf("expected 1 book, got %d", len(report))
+			}
+			if report[0].Title != tc.wantTitle {
+				t.Errorf("title = %q, want %q", report[0].Title, tc.wantTitle)
+			}
+			if !reflect.DeepEqual(report[0].Authors, []string{tc.wantAuth}) {
+				t.Errorf("authors = %q, want %q", report[0].Authors, []string{tc.wantAuth})
+			}
+		})
+	}
+}
