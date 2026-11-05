@@ -15,6 +15,7 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/lsh"
 	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
 	"github.com/f0d0r/margaret-cli/internal/parser/registry"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
 	"github.com/f0d0r/margaret-cli/internal/source"
@@ -28,7 +29,6 @@ import (
 type ScanProcessorConfig struct {
 	ScanWorkers  int
 	ParseWorkers int
-	QueueSize    int
 
 	// MaxDepth is the maximum archive nesting depth that is unpacked.
 	// Depth 0 means the archive itself; an ebook inside is depth 1.
@@ -40,9 +40,13 @@ type ScanProcessorConfig struct {
 	SpoolMemLimit int64
 
 	// MinDocSize is the minimum size in bytes for a document-format file (plain
-	// text, RTF and later PDF) to be treated as a book. Zero uses
+	// text, RTF, PDF and later others) to be treated as a book. Zero uses
 	// DefaultMinDocumentSize; a negative value disables the size filter.
 	MinDocSize int64
+
+	// PDFTools are the external Poppler binaries used for PDF extraction.
+	// When either is missing, PDF files are skipped instead of processed.
+	PDFTools pdf.Tools
 
 	// Password decrypts password-protected rar and 7z archives. The
 	// standard library cannot decrypt AES-encrypted zip members, so those
@@ -82,7 +86,6 @@ func DefaultScanProcessorConfig() ScanProcessorConfig {
 	return ScanProcessorConfig{
 		ScanWorkers:  n,
 		ParseWorkers: n,
-		QueueSize:    n * 2,
 		MaxDepth:     2,
 		MinDocSize:   DefaultMinDocumentSize,
 	}
@@ -129,14 +132,11 @@ func NewScanProcessor(sqldb *sql.DB, q *db.Queries, cfg ScanProcessorConfig, roo
 	if cfg.ParseWorkers < 1 {
 		cfg.ParseWorkers = 1
 	}
-	if cfg.QueueSize < 1 {
-		cfg.QueueSize = 1
-	}
 	if cfg.MaxDepth < 0 {
 		cfg.MaxDepth = 0
 	}
 	return &ScanProcessor{
-		parsers:    registry.ParsersWithOptions(registry.Options{MinDocumentSize: cfg.MinDocSize}),
+		parsers:    registry.ParsersWithOptions(registry.Options{MinDocumentSize: cfg.MinDocSize, PDFTools: cfg.PDFTools}),
 		cfg:        cfg,
 		root:       root,
 		onResult:   cfg.OnResult,
@@ -154,7 +154,8 @@ func (p *ScanProcessor) newSource() (source.Source, error) {
 // Process scans the configured root, extracts the metadata of every ebook
 // found and invokes the configured callbacks. It returns a fatal error if the
 // root itself is inaccessible; items that could not be processed are reported
-// via Failures.
+// via Failures. Discovery and parsing are decoupled: the scanner pushes
+// results into an unbounded queue, so a slow parser never stops the walk.
 func (p *ScanProcessor) Process(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -164,17 +165,17 @@ func (p *ScanProcessor) Process(ctx context.Context) error {
 	p.failures = p.failures[:0]
 	p.failMu.Unlock()
 
-	work := make(chan scanner.Result, p.cfg.QueueSize)
+	results := newResultQueue()
 
 	ftpOpts := source.FTPOptions{User: p.cfg.FTPUser, Password: p.cfg.FTPPass}
 	sc := scanner.New(scanner.Config{
 		Workers:    p.cfg.ScanWorkers,
 		FTPOptions: ftpOpts,
 		OnResult: func(r scanner.Result) {
-			select {
-			case work <- r:
-			case <-ctx.Done():
+			if ctx.Err() != nil {
+				return
 			}
+			results.push(r)
 		},
 		OnFile: func(name string) {
 			p.recordExt(name)
@@ -215,7 +216,11 @@ func (p *ScanProcessor) Process(ctx context.Context) error {
 			defer func() {
 				_ = src.Close()
 			}()
-			for r := range work {
+			for {
+				r, ok := results.pop()
+				if !ok {
+					return
+				}
 				if ctx.Err() != nil {
 					continue
 				}
@@ -227,7 +232,11 @@ func (p *ScanProcessor) Process(ctx context.Context) error {
 	}
 
 	_, err := sc.Scan(ctx, p.root)
-	close(work)
+	if ctx.Err() != nil {
+		results.abort()
+	} else {
+		results.close()
+	}
 	parseWG.Wait()
 
 	fatalMu.Lock()
@@ -249,6 +258,12 @@ func (p *ScanProcessor) Failures() []Failure {
 	p.failMu.Lock()
 	defer p.failMu.Unlock()
 	return append([]Failure(nil), p.failures...)
+}
+
+// pdfDisabled reports whether format is PDF and the Poppler tools are not
+// available, in which case PDF files are skipped without being opened.
+func (p *ScanProcessor) pdfDisabled(format string) bool {
+	return format == "pdf" && !p.cfg.PDFTools.Available()
 }
 
 // belowMinSize lets a format-specific parser reject files that are too small
@@ -279,6 +294,10 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 	}
 	if scanner.IsArchiveFormat(r.Format) {
 		p.processArchive(ctx, r, 0, src)
+		return
+	}
+	if p.pdfDisabled(r.Format) {
+		p.skip()
 		return
 	}
 	if p.belowMinSize(r.Format, r.Size) {

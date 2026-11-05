@@ -1127,8 +1127,8 @@ func TestExtStatsIncludesResumeSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats2 := proc2.Stats()
-	if stats2.Skipped != 2 {
-		t.Fatalf("resume run: expected 2 skipped (a.epub + c.zip!d.epub), got %+v", stats2)
+	if stats2.Skipped != 4 {
+		t.Fatalf("resume run: expected 4 skipped (2 epubs + 2 PDFs without Poppler), got %+v", stats2)
 	}
 	if !equalExtCounts(stats2.ExtCounts, want) {
 		t.Fatalf("resume run: expected ext counts %v (skipped files included), got %v", want, stats2.ExtCounts)

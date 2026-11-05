@@ -10,6 +10,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
 	"github.com/f0d0r/margaret-cli/internal/processor"
 	"github.com/f0d0r/margaret-cli/internal/report"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
@@ -32,6 +33,7 @@ var (
 	resumeFlag      bool
 	dbPath          string
 	extStats        bool
+	pdfToolsDir     string
 )
 
 // scanCmd scans a directory for ebook files.
@@ -41,14 +43,15 @@ var scanCmd = &cobra.Command{
 	Long: `Recursively scans the given directory and reads the author
 and title metadata of every ebook found. Ebooks are also searched
 inside zip, tar, gz, bz2, rar and 7z archives (nested archives are
-unpacked up to the depth given with --archive-depth).`,
+unpacked up to the depth given with --archive-depth).
+PDF files are processed only when Poppler's pdftotext and pdfinfo are
+available (on PATH or in --pdf-tools-dir); otherwise they are skipped.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := processor.DefaultScanProcessorConfig()
 		if cmd.Flags().Changed("workers") {
 			cfg.ScanWorkers = scanWorkers
 			cfg.ParseWorkers = scanWorkers
-			cfg.QueueSize = scanWorkers * 2
 		}
 		if cmd.Flags().Changed("archive-depth") {
 			cfg.MaxDepth = archiveDepth
@@ -61,6 +64,7 @@ unpacked up to the depth given with --archive-depth).`,
 		cfg.FTPUser = ftpUser
 		cfg.FTPPass = ftpPass
 		cfg.CollectExtStats = extStats
+		configurePDFTools(&cfg, pdfToolsDir)
 		return runScan(cmd.Context(), args[0], cfg)
 	},
 }
@@ -70,7 +74,8 @@ func init() {
 	scanCmd.Flags().IntVar(&archiveDepth, "archive-depth", 2, "maximum archive nesting depth to unpack")
 	scanCmd.Flags().StringVar(&archivePassword, "archive-password", "", "password for encrypted rar and 7z archives")
 	scanCmd.Flags().Int64Var(&spoolMemLimit, "spool-mem-limit", 0, "max bytes per member buffered in memory before spilling to a temp file (0 = 64 MiB default)")
-	scanCmd.Flags().Int64Var(&minDocSize, "min-doc-size", processor.DefaultMinDocumentSize, "minimum bytes for a document-format file (txt, rtf) to be treated as a book (0 = default, negative = disable)")
+	scanCmd.Flags().Int64Var(&minDocSize, "min-doc-size", processor.DefaultMinDocumentSize, "minimum bytes for a document-format file (txt, rtf, pdf) and its extracted text to be treated as a book (0 = default, negative = disable)")
+	scanCmd.Flags().StringVar(&pdfToolsDir, "pdf-tools-dir", "", "directory containing poppler's pdftotext and pdfinfo (default: search PATH)")
 	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
 	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
@@ -87,6 +92,17 @@ func init() {
 // newScanProcessor is a seam for tests that need to control Process behavior.
 var newScanProcessor = func(conn *sql.DB, q *db.Queries, cfg processor.ScanProcessorConfig, root string) processor.Processor {
 	return processor.NewScanProcessor(conn, q, cfg, root)
+}
+
+// configurePDFTools detects Poppler and disables PDF support with a warning
+// when either binary is missing.
+func configurePDFTools(cfg *processor.ScanProcessorConfig, dir string) {
+	tools, err := pdf.DetectTools(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: PDF support disabled: %v\n", err)
+		return
+	}
+	cfg.PDFTools = tools
 }
 
 func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig) error {

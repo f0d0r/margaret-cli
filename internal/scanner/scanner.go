@@ -31,6 +31,7 @@ var knownExtensions = map[string]string{
 	".txt":   "txt",
 	".text":  "txt",
 	".rtf":   "rtf",
+	".pdf":   "pdf",
 }
 
 var archiveExtensions = map[string]string{

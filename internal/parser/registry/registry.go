@@ -3,6 +3,7 @@ package registry
 
 import (
 	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
 	"github.com/f0d0r/margaret-cli/internal/parser/rtf"
 	"github.com/f0d0r/margaret-cli/internal/parser/txt"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
@@ -11,9 +12,13 @@ import (
 // Options configures the parsers built by this package.
 type Options struct {
 	// MinDocumentSize is the minimum size in bytes for a document-format file
-	// (plain text, RTF and later PDF) to be treated as a book. Zero uses the
-	// parser package default; a negative value disables the size filter.
+	// (plain text, RTF, PDF and later others) to be treated as a book. Zero
+	// uses the parser package default; a negative value disables the size
+	// filter.
 	MinDocumentSize int64
+	// PDFTools are the Poppler binaries used by the PDF parser. When they are
+	// empty PDF files are skipped by the processor.
+	PDFTools pdf.Tools
 }
 
 // Parsers returns the mapping from ebook format to the parser that reads it.
@@ -35,5 +40,6 @@ func ParsersWithOptions(opts Options) map[string]parser.Parser {
 	}
 	m["txt"] = txt.TxtParser{MinBookSize: opts.MinDocumentSize}
 	m["rtf"] = rtf.RtfParser{MinBookSize: opts.MinDocumentSize}
+	m["pdf"] = pdf.PDFParser{MinBookSize: opts.MinDocumentSize, Tools: opts.PDFTools}
 	return m
 }

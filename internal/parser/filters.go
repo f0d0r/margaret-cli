@@ -7,9 +7,10 @@ import "errors"
 var ErrNotABook = errors.New("parser: not a book")
 
 // DefaultMinDocumentSize is the minimum size in bytes of a document-format
-// file (plain text, RTF and later PDF) that is treated as a book. Side files
-// such as readmes, blurbs, and distribution metadata are typically smaller
-// than real books.
+// file (plain text, RTF, PDF and later others) that is treated as a book.
+// Side files such as readmes, blurbs, and distribution metadata are typically
+// smaller than real books. For PDF, the same limit also applies to the
+// extracted text.
 const DefaultMinDocumentSize int64 = 15 * 1024
 
 // ResolveMinSize resolves a configured document size limit: zero uses

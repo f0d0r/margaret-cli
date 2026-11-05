@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -114,6 +115,67 @@ func TestScanMinDocSizeFlag(t *testing.T) {
 	if want := strconv.FormatInt(processor.DefaultMinDocumentSize, 10); flag.DefValue != want {
 		t.Errorf("min-doc-size default = %q, want %q", flag.DefValue, want)
 	}
+}
+
+func TestScanPDFToolsDirFlag(t *testing.T) {
+	if scanCmd.Flags().Lookup("pdf-tools-dir") == nil {
+		t.Fatal("pdf-tools-dir flag is not registered")
+	}
+}
+
+func TestConfigurePDFToolsWarnsWhenMissing(t *testing.T) {
+	cfg := processor.DefaultScanProcessorConfig()
+	out := captureStderr(t, func() {
+		configurePDFTools(&cfg, t.TempDir())
+	})
+	if !strings.Contains(out, "warning: PDF support disabled") {
+		t.Errorf("expected a PDF warning, got %q", out)
+	}
+	if cfg.PDFTools.Available() {
+		t.Errorf("PDF tools = %+v, want unavailable", cfg.PDFTools)
+	}
+}
+
+func TestConfigurePDFToolsDetects(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"pdftotext", "pdfinfo"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := processor.DefaultScanProcessorConfig()
+	out := captureStderr(t, func() {
+		configurePDFTools(&cfg, dir)
+	})
+	if out != "" {
+		t.Errorf("unexpected warning: %q", out)
+	}
+	if !cfg.PDFTools.Available() {
+		t.Errorf("PDF tools = %+v, want available", cfg.PDFTools)
+	}
+}
+
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	outCh := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		outCh <- string(data)
+	}()
+	f()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = old
+	out := <-outCh
+	_ = r.Close()
+	return out
 }
 
 func TestRunScanDefaultSkipsBulkReports(t *testing.T) {
@@ -279,15 +341,15 @@ func TestRunScanExtStatsCollects(t *testing.T) {
 	})
 
 	// 1 epub + 2 pdf + 1 txt on disk + 1 pdf + 1 txt in the zip = 6 files;
-	// the zip itself is treated as a folder and excluded. The txt files are
-	// supported ebooks now, so they sort into the supported group by count.
+	// the zip itself is treated as a folder and excluded. All of these
+	// formats are supported now; PDFs are skipped because the test config has
+	// no Poppler tools, but they still count in the extension stats.
 	for _, want := range []string{
 		"Extension stats (6 files):",
 		"Supported:",
+		"  pdf: 3 (50%)",
 		"  txt: 2 (33.3%)",
 		"  epub: 1 (16.7%)",
-		"Unsupported:",
-		"  pdf: 3 (50%)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -296,12 +358,11 @@ func TestRunScanExtStatsCollects(t *testing.T) {
 	if strings.Contains(out, "zip:") {
 		t.Errorf("archives must be excluded from ext stats, got:\n%s", out)
 	}
-	// Supported entries sort by count desc (txt before epub) and the groups
-	// keep supported before unsupported.
-	if !strings.Contains(out, "txt: 2") || !strings.Contains(out, "epub: 1") ||
-		strings.Index(out, "txt: 2") > strings.Index(out, "epub: 1") ||
-		strings.Index(out, "epub: 1") > strings.Index(out, "pdf: 3") {
-		t.Errorf("expected txt, epub, then pdf order, got:\n%s", out)
+	// Supported entries sort by count desc (pdf, txt, epub).
+	if !strings.Contains(out, "pdf: 3") || !strings.Contains(out, "txt: 2") || !strings.Contains(out, "epub: 1") ||
+		strings.Index(out, "pdf: 3") > strings.Index(out, "txt: 2") ||
+		strings.Index(out, "txt: 2") > strings.Index(out, "epub: 1") {
+		t.Errorf("expected pdf, txt, then epub order, got:\n%s", out)
 	}
 	// Ext stats come after the existing summary.
 	if !strings.Contains(out, "Total") || !strings.Contains(out, "Extension stats") ||

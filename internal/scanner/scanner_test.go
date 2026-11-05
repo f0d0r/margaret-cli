@@ -16,8 +16,9 @@ func TestScan(t *testing.T) {
 		"a.epub":     "epub",
 		"b.mobi":     "mobi",
 		"sub/d.azw3": "azw3",
+		"sub/e.pdf":  "pdf",
 	}
-	excluded := []string{"readme.pdf", "sub/image.png"}
+	excluded := []string{"readme.xyz", "sub/image.png"}
 
 	for name := range files {
 		path := filepath.Join(dir, name)
@@ -186,6 +187,8 @@ func TestFormatOf(t *testing.T) {
 		{"l.TEXT", "txt", true},
 		{"m.rtf", "rtf", true},
 		{"N.RTF", "rtf", true},
+		{"o.pdf", "pdf", true},
+		{"O.PDF", "pdf", true},
 		{"noext", "", false},
 	}
 	for _, c := range cases {
@@ -259,12 +262,12 @@ func TestIsArchiveFormat(t *testing.T) {
 }
 
 func TestIsSupportedExt(t *testing.T) {
-	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc", "lit", "fb2", "fbz", "fb2.zip", "FB2", "kepub", "txt", "text", "TXT", "rtf", "RTF"} {
+	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc", "lit", "fb2", "fbz", "fb2.zip", "FB2", "kepub", "txt", "text", "TXT", "rtf", "RTF", "pdf", "PDF"} {
 		if !IsSupportedExt(ext) {
 			t.Errorf("expected %q to be supported", ext)
 		}
 	}
-	for _, ext := range []string{"pdf", "exe", "(noext)", "zip", "tgz", "tbz2", "gz"} {
+	for _, ext := range []string{"exe", "(noext)", "zip", "tgz", "tbz2", "gz"} {
 		if IsSupportedExt(ext) {
 			t.Errorf("expected %q to be unsupported", ext)
 		}
