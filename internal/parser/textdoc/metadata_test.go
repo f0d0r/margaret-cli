@@ -1,4 +1,4 @@
-package txt
+package textdoc
 
 import (
 	"slices"
@@ -103,7 +103,7 @@ func TestExtractMetadata(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			md := extractMetadata(c.head)
+			md := ExtractMetadata(c.head)
 			if md.Title != c.title {
 				t.Errorf("title = %q, want %q", md.Title, c.title)
 			}
@@ -131,8 +131,8 @@ func TestSplitAuthors(t *testing.T) {
 		{"", nil},
 	}
 	for _, c := range cases {
-		if got := splitAuthors(c.in); !slices.Equal(got, c.want) {
-			t.Errorf("splitAuthors(%q) = %v, want %v", c.in, got, c.want)
+		if got := SplitAuthors(c.in); !slices.Equal(got, c.want) {
+			t.Errorf("SplitAuthors(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }

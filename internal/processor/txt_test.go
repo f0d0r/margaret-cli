@@ -80,7 +80,7 @@ func TestProcessTxtSizeThresholdOverride(t *testing.T) {
 
 	run := func(minSize int64) (parsed, skipped int64) {
 		cfg := DefaultScanProcessorConfig()
-		cfg.MinTxtSize = minSize
+		cfg.MinDocSize = minSize
 		proc := newTestProcessor(t, cfg, dir)
 		if err := proc.Process(context.Background()); err != nil {
 			t.Fatal(err)
@@ -115,7 +115,7 @@ func TestProcessTxt(t *testing.T) {
 		results []Result
 	)
 	cfg := DefaultScanProcessorConfig()
-	cfg.MinTxtSize = -1 // the fixture is smaller than the default TXT size limit
+	cfg.MinDocSize = -1 // the fixture is smaller than the default TXT size limit
 	cfg.OnResult = func(r Result) {
 		mu.Lock()
 		results = append(results, r)

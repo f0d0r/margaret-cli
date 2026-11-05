@@ -1,4 +1,4 @@
-package txt
+package textdoc
 
 import (
 	"strings"
@@ -7,11 +7,11 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/metaheur"
 )
 
-// isJunkContent reports whole-file junk that reached the parser despite a
+// IsJunkContent reports whole-file junk that reached the parser despite a
 // harmless name: HTML sources, HTTP caches, blurbs, credit pages, tables of
-// contents and files with almost no text. File size alone is handled by
-// TxtParser.MinSize before this check.
-func isJunkContent(head string, size int64) bool {
+// contents and files with almost no text. File size alone is handled by the
+// document parsers' MinSize before this check.
+func IsJunkContent(head string, size int64) bool {
 	h := strings.TrimSpace(strings.TrimPrefix(head, "\ufeff"))
 	if h == "" {
 		return false

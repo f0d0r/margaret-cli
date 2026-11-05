@@ -1,4 +1,4 @@
-package txt
+package textdoc
 
 import (
 	"strings"

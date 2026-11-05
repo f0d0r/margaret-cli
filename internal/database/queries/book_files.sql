@@ -49,6 +49,22 @@ ON CONFLICT(hash, path) DO NOTHING;
 -- name: GetBookFileDuplicateByPath :one
 SELECT hash, path FROM book_file_duplicates WHERE path = ? LIMIT 1;
 
+-- name: ListBookFileHashesNeedingCanonicalization :many
+SELECT
+    bf.hash AS hash,
+    bf.path AS canonical_path,
+    CAST(MIN(d.path) AS TEXT) AS smallest_duplicate_path
+FROM book_files bf
+JOIN book_file_duplicates d ON d.hash = bf.hash
+GROUP BY bf.hash, bf.path
+HAVING MIN(d.path) < bf.path;
+
+-- name: UpdateBookFilePath :exec
+UPDATE book_files SET path = ? WHERE hash = ?;
+
+-- name: DeleteBookFileDuplicate :exec
+DELETE FROM book_file_duplicates WHERE hash = ? AND path = ?;
+
 -- name: ListBookFileDuplicates :many
 SELECT
     bf.path AS path,

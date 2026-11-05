@@ -29,6 +29,7 @@ SELECT id FROM books ORDER BY id;
 -- name: ListBookFilesWithAuthorsByBookID :many
 SELECT
     bf.id AS file_id,
+    bf.hash AS file_hash,
     bf.path AS file_path,
     bf.title AS file_title,
     CAST(IFNULL(GROUP_CONCAT(a.name, CHAR(31)), '') AS TEXT) AS file_authors
@@ -38,10 +39,10 @@ LEFT JOIN book_file_authors bfa ON bfa.book_file_id = bf.id
 LEFT JOIN authors a ON a.id = bfa.author_id
 WHERE bbf.book_id = ?
 GROUP BY bf.id
-ORDER BY bf.id;
+ORDER BY bf.path;
 
 -- name: ListDuplicatesByBookID :many
-SELECT d.path AS duplicate_path
+SELECT d.hash AS hash, d.path AS duplicate_path
 FROM book_file_duplicates d
 JOIN book_files bf ON bf.hash = d.hash
 JOIN book_book_files bbf ON bbf.book_file_id = bf.id
@@ -174,6 +175,7 @@ SELECT publisher, publication_date FROM book_publications WHERE book_id = ? ORDE
 -- name: ListBookFileDuplicatesWithBook :many
 SELECT
     bbf.book_id AS book_id,
+    d.hash AS hash,
     d.path AS duplicate_path
 FROM book_file_duplicates d
 JOIN book_files bf ON bf.hash = d.hash

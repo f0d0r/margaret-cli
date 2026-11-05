@@ -33,6 +33,12 @@ regenerated into JSON reports or searched without rescanning.`,
 	// Run: func(cmd *cobra.Command, args []string) { },
 }
 
+func init() {
+	rootCmd.PersistentFlags().StringVar(&cpuProfilePath, "cpuprofile", "",
+		"write a pprof CPU profile of the command to this file")
+	rootCmd.PersistentPreRunE = startProfiling
+}
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
@@ -53,6 +59,10 @@ func Execute() {
 	}()
 
 	err := rootCmd.ExecuteContext(ctx)
+	// Stop before any os.Exit path so a canceled run still flushes the profile.
+	if stopCPUProfile != nil {
+		stopCPUProfile()
+	}
 	if errors.Is(err, context.Canceled) {
 		os.Exit(130)
 	}

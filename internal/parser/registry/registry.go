@@ -3,16 +3,17 @@ package registry
 
 import (
 	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/parser/rtf"
 	"github.com/f0d0r/margaret-cli/internal/parser/txt"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
 )
 
 // Options configures the parsers built by this package.
 type Options struct {
-	// MinTxtSize is the minimum size in bytes for a plain-text file to be
-	// treated as a book. Zero uses the txt package default; a negative value
-	// disables the size filter.
-	MinTxtSize int64
+	// MinDocumentSize is the minimum size in bytes for a document-format file
+	// (plain text, RTF and later PDF) to be treated as a book. Zero uses the
+	// parser package default; a negative value disables the size filter.
+	MinDocumentSize int64
 }
 
 // Parsers returns the mapping from ebook format to the parser that reads it.
@@ -32,6 +33,7 @@ func ParsersWithOptions(opts Options) map[string]parser.Parser {
 	for _, f := range formats {
 		m[f] = parser.EbookParser{}
 	}
-	m["txt"] = txt.TxtParser{MinBookSize: opts.MinTxtSize}
+	m["txt"] = txt.TxtParser{MinBookSize: opts.MinDocumentSize}
+	m["rtf"] = rtf.RtfParser{MinBookSize: opts.MinDocumentSize}
 	return m
 }

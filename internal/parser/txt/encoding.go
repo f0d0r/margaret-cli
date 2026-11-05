@@ -81,6 +81,12 @@ type legacyCandidate struct {
 // whose text is both well-formed and most plausibly a natural language. The
 // detector's confidence only breaks ties, so a mislabelled legacy encoding can
 // be corrected without hardcoding any language's character set.
+//
+// Candidates are kept in the detector's order. A candidate can be dropped
+// before the language pass once the current best already scores a full
+// confidence: no later candidate can beat it unless its cheaper text quality
+// score is strictly higher, since a later candidate never has a higher
+// detector confidence.
 func detectLegacy(sample []byte) encoding.Encoding {
 	results, err := chardet.NewTextDetector().DetectAll(sample)
 	if err != nil {
@@ -88,6 +94,8 @@ func detectLegacy(sample []byte) encoding.Encoding {
 	}
 	seen := make(map[string]struct{}, len(results))
 	var candidates []legacyCandidate
+	var leader legacyCandidate
+	hasLeader, accepted := false, 0
 	for _, result := range results {
 		label := strings.TrimSpace(result.Charset)
 		key := strings.ToLower(label)
@@ -99,12 +107,19 @@ func detectLegacy(sample []byte) encoding.Encoding {
 		if !ok {
 			continue
 		}
-		candidate, ok := evaluateCandidate(sample, enc, result.Confidence)
+		candidate, text, ok := decodeCandidate(sample, enc, result.Confidence)
 		if !ok {
 			continue
 		}
-		candidates = append(candidates, candidate)
-		if len(candidates) >= candidateLimit {
+		accepted++
+		if !dominated(candidate, leader, hasLeader) {
+			candidate.scoreLanguage(text)
+			candidates = append(candidates, candidate)
+			if !hasLeader || betterCandidate(candidate, leader) {
+				leader, hasLeader = candidate, true
+			}
+		}
+		if accepted >= candidateLimit {
 			break
 		}
 	}
@@ -114,23 +129,35 @@ func detectLegacy(sample []byte) encoding.Encoding {
 	return pickCandidate(candidates).enc
 }
 
-// evaluateCandidate decodes sample with enc and rejects decodings that are not
+// dominated reports whether candidate cannot beat leader whatever its language
+// turns out to be. A leader with full confidence is safe against a candidate of
+// equal or lower text quality: the confidence tie band sends such a pair to the
+// quality and detector-confidence ties, and both favour the earlier candidate.
+func dominated(candidate, leader legacyCandidate, hasLeader bool) bool {
+	return hasLeader && leader.hasLang && leader.lang.Confidence == 1 &&
+		candidate.quality <= leader.quality
+}
+
+// decodeCandidate decodes sample with enc and rejects decodings that are not
 // well-formed text. A sample cut in the middle of a multi-byte sequence is
 // retried without its tail.
-func evaluateCandidate(sample []byte, enc encoding.Encoding, confidence int) (legacyCandidate, bool) {
+func decodeCandidate(sample []byte, enc encoding.Encoding, confidence int) (legacyCandidate, string, bool) {
 	text, ok := decodeSample(sample, enc)
 	if !ok {
-		return legacyCandidate{}, false
+		return legacyCandidate{}, "", false
 	}
 	quality := textQuality(text)
 	if quality < minTextQuality {
-		return legacyCandidate{}, false
+		return legacyCandidate{}, "", false
 	}
-	candidate := legacyCandidate{enc: enc, confidence: confidence, quality: quality}
+	return legacyCandidate{enc: enc, confidence: confidence, quality: quality}, text, true
+}
+
+// scoreLanguage fills in the language detection of a decoded candidate.
+func (c *legacyCandidate) scoreLanguage(text string) {
 	if result, ok := langid.Detect(text); ok {
-		candidate.lang, candidate.hasLang = result, true
+		c.lang, c.hasLang = result, true
 	}
-	return candidate, true
 }
 
 // decodeSample decodes sample, tolerating a truncated trailing sequence.
@@ -231,35 +258,6 @@ func encodingForLabel(label string) (encoding.Encoding, bool) {
 		return charmap.ISO8859_8, true
 	}
 	return nil, false
-}
-
-// decodedReader returns the whole file decoded to UTF-8, starting after the
-// BOM.
-func decodedReader(b book.Blob, size int64, d detectedEncoding) io.Reader {
-	section := io.NewSectionReader(b, d.bom, size-d.bom)
-	return transform.NewReader(section, d.enc.NewDecoder())
-}
-
-// readHead returns at most headLimit bytes of decoded text. The extra runes
-// read beyond the limit let truncation back off to a rune boundary.
-func readHead(b book.Blob, size int64, d detectedEncoding) (string, error) {
-	raw, err := io.ReadAll(io.LimitReader(decodedReader(b, size, d), headLimit+utf8.UTFMax))
-	if err != nil {
-		return "", err
-	}
-	return string(truncateUTF8(raw, headLimit)), nil
-}
-
-// truncateUTF8 cuts b to at most n bytes without splitting a rune.
-func truncateUTF8(b []byte, n int) []byte {
-	if len(b) <= n {
-		return b
-	}
-	b = b[:n]
-	for len(b) > 0 && !utf8.Valid(b) {
-		b = b[:len(b)-1]
-	}
-	return b
 }
 
 // looksBinary reports whether the decoded text head is dominated by control

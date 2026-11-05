@@ -1,4 +1,4 @@
-package txt
+package textdoc
 
 import "testing"
 
@@ -54,8 +54,8 @@ func TestIsJunkContent(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := isJunkContent(c.head, c.size); got != c.want {
-				t.Errorf("isJunkContent(%q, %d) = %v, want %v", c.head, c.size, got, c.want)
+			if got := IsJunkContent(c.head, c.size); got != c.want {
+				t.Errorf("IsJunkContent(%q, %d) = %v, want %v", c.head, c.size, got, c.want)
 			}
 		})
 	}

@@ -3,21 +3,20 @@ package txt
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
-	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/langid"
 	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/parser/textdoc"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-ebook-library/tools"
+	"golang.org/x/text/transform"
 )
-
-// DefaultMinSize is the minimum size in bytes of a plain-text file that is
-// treated as a book. Side files such as readmes, blurbs, and distribution
-// metadata are typically smaller than real books.
-const DefaultMinSize int64 = 15 * 1024
 
 // ErrEmptyText reports a file with no textual content.
 var ErrEmptyText = errors.New("txt: empty or whitespace-only text")
@@ -33,8 +32,8 @@ var ErrBinaryText = errors.New("txt: binary content")
 // ebook.
 type TxtParser struct {
 	// MinBookSize is the minimum size in bytes for a plain-text file to be
-	// treated as a book. Zero uses DefaultMinSize; a negative value disables
-	// the size filter.
+	// treated as a book. Zero uses parser.DefaultMinDocumentSize; a negative
+	// value disables the size filter.
 	MinBookSize int64
 }
 
@@ -45,19 +44,13 @@ var (
 
 // MinSize implements parser.SizeFilter.
 func (p TxtParser) MinSize() int64 {
-	switch {
-	case p.MinBookSize < 0:
-		return 0
-	case p.MinBookSize == 0:
-		return DefaultMinSize
-	default:
-		return p.MinBookSize
-	}
+	return parser.ResolveMinSize(p.MinBookSize)
 }
 
 // Parse reads the plain text from ebookData and returns its metadata, content
-// hash and MinHash fingerprint. Empty, whitespace-only and binary content is
-// rejected.
+// hash and MinHash fingerprint. The raw bytes are read once: the content hash
+// and the decoded text stream are produced in the same pass. Empty,
+// whitespace-only and binary content is rejected.
 func (p TxtParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metadata, error) {
 	if ebookData == nil {
 		return parser.Metadata{}, errors.New("txt: nil blob")
@@ -86,56 +79,51 @@ func (p TxtParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("txt: detect encoding: %w", err))
 	}
 
-	head, err := readHead(data, size, enc)
-	if err != nil {
-		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("txt: read text: %w", err))
+	// The raw bytes are hashed and decoded in one pass: the decoder consumes
+	// the whole section for the fingerprint, so the tee sees the whole file.
+	// The BOM is hashed but skipped before decoding.
+	rawHash := sha256.New()
+	raw := io.TeeReader(io.NewSectionReader(data, 0, size), rawHash)
+	if enc.bom > 0 {
+		if _, err := io.CopyN(io.Discard, raw, enc.bom); err != nil {
+			return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("txt: skip BOM: %w", err))
+		}
 	}
-	if strings.TrimSpace(head) == "" {
-		return parser.Metadata{}, ErrEmptyText
-	}
-	if looksBinary(head) {
-		return parser.Metadata{}, ErrBinaryText
-	}
-	if isJunkContent(head, size) {
-		return parser.Metadata{}, parser.ErrNotABook
-	}
-
-	hash, err := tools.CalculateFileHashFromBlob(data)
-	if err != nil {
-		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("txt: hash: %w", err))
-	}
-
-	fingerprint, err := tools.FingerprintReader(decodedReader(data, size, enc),
+	gate := textdoc.NewHeadGate(headLimit, size, func(head string, size int64) error {
+		switch {
+		case strings.TrimSpace(head) == "":
+			return ErrEmptyText
+		case looksBinary(head):
+			return ErrBinaryText
+		case textdoc.IsJunkContent(head, size):
+			return parser.ErrNotABook
+		}
+		return nil
+	})
+	fingerprint, err := tools.FingerprintReader(
+		io.TeeReader(transform.NewReader(raw, enc.enc.NewDecoder()), gate),
 		tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
 	if err != nil {
-		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("txt: fingerprint: %w", err))
+		for _, target := range []error{ErrEmptyText, ErrBinaryText, parser.ErrNotABook} {
+			if errors.Is(err, target) {
+				return parser.Metadata{}, target
+			}
+		}
+		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("txt: read text: %w", err))
+	}
+	if err := gate.Finish(); err != nil {
+		return parser.Metadata{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return parser.Metadata{}, err
 	}
 
-	md := extractMetadata(head)
+	head := gate.Head()
+	md := textdoc.ExtractMetadata(head)
 	detected, detectedOK := langid.DetectProse(head)
 	md.Languages = parser.ApplyDetectedLanguage(md.Languages, detected, detectedOK)
-	md.Hash = hash
+	md.Hash = hex.EncodeToString(rawHash.Sum(nil))
 	md.MinHash = fingerprint.MinHash
-	md.Identifiers = textIdentifiers(head)
+	md.Identifiers = textdoc.TextIdentifiers(head)
 	return md, nil
-}
-
-// textIdentifiers returns at most one validated ISBN-13 found in head, marked
-// as text-derived.
-func textIdentifiers(head string) []identifier.Identifier {
-	for _, isbn := range tools.ExtractISBNs(head) {
-		isbn13, ok := isbn.ToISBN13()
-		if !ok {
-			continue
-		}
-		return []identifier.Identifier{{
-			Scheme: "ISBN",
-			Value:  isbn13.String(),
-			Source: identifier.SourceText,
-		}}
-	}
-	return nil
 }

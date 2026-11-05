@@ -1,11 +1,14 @@
 package txt
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/f0d0r/margaret-cli/internal/parser/textdoc"
 	"github.com/f0d0r/margaret-ebook-library/book"
+	"github.com/gogs/chardet"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/japanese"
@@ -13,6 +16,7 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
 )
 
 // baseSamples are plain-language paragraphs used to build long enough samples
@@ -134,6 +138,117 @@ func TestDetectLegacyMultiByte(t *testing.T) {
 	}
 }
 
+// referenceDetectLegacy is the exhaustive candidate scoring. The parser's fast
+// path must always agree with it.
+func referenceDetectLegacy(sample []byte) encoding.Encoding {
+	results, err := chardet.NewTextDetector().DetectAll(sample)
+	if err != nil {
+		return charmap.Windows1252
+	}
+	seen := make(map[string]struct{}, len(results))
+	var candidates []legacyCandidate
+	for _, result := range results {
+		label := strings.TrimSpace(result.Charset)
+		key := strings.ToLower(label)
+		if _, dup := seen[key]; dup || key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		enc, ok := encodingForLabel(label)
+		if !ok {
+			continue
+		}
+		candidate, text, ok := decodeCandidate(sample, enc, result.Confidence)
+		if !ok {
+			continue
+		}
+		candidate.scoreLanguage(text)
+		candidates = append(candidates, candidate)
+		if len(candidates) >= candidateLimit {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return charmap.Windows1252
+	}
+	return pickCandidate(candidates).enc
+}
+
+// TestDetectLegacyMatchesFullScoring pins the skipped language passes: the fast
+// path must choose the same encoding as exhaustive scoring for every sample.
+func TestDetectLegacyMatchesFullScoring(t *testing.T) {
+	encodings := map[string]encoding.Encoding{
+		"iso-8859-1":   charmap.ISO8859_1,
+		"iso-8859-2":   charmap.ISO8859_2,
+		"iso-8859-5":   charmap.ISO8859_5,
+		"iso-8859-6":   charmap.ISO8859_6,
+		"iso-8859-7":   charmap.ISO8859_7,
+		"iso-8859-15":  charmap.ISO8859_15,
+		"windows-1250": charmap.Windows1250,
+		"windows-1251": charmap.Windows1251,
+		"windows-1252": charmap.Windows1252,
+		"windows-1254": charmap.Windows1254,
+		"windows-1255": charmap.Windows1255,
+		"windows-1256": charmap.Windows1256,
+		"koi8-r":       charmap.KOI8R,
+	}
+	langs := []string{"hu", "en", "ru", "ar", "el", "he", "tr"}
+	for name, enc := range encodings {
+		for _, lang := range langs {
+			t.Run(name+"/"+lang, func(t *testing.T) {
+				sample, err := enc.NewEncoder().Bytes([]byte(longSample(lang)))
+				if err != nil {
+					t.Skipf("%s cannot encode %s", name, lang)
+				}
+				want := referenceDetectLegacy(sample)
+				if got := detectLegacy(sample); got != want {
+					t.Errorf("detectLegacy = %v, want %v", got, want)
+				}
+			})
+		}
+	}
+	// Truncated input exercises the fallback tail trimming of both paths.
+	multibyte := encodeWith(t, japanese.ShiftJIS, longSample("ja"))
+	truncated := multibyte[:len(multibyte)-1]
+	if got, want := detectLegacy(truncated), referenceDetectLegacy(truncated); got != want {
+		t.Errorf("truncated: detectLegacy = %v, want %v", got, want)
+	}
+}
+
+func BenchmarkDetectLegacy(b *testing.B) {
+	text := strings.Repeat(baseSamples["hu"]+" ", 40)
+	data, err := charmap.ISO8859_2.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if enc := detectLegacy(data); enc == nil {
+			b.Fatal("no encoding")
+		}
+	}
+}
+
+// BenchmarkDetectLegacyFull scores every candidate, the cost the fast path
+// avoids.
+func BenchmarkDetectLegacyFull(b *testing.B) {
+	text := strings.Repeat(baseSamples["hu"]+" ", 40)
+	data, err := charmap.ISO8859_2.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if enc := referenceDetectLegacy(data); enc == nil {
+			b.Fatal("no encoding")
+		}
+	}
+}
+
 func assertRoundTrip(t *testing.T, data []byte, want string) {
 	t.Helper()
 	blob := book.NewBytesBlob(data)
@@ -141,10 +256,7 @@ func assertRoundTrip(t *testing.T, data []byte, want string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head, err := readHead(blob, int64(len(data)), detected)
-	if err != nil {
-		t.Fatal(err)
-	}
+	head := decodeHead(t, blob, int64(len(data)), detected)
 	if !utf8.ValidString(head) {
 		t.Fatalf("decoded head is not valid UTF-8")
 	}
@@ -153,7 +265,19 @@ func assertRoundTrip(t *testing.T, data []byte, want string) {
 	}
 }
 
-func TestReadHeadStopsAtRuneBoundary(t *testing.T) {
+// decodeHead decodes at most headLimit bytes through the same gate the parser
+// uses, so the decoding and rune-boundary behavior are covered together.
+func decodeHead(t *testing.T, b book.Blob, size int64, d detectedEncoding) string {
+	t.Helper()
+	gate := textdoc.NewHeadGate(headLimit, size, nil)
+	section := io.NewSectionReader(b, d.bom, size-d.bom)
+	if _, err := io.Copy(gate, transform.NewReader(section, d.enc.NewDecoder())); err != nil {
+		t.Fatal(err)
+	}
+	return gate.Head()
+}
+
+func TestDecodeHeadStopsAtRuneBoundary(t *testing.T) {
 	text := strings.Repeat("世", headLimit)
 	data := []byte(text)
 	blob := book.NewBytesBlob(data)
@@ -161,10 +285,7 @@ func TestReadHeadStopsAtRuneBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head, err := readHead(blob, int64(len(data)), detected)
-	if err != nil {
-		t.Fatal(err)
-	}
+	head := decodeHead(t, blob, int64(len(data)), detected)
 	if len(head) > headLimit {
 		t.Errorf("head has %d bytes, want at most %d", len(head), headLimit)
 	}
