@@ -184,6 +184,8 @@ func TestFormatOf(t *testing.T) {
 		{"j.txt", "txt", true},
 		{"k.text", "txt", true},
 		{"l.TEXT", "txt", true},
+		{"m.rtf", "rtf", true},
+		{"N.RTF", "rtf", true},
 		{"noext", "", false},
 	}
 	for _, c := range cases {
@@ -203,6 +205,7 @@ func TestExtKey(t *testing.T) {
 		{"a.epub", "epub", false},
 		{"q.txt", "txt", false},
 		{"r.text", "txt", false},
+		{"s.rtf", "rtf", false},
 		{"k.fb2", "fb2", false},
 		{"l.fbz", "fb2", false},
 		{"m.fb2.zip", "fb2", false},
@@ -256,7 +259,7 @@ func TestIsArchiveFormat(t *testing.T) {
 }
 
 func TestIsSupportedExt(t *testing.T) {
-	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc", "lit", "fb2", "fbz", "fb2.zip", "FB2", "kepub", "txt", "text", "TXT"} {
+	for _, ext := range []string{"epub", "mobi", "azw3", "azw", "prc", "lit", "fb2", "fbz", "fb2.zip", "FB2", "kepub", "txt", "text", "TXT", "rtf", "RTF"} {
 		if !IsSupportedExt(ext) {
 			t.Errorf("expected %q to be supported", ext)
 		}

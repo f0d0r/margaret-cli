@@ -2,7 +2,9 @@ package report
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -184,12 +186,20 @@ func TestWriteBooks(t *testing.T) {
 	if len(b.Files) != 4 {
 		t.Fatalf("expected 4 files (3 + 1 duplicate), got %d", len(b.Files))
 	}
-	dup := b.Files[3]
-	if dup.Path != "backup/mobydick.epub" {
-		t.Errorf("expected duplicate path, got %q", dup.Path)
+	// Exact duplicates share the canonical row's metadata, and the smallest
+	// path represents the content hash, so the pair may have swapped roles.
+	byPath := make(map[string]BookFileReport, len(b.Files))
+	for _, f := range b.Files {
+		byPath[f.Path] = f
 	}
-	if dup.Title != "Moby Dick" || !reflect.DeepEqual(dup.Authors, []string{"Herman Melville"}) {
-		t.Errorf("expected duplicate to inherit parent metadata, got %+v", dup)
+	for _, want := range []string{"books/mobydick.epub", "backup/mobydick.epub"} {
+		f, ok := byPath[want]
+		if !ok {
+			t.Fatalf("expected file %q in the report, got %v", want, byPath)
+		}
+		if f.Title != "Moby Dick" || !reflect.DeepEqual(f.Authors, []string{"Herman Melville"}) {
+			t.Errorf("file %q: expected shared metadata, got %+v", want, f)
+		}
 	}
 }
 
@@ -204,6 +214,10 @@ func TestTitleFromPath(t *testing.T) {
 		{"dots are kept, underscores become spaces", "books/J._Verne.epub", "J. Verne"},
 		{"uppercase extension", "books/Dune.EPUB", "Dune"},
 		{"nested archive member", "/tmp/bundle.zip!sub/inner.zip!c.epub", "c"},
+		{"exclamation mark in file name", "books/Sam!.txt", "Sam!"},
+		{"exclamation mark before archive separator", "books/Sam!.txt.zip!Sam!.txt", "Sam!"},
+		{"rtf extension stripped", "books/novel.rtf", "novel"},
+		{"uppercase rtf extension stripped", "books/Novel.RTF", "Novel"},
 		{"unknown extension kept", "books/notes.txt2", "notes.txt2"},
 		{"no extension", "books/README", "README"},
 	} {
@@ -804,8 +818,12 @@ func TestWriteBooksEchoAuthorRecovered(t *testing.T) {
 			t.Errorf("expected file entry with filtered authors, got %+v", b.Files)
 		}
 	}
-	if report[0].Title != "Patkánykirály" || report[1].Title != "Gajdzsin" {
-		t.Errorf("expected real titles kept, got %q and %q", report[0].Title, report[1].Title)
+	titles := map[string]bool{}
+	for _, b := range report {
+		titles[b.Title] = true
+	}
+	if !titles["Patkánykirály"] || !titles["Gajdzsin"] {
+		t.Errorf("expected real titles kept, got %+v", titles)
 	}
 }
 
@@ -1200,4 +1218,156 @@ func TestWriteBooksFallsBackToParentDirectory(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConsolidateCanonicalizesSmallestPath pins the duplicate canonicalization:
+// the scan stores whichever path it encounters first, so Consolidate must move
+// the canonical row to the lexicographically smallest path of each hash and
+// demote the previous one to a duplicate.
+func TestConsolidateCanonicalizesSmallestPath(t *testing.T) {
+	conn, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	bookID, err := q.CreateBook(ctx, "Title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+		Hash:  "h",
+		Path:  "z/late.epub",
+		Title: "Title",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+		BookID:     bookID,
+		BookFileID: fileID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookFileDuplicate(ctx, db.CreateBookFileDuplicateParams{
+		Hash: "h",
+		Path: "a/early.epub",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := q.GetBookFileByHash(ctx, "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Path != "a/early.epub" {
+		t.Errorf("canonical path = %q, want %q", file.Path, "a/early.epub")
+	}
+	dup, err := q.GetBookFileDuplicateByPath(ctx, "z/late.epub")
+	if err != nil {
+		t.Fatalf("previous canonical path should be a duplicate: %v", err)
+	}
+	if dup.Hash != "h" {
+		t.Errorf("demoted duplicate hash = %q, want %q", dup.Hash, "h")
+	}
+	if _, err := q.GetBookFileDuplicateByPath(ctx, "a/early.epub"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("promoted path must not remain a duplicate (err = %v)", err)
+	}
+	if file.ID != fileID {
+		t.Errorf("canonical row id changed: %d, want %d", file.ID, fileID)
+	}
+
+	// Idempotent: a second pass must not move anything.
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+	file, err = q.GetBookFileByHash(ctx, "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Path != "a/early.epub" {
+		t.Errorf("canonical path after second pass = %q, want %q", file.Path, "a/early.epub")
+	}
+}
+
+// TestDuplicateMetadataUsesMatchingHash pins that a duplicate inherits the
+// metadata of the canonical row with the same content hash, not the book's
+// first file. Before sorting and hash matching this depended on scan order.
+func TestDuplicateMetadataUsesMatchingHash(t *testing.T) {
+	conn, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+	q := db.New(conn)
+	ctx := context.Background()
+
+	bookID, err := q.CreateBook(ctx, "Book")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addFile := func(hash, path, title string) {
+		t.Helper()
+		fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+			Hash:  hash,
+			Path:  path,
+			Title: title,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+			BookID:     bookID,
+			BookFileID: fileID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addFile("h1", "books/a.epub", "Alpha")
+	addFile("h2", "books/b.epub", "Beta")
+	if err := q.CreateBookFileDuplicate(ctx, db.CreateBookFileDuplicateParams{
+		Hash: "h2",
+		Path: "books/z-dup.epub",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Consolidate(ctx, conn, q); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := GetBooks(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report) != 1 {
+		t.Fatalf("expected 1 book, got %d", len(report))
+	}
+	var titles []string
+	for _, f := range report[0].Files {
+		titles = append(titles, f.Path+"="+f.Title)
+	}
+	if len(report[0].Files) != 3 {
+		t.Fatalf("expected 3 files, got %v", titles)
+	}
+	for _, f := range report[0].Files {
+		if f.Path != "books/z-dup.epub" {
+			continue
+		}
+		if f.Title != "Beta" {
+			t.Errorf("duplicate title = %q, want %q (files: %v)", f.Title, "Beta", titles)
+		}
+		return
+	}
+	t.Fatalf("duplicate file missing from the report: %v", titles)
 }

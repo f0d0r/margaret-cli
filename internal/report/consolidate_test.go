@@ -684,8 +684,9 @@ func TestWriteBooksMatchesFilteredReads(t *testing.T) {
 		filtered[1].Title != "Egy gladiátor csak egyszer hal meg" {
 		t.Fatalf("unexpected filtered order/content: %+v", filtered)
 	}
-	// Same books in book-ID order must equal the full report.
-	ordered, err := GetBooksFiltered(ctx, q, []int64{bookID, calibreID})
+	// The full report is title-ordered, so the same books requested in title
+	// order must equal it.
+	ordered, err := GetBooksFiltered(ctx, q, []int64{calibreID, bookID})
 	if err != nil {
 		t.Fatal(err)
 	}

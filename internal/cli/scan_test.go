@@ -23,10 +23,10 @@ func withScanOutputs(t *testing.T, dir string, report bool) (failures, duplicate
 	t.Helper()
 
 	oldDB, oldFailures, oldDuplicates, oldBooks, oldReport, oldExt := dbPath, failuresOutPath, duplicatesOut, booksOut, reportEnabled, extStats
-	oldMinTxtSize := minTxtSize
+	oldMinDocSize := minDocSize
 	t.Cleanup(func() {
 		dbPath, failuresOutPath, duplicatesOut, booksOut, reportEnabled, extStats = oldDB, oldFailures, oldDuplicates, oldBooks, oldReport, oldExt
-		minTxtSize = oldMinTxtSize
+		minDocSize = oldMinDocSize
 	})
 
 	dbPath = ":memory:"
@@ -106,13 +106,13 @@ func exists(t *testing.T, path string) bool {
 	return false
 }
 
-func TestScanMinTxtSizeFlag(t *testing.T) {
-	flag := scanCmd.Flags().Lookup("min-txt-size")
+func TestScanMinDocSizeFlag(t *testing.T) {
+	flag := scanCmd.Flags().Lookup("min-doc-size")
 	if flag == nil {
-		t.Fatal("min-txt-size flag is not registered")
+		t.Fatal("min-doc-size flag is not registered")
 	}
-	if want := strconv.FormatInt(processor.DefaultMinTxtSize, 10); flag.DefValue != want {
-		t.Errorf("min-txt-size default = %q, want %q", flag.DefValue, want)
+	if want := strconv.FormatInt(processor.DefaultMinDocumentSize, 10); flag.DefValue != want {
+		t.Errorf("min-doc-size default = %q, want %q", flag.DefValue, want)
 	}
 }
 

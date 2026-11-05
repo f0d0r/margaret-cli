@@ -156,6 +156,7 @@ var ebookExtensions = map[string]struct{}{
 	".djvu": {},
 	".txt":  {},
 	".text": {},
+	".rtf":  {},
 }
 
 // titleFromPath derives a last-resort book title from a file path (Calibre
@@ -172,7 +173,7 @@ func titleFromPath(path string) string {
 // prefixes ("outer.zip!inner/c.epub") and directories are dropped, a known
 // ebook extension is stripped, and underscores become spaces.
 func cleanStem(path string) string {
-	if i := strings.LastIndex(path, "!"); i >= 0 {
+	if i := archiveBoundary(path); i >= 0 {
 		path = path[i+1:]
 	}
 	name := filepath.Base(path)
@@ -182,6 +183,47 @@ func cleanStem(path string) string {
 		}
 	}
 	return strings.ReplaceAll(name, "_", " ")
+}
+
+// archiveBoundary returns the index of the last "!" that separates an archive
+// from its member, or -1 when the path has no archive separator. Only a "!"
+// preceded by a known archive extension is a separator; an exclamation mark
+// inside a member's file name is ordinary text.
+func archiveBoundary(path string) int {
+	for i := strings.LastIndex(path, "!"); i >= 0; i = strings.LastIndex(path[:i], "!") {
+		if isArchiveBoundary(path, i) {
+			return i
+		}
+	}
+	return -1
+}
+
+// archiveSegments splits a display path at its archive boundaries. A "!"
+// inside a file name is not a boundary.
+func archiveSegments(path string) []string {
+	var cuts []int
+	for i := strings.LastIndex(path, "!"); i >= 0; i = strings.LastIndex(path[:i], "!") {
+		if isArchiveBoundary(path, i) {
+			cuts = append(cuts, i)
+		}
+	}
+	if len(cuts) == 0 {
+		return []string{path}
+	}
+	segments := make([]string, 0, len(cuts)+1)
+	start := 0
+	for i := len(cuts) - 1; i >= 0; i-- {
+		segments = append(segments, path[start:cuts[i]])
+		start = cuts[i] + 1
+	}
+	return append(segments, path[start:])
+}
+
+// isArchiveBoundary reports whether the "!" at path[i] follows an archive
+// name.
+func isArchiveBoundary(path string, i int) bool {
+	_, ok := archiveExtensions[strings.ToLower(filepath.Ext(path[:i]))]
+	return ok
 }
 
 // calibreSeparators are the "Title - Author" separators accepted by the
@@ -406,7 +448,7 @@ func authorFromPath(path, title string) (string, bool) {
 // pathComponentsNearestFirst returns the directory and archive names of a
 // display path from the file's parent outward.
 func pathComponentsNearestFirst(path string) []string {
-	parts := strings.Split(path, "!")
+	parts := archiveSegments(path)
 	var out []string
 	for i := len(parts) - 1; i >= 0; i-- {
 		segments := strings.FieldsFunc(parts[i], func(r rune) bool {

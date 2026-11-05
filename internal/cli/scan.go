@@ -21,7 +21,7 @@ var (
 	archiveDepth    int
 	archivePassword string
 	spoolMemLimit   int64
-	minTxtSize      int64
+	minDocSize      int64
 	failuresOutPath string
 	ftpUser         string
 	ftpPass         string
@@ -56,7 +56,7 @@ unpacked up to the depth given with --archive-depth).`,
 		if cmd.Flags().Changed("spool-mem-limit") {
 			cfg.SpoolMemLimit = spoolMemLimit
 		}
-		cfg.MinTxtSize = minTxtSize
+		cfg.MinDocSize = minDocSize
 		cfg.Password = archivePassword
 		cfg.FTPUser = ftpUser
 		cfg.FTPPass = ftpPass
@@ -70,7 +70,7 @@ func init() {
 	scanCmd.Flags().IntVar(&archiveDepth, "archive-depth", 2, "maximum archive nesting depth to unpack")
 	scanCmd.Flags().StringVar(&archivePassword, "archive-password", "", "password for encrypted rar and 7z archives")
 	scanCmd.Flags().Int64Var(&spoolMemLimit, "spool-mem-limit", 0, "max bytes per member buffered in memory before spilling to a temp file (0 = 64 MiB default)")
-	scanCmd.Flags().Int64Var(&minTxtSize, "min-txt-size", processor.DefaultMinTxtSize, "minimum bytes for a plain-text file to be treated as a book (0 = default, negative = disable)")
+	scanCmd.Flags().Int64Var(&minDocSize, "min-doc-size", processor.DefaultMinDocumentSize, "minimum bytes for a document-format file (txt, rtf) to be treated as a book (0 = default, negative = disable)")
 	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
 	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")

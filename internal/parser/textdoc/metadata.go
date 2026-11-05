@@ -1,4 +1,4 @@
-package txt
+package textdoc
 
 import (
 	"regexp"
@@ -39,10 +39,10 @@ var authorKeys = map[string]struct{}{
 	"au": {},
 }
 
-// extractMetadata derives a title and authors from the text head. Labeled
+// ExtractMetadata derives a title and authors from the text head. Labeled
 // headers win over the Gutenberg marker, which wins over Calibre's title-page
 // pattern. Field by field, the first source that yields a value wins.
-func extractMetadata(head string) parser.Metadata {
+func ExtractMetadata(head string) parser.Metadata {
 	head = strings.TrimPrefix(head, "\ufeff")
 	lines := strings.Split(newlineReplacer.Replace(head), "\n")
 	lines = stripNNCLHeader(lines)
@@ -65,7 +65,7 @@ func extractMetadata(head string) parser.Metadata {
 			md.Title = title
 		}
 		if len(md.Authors) == 0 {
-			md.Authors = splitAuthors(author)
+			md.Authors = SplitAuthors(author)
 		}
 	}
 
@@ -76,11 +76,11 @@ func extractMetadata(head string) parser.Metadata {
 		}
 	}
 
-	md.Title = cleanValue(md.Title)
-	if isPlaceholder(md.Title) || metaheur.IsJunkValue(md.Title) {
+	md.Title = CleanValue(md.Title)
+	if IsPlaceholder(md.Title) || metaheur.IsJunkValue(md.Title) {
 		md.Title = ""
 	}
-	md.Authors = filterMetadataAuthors(md.Authors, md.Title)
+	md.Authors = FilterMetadataAuthors(md.Authors, md.Title)
 	return md
 }
 
@@ -165,12 +165,12 @@ func authorsAgree(a, b []string) bool {
 	return false
 }
 
-func filterMetadataAuthors(authors []string, title string) []string {
+func FilterMetadataAuthors(authors []string, title string) []string {
 	out := make([]string, 0, len(authors))
 	seen := make(map[string]struct{}, len(authors))
 	for _, name := range authors {
-		name = cleanValue(name)
-		if name == "" || isPlaceholder(name) || metaheur.IsCredit(name) ||
+		name = CleanValue(name)
+		if name == "" || IsPlaceholder(name) || metaheur.IsCredit(name) ||
 			metaheur.IsJunkValue(name) || !containsLetter(name) {
 			continue
 		}
@@ -240,14 +240,14 @@ func parseLabels(lines []string) (title string, authors []string) {
 		switch {
 		case isTitleKey(key):
 			if title == "" {
-				value = cleanValue(value)
-				if !isPlaceholder(value) && !metaheur.IsJunkValue(value) {
+				value = CleanValue(value)
+				if !IsPlaceholder(value) && !metaheur.IsJunkValue(value) {
 					title = value
 				}
 			}
 		case isAuthorKey(key):
 			if len(authors) == 0 {
-				authors = filterMetadataAuthors(splitAuthors(value), "")
+				authors = FilterMetadataAuthors(SplitAuthors(value), "")
 			}
 		}
 	}
@@ -309,7 +309,7 @@ func gutenbergTitle(lines []string) string {
 	if len(m) < 2 {
 		return ""
 	}
-	return cleanValue(strings.TrimLeft(strings.TrimSpace(m[1]), " ,;:-"))
+	return CleanValue(strings.TrimLeft(strings.TrimSpace(m[1]), " ,;:-"))
 }
 
 // calibreTitleAuthor implements Calibre's title-page pattern: a title line,
@@ -328,15 +328,15 @@ func calibreTitleAuthor(lines []string) (title, author string, ok bool) {
 	if strings.TrimSpace(lines[0]) == "" || !blank(lines[1]) || !blank(lines[2]) || strings.TrimSpace(lines[3]) == "" {
 		return "", "", false
 	}
-	title = cleanValue(lines[0])
-	if title == "" || isPlaceholder(title) || metaheur.IsJunkValue(title) {
+	title = CleanValue(lines[0])
+	if title == "" || IsPlaceholder(title) || metaheur.IsJunkValue(title) {
 		return "", "", false
 	}
-	author = cleanValue(lines[3])
-	if author == "" || isPlaceholder(author) || metaheur.IsCredit(author) || metaheur.IsJunkValue(author) {
+	author = CleanValue(lines[3])
+	if author == "" || IsPlaceholder(author) || metaheur.IsCredit(author) || metaheur.IsJunkValue(author) {
 		return "", "", false
 	}
-	names := splitAuthors(author)
+	names := SplitAuthors(author)
 	if len(names) == 0 {
 		return "", "", false
 	}
@@ -351,10 +351,10 @@ func calibreTitleAuthor(lines []string) (title, author string, ok bool) {
 	return title, author, true
 }
 
-// splitAuthors splits an author list on "&", ";" and the "and"/"with"
+// SplitAuthors splits an author list on "&", ";" and the "and"/"with"
 // separators Calibre recognizes. Commas inside a name ("Last, First") are
 // preserved; a bracketed YAML list is split on commas as well.
-func splitAuthors(raw string) []string {
+func SplitAuthors(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
 		raw = strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"), ",", ";")
@@ -363,8 +363,8 @@ func splitAuthors(raw string) []string {
 	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == '&' || r == ';' })
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
-		name := cleanValue(part)
-		if name == "" || isPlaceholder(name) {
+		name := CleanValue(part)
+		if name == "" || IsPlaceholder(name) {
 			continue
 		}
 		out = append(out, name)
@@ -372,9 +372,9 @@ func splitAuthors(raw string) []string {
 	return out
 }
 
-// cleanValue trims a metadata value, removes one pair of surrounding quotes
+// CleanValue trims a metadata value, removes one pair of surrounding quotes
 // and collapses internal whitespace.
-func cleanValue(s string) string {
+func CleanValue(s string) string {
 	s = strings.TrimSpace(s)
 	for _, quote := range [][2]string{{`"`, `"`}, {`'`, `'`}, {"\u201c", "\u201d"}, {"\u2018", "\u2019"}} {
 		if len(s) >= len(quote[0])+len(quote[1]) && strings.HasPrefix(s, quote[0]) && strings.HasSuffix(s, quote[1]) {
@@ -384,9 +384,9 @@ func cleanValue(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// isPlaceholder reports values that carry no real title or author
+// IsPlaceholder reports values that carry no real title or author
 // information, such as Calibre's "Unknown" fallback.
-func isPlaceholder(s string) bool {
+func IsPlaceholder(s string) bool {
 	_, ok := placeholderValues[strings.ToLower(strings.TrimSpace(s))]
 	return ok
 }

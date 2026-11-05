@@ -16,7 +16,6 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/lsh"
 	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-cli/internal/parser/registry"
-	"github.com/f0d0r/margaret-cli/internal/parser/txt"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
 	"github.com/f0d0r/margaret-cli/internal/source"
 	"github.com/f0d0r/margaret-cli/internal/tx"
@@ -40,10 +39,10 @@ type ScanProcessorConfig struct {
 	// zero value uses the default (64 MiB).
 	SpoolMemLimit int64
 
-	// MinTxtSize is the minimum size in bytes for a plain-text file to be
-	// treated as a book. Zero uses DefaultMinTxtSize; a negative value
-	// disables the size filter.
-	MinTxtSize int64
+	// MinDocSize is the minimum size in bytes for a document-format file (plain
+	// text, RTF and later PDF) to be treated as a book. Zero uses
+	// DefaultMinDocumentSize; a negative value disables the size filter.
+	MinDocSize int64
 
 	// Password decrypts password-protected rar and 7z archives. The
 	// standard library cannot decrypt AES-encrypted zip members, so those
@@ -72,9 +71,10 @@ type ScanProcessorConfig struct {
 	OnProgress func(Progress)
 }
 
-// DefaultMinTxtSize is the default minimum size of a plain-text book. It
-// mirrors txt.DefaultMinSize so callers do not need to import the parser.
-const DefaultMinTxtSize = txt.DefaultMinSize
+// DefaultMinDocumentSize is the default minimum size of a document-format
+// book. It mirrors parser.DefaultMinDocumentSize so callers do not need to
+// import the parser package.
+const DefaultMinDocumentSize = parser.DefaultMinDocumentSize
 
 // DefaultScanProcessorConfig returns the default Processor configuration.
 func DefaultScanProcessorConfig() ScanProcessorConfig {
@@ -84,7 +84,7 @@ func DefaultScanProcessorConfig() ScanProcessorConfig {
 		ParseWorkers: n,
 		QueueSize:    n * 2,
 		MaxDepth:     2,
-		MinTxtSize:   DefaultMinTxtSize,
+		MinDocSize:   DefaultMinDocumentSize,
 	}
 }
 
@@ -136,7 +136,7 @@ func NewScanProcessor(sqldb *sql.DB, q *db.Queries, cfg ScanProcessorConfig, roo
 		cfg.MaxDepth = 0
 	}
 	return &ScanProcessor{
-		parsers:    registry.ParsersWithOptions(registry.Options{MinTxtSize: cfg.MinTxtSize}),
+		parsers:    registry.ParsersWithOptions(registry.Options{MinDocumentSize: cfg.MinDocSize}),
 		cfg:        cfg,
 		root:       root,
 		onResult:   cfg.OnResult,

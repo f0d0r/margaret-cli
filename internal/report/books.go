@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/identifier"
@@ -53,13 +54,17 @@ type BookReport struct {
 // per-file metadata and persists it: books holds the consensus washed title
 // (updating books_fts via triggers) and the merged, validated metadata;
 // book_authors, book_subjects, book_languages, book_identifiers and
-// book_publications hold the picked values. book_files and its child tables
-// are never touched, so the raw extracted metadata is preserved. Finally,
-// authors referenced by neither book_authors nor book_file_authors are
-// deleted (cleaning authors_fts via triggers). The pass is idempotent: it
-// always recomputes from the raw file rows.
+// book_publications hold the picked values. It first canonicalizes exact
+// duplicates so that the lexicographically smallest path represents each
+// content hash; the per-file metadata itself is preserved. Finally, authors
+// referenced by neither book_authors nor book_file_authors are deleted
+// (cleaning authors_fts via triggers). The pass is idempotent: it always
+// recomputes from the raw file rows.
 func Consolidate(ctx context.Context, sqldb *sql.DB, q *db.Queries) error {
 	run := func(txCtx context.Context, txQ *db.Queries) error {
+		if err := canonicalizeBookFiles(txCtx, txQ); err != nil {
+			return err
+		}
 		reports, order, err := buildBookReports(txCtx, txQ)
 		if err != nil {
 			return err
@@ -100,6 +105,40 @@ func Consolidate(ctx context.Context, sqldb *sql.DB, q *db.Queries) error {
 		})
 	}
 	return run(ctx, q)
+}
+
+// canonicalizeBookFiles promotes the lexicographically smallest path of each
+// content hash to the canonical book_files row. The scan stores whichever path
+// it sees first, so without this pass the canonical path — and every report
+// built from it — depends on scan order. The promoted path leaves the
+// duplicates table and the previous canonical path takes its place there. The
+// row keeps its ID, so all per-file metadata stays attached.
+func canonicalizeBookFiles(ctx context.Context, q *db.Queries) error {
+	rows, err := q.ListBookFileHashesNeedingCanonicalization(ctx)
+	if err != nil {
+		return fmt.Errorf("list canonicalization candidates: %w", err)
+	}
+	for _, r := range rows {
+		if err := q.DeleteBookFileDuplicate(ctx, db.DeleteBookFileDuplicateParams{
+			Hash: r.Hash,
+			Path: r.SmallestDuplicatePath,
+		}); err != nil {
+			return fmt.Errorf("remove promoted duplicate %q: %w", r.SmallestDuplicatePath, err)
+		}
+		if err := q.UpdateBookFilePath(ctx, db.UpdateBookFilePathParams{
+			Hash: r.Hash,
+			Path: r.SmallestDuplicatePath,
+		}); err != nil {
+			return fmt.Errorf("promote canonical path %q: %w", r.SmallestDuplicatePath, err)
+		}
+		if err := q.CreateBookFileDuplicate(ctx, db.CreateBookFileDuplicateParams{
+			Hash: r.Hash,
+			Path: r.CanonicalPath,
+		}); err != nil {
+			return fmt.Errorf("demote canonical path %q: %w", r.CanonicalPath, err)
+		}
+	}
+	return nil
 }
 
 func persistBookMetadata(ctx context.Context, q *db.Queries, id int64, r BookReport) error {
@@ -191,7 +230,9 @@ func WriteBooks(ctx context.Context, q *db.Queries, path string) error {
 	return nil
 }
 
-// GetBooks returns the reports of all books in book ID order.
+// GetBooks returns the reports of all books ordered by title, then by their
+// first file path. Book IDs follow scan order, so ordering by ID would make the
+// report depend on the order in which the scanner happened to finish files.
 func GetBooks(ctx context.Context, q *db.Queries) ([]BookReport, error) {
 	ids, err := q.ListBookIDs(ctx)
 	if err != nil {
@@ -207,7 +248,21 @@ func GetBooks(ctx context.Context, q *db.Queries) ([]BookReport, error) {
 			out = append(out, r)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Title != out[j].Title {
+			return out[i].Title < out[j].Title
+		}
+		return firstPath(out[i]) < firstPath(out[j])
+	})
 	return out, nil
+}
+
+// firstPath returns the first file path of a report, or "" when it has none.
+func firstPath(r BookReport) string {
+	if len(r.Files) == 0 {
+		return ""
+	}
+	return r.Files[0].Path
 }
 
 // GetBooksFiltered returns the book reports for the given book IDs in the
@@ -313,37 +368,43 @@ func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bo
 	}
 	files := make([]BookFileReport, 0, len(fileRows))
 	byPath := make(map[string]bool, len(fileRows))
+	byHash := make(map[string]BookFileReport, len(fileRows))
 	for _, r := range fileRows {
 		fileAuthors := filterFileAuthors(r.FileAuthors, r.FileTitle)
 		ids := fileIdentifiers[r.FileID]
 		if ids == nil {
 			ids = []BookIdentifier{}
 		}
-		files = append(files, BookFileReport{
+		file := BookFileReport{
 			Path:        r.FilePath,
 			Authors:     fileAuthors,
 			Title:       normalizeMeta(r.FileTitle),
 			Identifiers: ids,
-		})
+		}
+		files = append(files, file)
 		byPath[r.FilePath] = true
+		byHash[r.FileHash] = file
 	}
 	if len(files) > 0 {
 		dups, err := q.ListDuplicatesByBookID(ctx, id)
 		if err != nil {
 			return BookReport{}, false, fmt.Errorf("list duplicates of book %d: %w", id, err)
 		}
-		parent := files[0]
-		for _, dupPath := range dups {
-			if byPath[dupPath] {
+		for _, dup := range dups {
+			if byPath[dup.DuplicatePath] {
+				continue
+			}
+			parent, ok := byHash[dup.Hash]
+			if !ok {
 				continue
 			}
 			files = append(files, BookFileReport{
-				Path:        dupPath,
+				Path:        dup.DuplicatePath,
 				Authors:     parent.Authors,
 				Title:       parent.Title,
 				Identifiers: append([]BookIdentifier{}, parent.Identifiers...),
 			})
-			byPath[dupPath] = true
+			byPath[dup.DuplicatePath] = true
 		}
 	}
 	return BookReport{
@@ -462,13 +523,26 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 		metadataFiles []fileMetadata
 		files         []BookFileReport
 		byPath        map[string]bool
+		byHash        map[string]BookFileReport
 	}
 	books := make(map[int64]*entry)
 	var order []int64
+	// A book's files are ordered by path so that every order-sensitive step
+	// below (title tie-breaks, fallback titles) is stable across runs; the
+	// database returns them in insertion order.
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].BookID != rows[j].BookID {
+			return rows[i].BookID < rows[j].BookID
+		}
+		return rows[i].FilePath < rows[j].FilePath
+	})
 	for _, r := range rows {
 		b, ok := books[r.BookID]
 		if !ok {
-			b = &entry{byPath: make(map[string]bool)}
+			b = &entry{
+				byPath: make(map[string]bool),
+				byHash: make(map[string]BookFileReport),
+			}
 			books[r.BookID] = b
 			order = append(order, r.BookID)
 		}
@@ -500,25 +574,30 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 		if ids == nil {
 			ids = []BookIdentifier{}
 		}
-		b.files = append(b.files, BookFileReport{
+		file := BookFileReport{
 			Path:        r.FilePath,
 			Authors:     authors,
 			Title:       fileTitle,
 			Identifiers: ids,
-		})
+		}
+		b.files = append(b.files, file)
 		b.byPath[r.FilePath] = true
+		b.byHash[r.FileHash] = file
 	}
 
 	// Attach exact duplicates under their parent book. A duplicate carries
-	// no metadata of its own, so it inherits the canonical file's title and
-	// authors (same content hash). Orphan duplicates (no parent book, which
+	// no metadata of its own, so it inherits the metadata of the canonical
+	// row with the same content hash. Orphan duplicates (no parent row, which
 	// cannot happen in a scan but keeps the report robust) are skipped.
 	for _, d := range dups {
 		b := books[d.BookID]
 		if b == nil || b.byPath[d.DuplicatePath] {
 			continue
 		}
-		parent := b.files[0]
+		parent, ok := b.byHash[d.Hash]
+		if !ok {
+			continue
+		}
 		b.files = append(b.files, BookFileReport{
 			Path:        d.DuplicatePath,
 			Authors:     parent.Authors,

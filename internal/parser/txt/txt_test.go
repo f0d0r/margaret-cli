@@ -180,8 +180,8 @@ func TestParseRejectsBinary(t *testing.T) {
 func TestTxtParserMinSize(t *testing.T) {
 	tiny := []byte("Title: Tiny\nAuthor: Jane Doe\n\n" + strings.Repeat("A reggel hűvös volt. ", 20))
 
-	if got := (TxtParser{}).MinSize(); got != DefaultMinSize {
-		t.Errorf("default MinSize() = %d, want %d", got, DefaultMinSize)
+	if got := (TxtParser{}).MinSize(); got != parser.DefaultMinDocumentSize {
+		t.Errorf("default MinSize() = %d, want %d", got, parser.DefaultMinDocumentSize)
 	}
 	if _, err := (TxtParser{}).Parse(context.Background(), book.NewBytesBlob(tiny)); !errors.Is(err, parser.ErrNotABook) {
 		t.Errorf("default parse error = %v, want ErrNotABook", err)
@@ -235,5 +235,57 @@ func TestParseDetectsLanguage(t *testing.T) {
 				t.Errorf("languages = %v, want %v", md.Languages, want)
 			}
 		})
+	}
+}
+
+// countingBlob counts the bytes returned by ReadAt so tests can assert how many
+// times the parser traverses the file.
+type countingBlob struct {
+	blob book.Blob
+	read int64
+}
+
+func (b *countingBlob) Size() (int64, error) { return b.blob.Size() }
+
+func (b *countingBlob) ReadAt(p []byte, off int64) (int, error) {
+	n, err := b.blob.ReadAt(p, off)
+	b.read += int64(n)
+	return n, err
+}
+
+func TestParseTXTReadsEachByteOnce(t *testing.T) {
+	body := "The quick brown fox jumps over the lazy dog. "
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"small", []byte(strings.Repeat(body, 400))},
+		{"large", []byte(strings.Repeat(body, 4000))},
+		{"utf16 bom", encodeWith(t, unicode.UTF16(unicode.LittleEndian, unicode.UseBOM), strings.Repeat(body, 4000))},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			blob := &countingBlob{blob: book.NewBytesBlob(c.data)}
+			if _, err := (TxtParser{MinBookSize: -1}).Parse(context.Background(), blob); err != nil {
+				t.Fatal(err)
+			}
+			want := int64(min(len(c.data), sampleLimit) + len(c.data))
+			if blob.read != want {
+				t.Errorf("read %d bytes, want %d", blob.read, want)
+			}
+		})
+	}
+}
+
+func TestParseTXTJunkStopsEarly(t *testing.T) {
+	body := "<!doctype html><html><body>" +
+		strings.Repeat("lorem ipsum dolor sit amet ", 20000) + "</body></html>"
+	data := []byte(body)
+	blob := &countingBlob{blob: book.NewBytesBlob(data)}
+	if _, err := (TxtParser{MinBookSize: -1}).Parse(context.Background(), blob); !errors.Is(err, parser.ErrNotABook) {
+		t.Fatalf("error = %v, want ErrNotABook", err)
+	}
+	if blob.read >= int64(len(data)) {
+		t.Errorf("read %d bytes of %d, want an early stop", blob.read, len(data))
 	}
 }

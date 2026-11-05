@@ -1,4 +1,4 @@
-package txt
+package textdoc
 
 import (
 	"slices"
@@ -77,7 +77,7 @@ func TestTitlePageConventions(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			md := extractMetadata(c.head)
+			md := ExtractMetadata(c.head)
 			if md.Title != c.title {
 				t.Errorf("title = %q, want %q", md.Title, c.title)
 			}
@@ -112,7 +112,7 @@ func TestTitlePageFallbackRespectsOtherSources(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			md := extractMetadata(c.head)
+			md := ExtractMetadata(c.head)
 			if md.Title != c.title {
 				t.Errorf("title = %q, want %q", md.Title, c.title)
 			}
