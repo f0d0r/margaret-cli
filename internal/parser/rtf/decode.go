@@ -48,6 +48,7 @@ func infoField(name string) bool {
 // groupState is the state of one RTF group.
 type groupState struct {
 	uc        int
+	font      int
 	skip      bool
 	hidden    bool
 	dest      string
@@ -61,6 +62,8 @@ type groupState struct {
 type textDecoder struct {
 	br          *bufio.Reader
 	enc         encoding.Encoding
+	defaultFont int
+	fonts       map[int]encoding.Encoding
 	pending     []byte
 	out         []byte
 	stack       []groupState
@@ -322,6 +325,31 @@ func (d *textDecoder) controlWord(name string, param int, hasParam bool) error {
 			d.flushPending()
 			d.enc = encodingForCodePage(param)
 		}
+	case "deff":
+		if hasParam {
+			d.flushPending()
+			d.defaultFont = param
+			d.state().font = param
+		}
+	case "f":
+		if hasParam && d.state().font != param {
+			d.flushPending()
+			d.state().font = param
+		}
+	case "fcharset":
+		if hasParam && d.state().dest == "fonttbl" && d.state().font >= 0 {
+			if codePage := fontCharsetCodePages[param]; codePage != 0 {
+				if d.fonts == nil {
+					d.fonts = make(map[int]encoding.Encoding)
+				}
+				d.fonts[d.state().font] = encodingForCodePage(codePage)
+			}
+		}
+	case "plain":
+		if d.state().font != d.defaultFont {
+			d.flushPending()
+			d.state().font = d.defaultFont
+		}
 	case "uc":
 		if hasParam {
 			d.stack[len(d.stack)-1].uc = param
@@ -379,6 +407,9 @@ func (d *textDecoder) controlWord(name string, param int, hasParam bool) error {
 			state := &d.stack[len(d.stack)-1]
 			state.skip = true
 			state.dest = name
+			if name == "fonttbl" {
+				state.font = -1
+			}
 			return nil
 		}
 		if name == "info" && len(d.stack) > 1 {
@@ -432,6 +463,7 @@ func (d *textDecoder) push() {
 	parent := d.stack[len(d.stack)-1]
 	d.stack = append(d.stack, groupState{
 		uc:        parent.uc,
+		font:      parent.font,
 		skip:      parent.skip,
 		hidden:    parent.hidden,
 		dest:      parent.dest,
@@ -514,7 +546,11 @@ func (d *textDecoder) flushPending() {
 	}
 	raw := d.pending
 	d.pending = d.pending[:0]
-	decoded, _, err := transform.Bytes(d.enc.NewDecoder(), raw)
+	enc := d.enc
+	if fontEncoding := d.fonts[d.state().font]; fontEncoding != nil {
+		enc = fontEncoding
+	}
+	decoded, _, err := transform.Bytes(enc.NewDecoder(), raw)
 	if err != nil {
 		decoded, _, _ = transform.Bytes(charmap.Windows1252.NewDecoder(), raw)
 	}

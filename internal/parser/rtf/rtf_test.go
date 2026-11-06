@@ -67,6 +67,21 @@ func TestDecodeRTFText(t *testing.T) {
 			want: "áé",
 		},
 		{
+			name: "font charset is scoped to its group",
+			rtf:  `{\rtf1\ansi\ansicpg1252{\fonttbl{\f0\fcharset0 Western;}{\f277\fcharset238 Central European;}}\f0 \'f5{\f277 Felel\'f5s m\'fbve}\'f5}`,
+			want: "õFelelős műveõ",
+		},
+		{
+			name: "default font charset decodes raw bytes",
+			rtf:  "{\\rtf1\\ansi\\deff2{\\fonttbl\\f0\\fcharset0 Western;\\f2\\fcharset238 Central European;} \xf5\xfb}",
+			want: " őű",
+		},
+		{
+			name: "unknown font charset uses document code page",
+			rtf:  `{\rtf1\ansi\ansicpg1250{\fonttbl{\f1\fcharset999 Unknown;}}\f1 \'f5\'fb}`,
+			want: "őű",
+		},
+		{
 			name: "utf-8 bom",
 			rtf:  "\ufeff{\\rtf1\\ansi Body}",
 			want: "Body",

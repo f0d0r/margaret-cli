@@ -10,6 +10,24 @@ import (
 	"golang.org/x/text/encoding/unicode"
 )
 
+// Unmapped RTF font charsets use the document code page.
+var fontCharsetCodePages = map[int]int{
+	77:  10000, // Macintosh
+	128: 932,   // Shift-JIS
+	129: 949,   // Korean
+	134: 936,   // Simplified Chinese
+	136: 950,   // Traditional Chinese
+	161: 1253,  // Greek
+	162: 1254,  // Turkish
+	163: 1258,  // Vietnamese
+	177: 1255,  // Hebrew
+	178: 1256,  // Arabic
+	186: 1257,  // Baltic
+	204: 1251,  // Cyrillic
+	222: 874,   // Thai
+	238: 1250,  // Central European
+}
+
 // encodingForCodePage maps an RTF \ansicpg number to a decoder. Unknown code
 // pages fall back to Windows-1252, the RTF default.
 func encodingForCodePage(codePage int) encoding.Encoding {
