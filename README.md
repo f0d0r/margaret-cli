@@ -93,6 +93,7 @@ Ebooks (metadata is read from these):
 - `.txt`
 - `.text`
 - `.rtf`
+- `.pdf` (only when Poppler's `pdftotext` and `pdfinfo` are available; see below)
 
 Archives (searched for ebooks inside):
 
@@ -120,10 +121,35 @@ fingerprint as the other formats; the content hash, the decoded head and the
 fingerprint come from a single pass over the file. RTF books are decoded to
 plain text the same way: the `\info` block supplies the title, authors,
 description, subjects and publisher (following Calibre's field mapping), while
-documents without `\info` metadata fall back to Calibre's title-page layout. Files smaller than
-`--min-doc-size` (15 KiB by default) are treated as distribution metadata or
-fragments rather than books and are counted as skipped. Empty and binary files
-are reported as failures.
+documents without `\info` metadata fall back to Calibre's title-page layout.
+Files smaller than `--min-doc-size` (15 KiB by default) are treated as
+distribution metadata or fragments rather than books and are counted as
+skipped. Empty and binary files are reported as failures.
+
+PDF books are read through the system-installed Poppler tools: `pdfinfo`
+supplies the Info dictionary and XMP metadata, and `pdftotext` supplies the
+plain text that feeds the MinHash fingerprint. Both tools must be on `PATH`
+(or in the directory given by `--pdf-tools-dir`). If either is missing, the
+scan prints a warning, skips PDF files, and continues with every other
+supported format. PDF support is therefore conditional. The same
+`--min-doc-size` limit applies to both the raw PDF file and the extracted
+text: PDFs whose cleaned text is smaller than the limit are treated as having
+no usable text and are skipped. Poppler's `pdftotext` does not perform OCR, so
+image-only/scanned PDFs are skipped as well.
+
+Poppler is not bundled. Install it with the operating system package
+manager, for example:
+
+```sh
+# Debian / Ubuntu
+sudo apt install poppler-utils
+
+# Fedora
+sudo dnf install poppler-utils
+
+# macOS (Homebrew)
+brew install poppler
+```
 
 Every ebook's language is verified from its reading-order text with
 language-agnostic detection. A missing language is filled in, and a declared
@@ -146,7 +172,8 @@ without hints still works.
 | `--archive-depth` | `int` | `2` | Maximum archive nesting depth to unpack. |
 | `--archive-password` | `string` | `""` | Password for encrypted rar and 7z archives. |
 | `--spool-mem-limit` | `int` | `67108864` | Max bytes per archive member buffered in memory before spilling to a temp file. |
-| `--min-doc-size` | `int` | `15360` | Minimum size in bytes for a document-format file (txt, rtf) to be treated as a book (`0` = default, negative = disable). |
+| `--min-doc-size` | `int` | `15360` | Minimum size in bytes for a document-format file (txt, rtf, pdf) to be treated as a book; for PDF it also applies to the extracted text (`0` = default, negative = disable). |
+| `--pdf-tools-dir` | `string` | `""` | Directory containing Poppler's `pdftotext` and `pdfinfo` (default: search `PATH`). |
 | `--ftp-user` | `string` | `anonymous` | FTP username for `ftp://` scans. |
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
@@ -200,14 +227,18 @@ done processing.
 
 ### `--min-doc-size`
 
-Sets the minimum size in bytes for a document-format file (plain text and RTF
-today, PDF later) to be treated as a book. Document collections often contain
-tiny side files (`nncl.txt`, `olvasd_el.txt`, `_adatlap.txt`, chapter
-fragments) next to the actual books; these are skipped and counted in
-**Skipped** instead of becoming books on their own. The default is 15 KiB
-(15360 bytes) because side files (readmes, blurbs, file lists) are typically
-smaller than real books. A value of `0` uses the default; a negative value
-disables the size filter entirely.
+Sets the minimum size in bytes for a document-format file (plain text, RTF
+and PDF) to be treated as a book. Document collections often contain tiny
+side files (`nncl.txt`, `olvasd_el.txt`, `_adatlap.txt`, chapter fragments)
+next to the actual books; these are skipped and counted in **Skipped** instead
+of becoming books on their own. The default is 15 KiB (15360 bytes) because
+side files (readmes, blurbs, file lists) are typically smaller than real
+books. A value of `0` uses the default; a negative value disables the size
+filter entirely.
+
+For PDFs the same limit is applied twice: the raw PDF must be at least this
+large, and the cleaned extracted text must be at least this large. PDFs below
+either threshold are treated as empty or fragmentary and skipped.
 
 ```sh
 # keep only document files of at least 32 KiB
@@ -218,7 +249,15 @@ margaret scan ./books --min-doc-size -1
 ```
 
 Robust content checks still reject HTML sources, HTTP cache dumps, credit
-pages, blurbs and tables of contents regardless of their file name.
+pages, blurbs and tables of contents for plain-text and RTF files.
+
+### `--pdf-tools-dir`
+
+Sets the directory that contains Poppler's `pdftotext` and `pdfinfo`. By
+default both are looked up on `PATH`. When either is missing, the scan prints
+a warning and skips PDF files; all other supported formats are still
+processed. This is useful on systems where Poppler is installed outside the
+standard `PATH`.
 
 ### `--failures-out`
 
@@ -377,8 +416,9 @@ Duration   1ms
 - **Succeeded** — ebooks whose metadata was read successfully.
 - **Failed** — items that could not be processed.
 - **Skipped** — files passed over without being parsed: already-recorded files
-  in resume runs, and plain-text files that are too small or otherwise not
-  books.
+  in resume runs, document files that are too small or otherwise not books,
+  and PDFs skipped because Poppler is unavailable or their extracted text is
+  too short.
 - **Duration** — wall-clock time of the scan.
 
 With `--ext-stats` the summary is followed by per-extension file counts,
@@ -390,10 +430,11 @@ The percentages sum to 100% over supported + unsupported:
 Extension stats (10 files):
 Supported:
   epub: 3 (30%)
+  pdf: 3 (30%)
   mobi: 2 (20%)
   txt: 1 (10%)
 Unsupported:
-  pdf: 4 (40%)
+  docx: 1 (10%)
 ```
 
 ```sh
@@ -523,6 +564,12 @@ comparisons below use normalized keys:
   lower-cased keys; diacritics are folded (NFD mark-stripping for Latin
   script only, so Cyrillic `й` and Indic scripts survive, plus `ø→o`,
   `ß→ss`, `æ→ae`, `œ→oe`, `ł→l`, `đ→d`, `þ→th`, `ı→i`).
+- **PDF metadata.** `pdfinfo` reads the Info dictionary and, when present,
+  the XMP packet. XMP wins unless the Info `ModDate` is newer. The supported
+  fields map to title, authors, description (`Subject`/`dc:description`),
+  subjects (`Keywords`/`dc:subject`/`pdf:Keywords`), publisher, publication
+  date, series, languages and ISBN/DOI identifiers. Cover images and
+  Calibre-specific custom metadata are not read.
 - **Author placeholders are dropped.** Converter defaults such as
   `Unknown`, `Ismeretlen`, `Inconnu`, `Unbekannt`, `Desconocido`,
   `Sconosciuto`, `Onbekend`, `Nieznany`, `Okänd`, `Bilinmiyor`,

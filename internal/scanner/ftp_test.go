@@ -18,8 +18,9 @@ func TestScanFTP(t *testing.T) {
 		"a.epub":     "epub",
 		"b.mobi":     "mobi",
 		"sub/d.azw3": "azw3",
+		"sub/e.pdf":  "pdf",
 	}
-	excluded := []string{"readme.pdf", "sub/image.png"}
+	excluded := []string{"readme.xyz", "sub/image.png"}
 
 	for name := range files {
 		path := filepath.Join(root, name)

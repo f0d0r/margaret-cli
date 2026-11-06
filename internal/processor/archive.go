@@ -342,6 +342,10 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
+	if p.pdfDisabled(format) {
+		p.skip()
+		return
+	}
 	if p.belowMinSize(format, size) {
 		p.skip()
 		return

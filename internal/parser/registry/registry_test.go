@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/f0d0r/margaret-cli/internal/parser"
+	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
 	"github.com/f0d0r/margaret-cli/internal/parser/rtf"
 	"github.com/f0d0r/margaret-cli/internal/parser/txt"
 	"github.com/f0d0r/margaret-cli/internal/scanner"
@@ -30,8 +31,11 @@ func TestParsersUsesDocumentParsers(t *testing.T) {
 	if _, ok := parsers["rtf"].(rtf.RtfParser); !ok {
 		t.Errorf("rtf format uses %T, want rtf.RtfParser", parsers["rtf"])
 	}
+	if _, ok := parsers["pdf"].(pdf.PDFParser); !ok {
+		t.Errorf("pdf format uses %T, want pdf.PDFParser", parsers["pdf"])
+	}
 	for format, par := range parsers {
-		if format == "txt" || format == "rtf" {
+		if format == "txt" || format == "rtf" || format == "pdf" {
 			continue
 		}
 		if _, ok := par.(parser.EbookParser); !ok {
@@ -55,5 +59,12 @@ func TestParsersWithOptionsConfiguresDocumentMinSize(t *testing.T) {
 	}
 	if got := rp.MinSize(); got != 1234 {
 		t.Errorf("rtf MinSize() = %d, want 1234", got)
+	}
+	pp, ok := parsers["pdf"].(pdf.PDFParser)
+	if !ok {
+		t.Fatalf("pdf format uses %T, want pdf.PDFParser", parsers["pdf"])
+	}
+	if got := pp.MinSize(); got != 1234 {
+		t.Errorf("pdf MinSize() = %d, want 1234", got)
 	}
 }
