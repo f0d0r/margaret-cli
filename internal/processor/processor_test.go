@@ -438,7 +438,7 @@ func (metadataParser) Parse(_ context.Context, _ book.Blob) (parser.Metadata, er
 		Subjects:    []string{"Fiction", "Adventure"},
 		Languages:   []string{"en", "hu"},
 		Identifiers: []identifier.Identifier{
-			{Scheme: "ISBN", Value: "9780000000000", Source: identifier.SourceMetadata},
+			{Scheme: "ISBN", Value: "9780306406157", Source: identifier.SourceMetadata},
 			{Scheme: "DOI", Value: "10.1000/test", Source: identifier.SourceMetadata},
 		},
 		Publisher:       "Publisher",
@@ -446,6 +446,22 @@ func (metadataParser) Parse(_ context.Context, _ book.Blob) (parser.Metadata, er
 		Series:          "Series",
 		SeriesIndex:     "2",
 		Hash:            "hash-metadata",
+	}, nil
+}
+
+type invalidMetadataParser struct{}
+
+func (invalidMetadataParser) Parse(_ context.Context, _ book.Blob) (parser.Metadata, error) {
+	return parser.Metadata{
+		Title: "Title",
+		Identifiers: []identifier.Identifier{
+			{Scheme: "ISBN", Value: "9780000000000", Source: identifier.SourceMetadata},
+			{Scheme: "ISBN", Value: "9780000000002", Source: identifier.SourceMetadata},
+			{Scheme: "ISBN-10", Value: "0-306-40615-2", Source: identifier.SourceMetadata},
+			{Scheme: "DOI", Value: "10.1000/test", Source: identifier.SourceMetadata},
+			{Scheme: "UUID", Value: "uuid-1", Source: identifier.SourceMetadata},
+		},
+		Hash: "hash-invalid-metadata",
 	}, nil
 }
 
@@ -699,11 +715,68 @@ func TestProcessStoresBookFileMetadata(t *testing.T) {
 	identifiers, identifierOrdinals := readOrdered(
 		`SELECT scheme || ':' || value || ':' || source, ordinal FROM book_file_identifiers ORDER BY ordinal`,
 	)
-	if want := []string{"ISBN:9780000000000:METADATA", "DOI:10.1000/test:METADATA"}; !slices.Equal(identifiers, want) {
+	if want := []string{"ISBN:9780306406157:METADATA", "DOI:10.1000/test:METADATA"}; !slices.Equal(identifiers, want) {
 		t.Errorf("expected identifiers %v, got %v", want, identifiers)
 	}
 	if want := []int64{0, 1}; !slices.Equal(identifierOrdinals, want) {
 		t.Errorf("expected identifier ordinals %v, got %v", want, identifierOrdinals)
+	}
+}
+
+func TestProcessDropsInvalidAndPlaceholderISBNs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "book.epub")
+	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	proc := NewScanProcessor(conn, db.New(conn), DefaultScanProcessorConfig(), dir)
+	proc.parsers = map[string]parser.Parser{"epub": invalidMetadataParser{}}
+
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("unexpected failures: %v", failures)
+	}
+
+	rows, err := conn.Query(
+		`SELECT scheme || ':' || value || ':' || source FROM book_file_identifiers ORDER BY ordinal`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	var got []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"ISBN:9780306406157:METADATA",
+		"DOI:10.1000/test:METADATA",
+		"UUID:uuid-1:METADATA",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("identifiers = %v, want %v", got, want)
 	}
 }
 

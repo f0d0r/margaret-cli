@@ -448,7 +448,7 @@ func identifiersFromTexts(values []string) []identifier.Identifier {
 		out = append(out, item)
 	}
 	for _, value := range values {
-		for _, isbn := range tools.ExtractISBNs(value) {
+		for _, isbn := range tools.FindISBNs(value) {
 			isbn13, ok := isbn.ToISBN13()
 			if !ok {
 				continue
@@ -557,7 +557,10 @@ func cleanSubjects(subjects []string) []string {
 }
 
 func isISBNSubject(value string) bool {
-	return len(tools.ExtractISBNs(value)) > 0
+	if _, ok := tools.NormalizeISBN(value); ok {
+		return true
+	}
+	return len(tools.FindISBNs(value)) > 0
 }
 
 // xmpSubjects prefers dc:subject and falls back to pdf:Keywords, which is a

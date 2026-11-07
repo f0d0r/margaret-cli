@@ -18,8 +18,9 @@ type Band struct {
 	BucketHash int64
 }
 
-// ComputeBands divides the MinHash signature into DefaultNumBands bands of
-// DefaultRowsPerBand rows each and hashes each band to a 64-bit bucket key.
+// ComputeBands uses the first DefaultNumBands*DefaultRowsPerBand values of the
+// MinHash signature, divides them into bands and hashes each band to a 64-bit
+// bucket key. Values beyond that prefix are only used for Jaccard verification.
 func ComputeBands(sig []uint64) []Band {
 	return ComputeBandsCustom(sig, DefaultNumBands, DefaultRowsPerBand)
 }

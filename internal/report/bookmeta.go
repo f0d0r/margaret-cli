@@ -977,7 +977,8 @@ func pickTitle(candidates []string, authors []string) string {
 	votes := make(map[string]*vote)
 	var order []string
 	for i, c := range candidates {
-		if c = normalizeMeta(c); c == "" || isPlaceholderTitle(c) {
+		if c = normalizeMeta(c); c == "" || isPlaceholderTitle(c) ||
+			metaheur.IsArtifactTitle(c) || metaheur.IsProseTitle(c) {
 			continue
 		}
 		key := metaKey(c)

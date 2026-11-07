@@ -19,8 +19,8 @@ type EbookParser struct{}
 
 // Parse reads the e-book from ebookData using the blob API and returns
 // normalized metadata, a content hash and the MinHash content fingerprint.
-// The plain-text reading order is read once: the fingerprint, the ISBN
-// candidate and the language sample all come from that single stream.
+// The plain-text reading order is read once: the fingerprint, the book-valid
+// ISBN and the language sample all come from that single stream.
 func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata, error) {
 	ebookData = WithContext(ctx, ebookData)
 	bk, err := ebook.ReadFromBlob(ebookData)
@@ -65,10 +65,13 @@ func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata,
 }
 
 // scanReadingOrder reads the book text once and returns everything the parser
-// needs from it: the MinHash fingerprint, one ISBN candidate and the head.
+// needs from it: the MinHash fingerprint, one book-valid ISBN and the head.
 func scanReadingOrder(ctx context.Context, bk book.Book) (tools.FingerprintResult, []tools.ISBN, string, error) {
 	fingerprints, err := tools.NewFingerprintProcessor(
-		tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
+		tools.WithMinHash(tools.MinHashConfig{
+			NumHashes:   MinHashHashes,
+			ShingleSize: MinHashShingleSize,
+		}))
 	if err != nil {
 		return tools.FingerprintResult{}, nil, "", err
 	}

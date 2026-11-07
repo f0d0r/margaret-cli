@@ -80,6 +80,7 @@ func TestMergeIdentifiers(t *testing.T) {
 		{Scheme: "ISBN-13", Value: "9780375704024", Source: identifier.SourceText},
 		{Scheme: "ISBN-10", Value: "0-306-40615-2", Source: identifier.SourceMetadata},
 		{Scheme: "ISBN", Value: "9798400000003", Source: identifier.SourceMetadata},
+		{Scheme: "ISBN", Value: "9780000000002", Source: identifier.SourceMetadata},
 		{Scheme: "DOI", Value: "10.1000/test", Source: identifier.SourceMetadata},
 		{Scheme: "", Value: "9780306406157", Source: identifier.SourceMetadata},
 		{Scheme: "ISBN", Value: "9780306406158", Source: identifier.SourceMetadata},
@@ -87,7 +88,6 @@ func TestMergeIdentifiers(t *testing.T) {
 	want := []BookIdentifier{
 		{Scheme: "ISBN", Value: "9780306406157", Source: identifier.SourceMetadataAndText},
 		{Scheme: "ISBN", Value: "9780375704024", Source: identifier.SourceText},
-		{Scheme: "ISBN", Value: "9798400000003", Source: identifier.SourceMetadata},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("mergeIdentifiers() = %v, want %v", got, want)

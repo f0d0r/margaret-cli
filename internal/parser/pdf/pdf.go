@@ -127,7 +127,10 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return nil
 	})
 	fingerprint, err := tools.FingerprintReader(io.TeeReader(cleaned, gate),
-		tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
+		tools.WithMinHash(tools.MinHashConfig{
+			NumHashes:   parser.MinHashHashes,
+			ShingleSize: parser.MinHashShingleSize,
+		}))
 	if err != nil {
 		_ = text.Close()
 		waitErr := wait()

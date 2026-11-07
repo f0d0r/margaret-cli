@@ -218,10 +218,15 @@ func mergeIdentifiers(values []BookIdentifier) []BookIdentifier {
 		if !identifier.IsISBNScheme(item.Scheme) {
 			continue
 		}
-		value, ok := tools.CanonicalISBN13(item.Value)
+		isbn, ok := tools.ValidateBookISBN(item.Value)
 		if !ok {
 			continue
 		}
+		isbn13, ok := isbn.ToISBN13()
+		if !ok {
+			continue
+		}
+		value := isbn13.String()
 		if idx, exists := index[value]; exists {
 			out[idx].Source = identifier.MergeSources(out[idx].Source, item.Source)
 			continue
