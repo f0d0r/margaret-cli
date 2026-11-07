@@ -249,7 +249,10 @@ func TestParseRTFMetadataPipeline(t *testing.T) {
 		t.Errorf("hash = %q, want %q", md.Hash, sha256Hex([]byte(data)))
 	}
 	expected := strings.ReplaceAll(body, "\n", "\n")
-	fp, err := tools.FingerprintText(expected, tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
+	fp, err := tools.FingerprintText(expected, tools.WithMinHash(tools.MinHashConfig{
+		NumHashes:   parser.MinHashHashes,
+		ShingleSize: parser.MinHashShingleSize,
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -70,8 +70,8 @@ func TestParsePDF(t *testing.T) {
 	if md.Hash != sha256Hex(data) {
 		t.Errorf("hash = %q, want %q", md.Hash, sha256Hex(data))
 	}
-	if len(md.MinHash) != 128 {
-		t.Errorf("minhash has %d hashes, want 128", len(md.MinHash))
+	if len(md.MinHash) != parser.MinHashHashes {
+		t.Errorf("minhash has %d hashes, want %d", len(md.MinHash), parser.MinHashHashes)
 	}
 	if len(md.Languages) == 0 || md.Languages[0] != "en" {
 		t.Errorf("languages = %v, want [en]", md.Languages)

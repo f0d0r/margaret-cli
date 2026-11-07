@@ -42,17 +42,21 @@ func TestPickTitle(t *testing.T) {
 		{"majority beats longer", []string{"Moby Dick", "Moby Dick; Or, The Whale", "Moby Dick"}, nil, "Moby Dick"},
 		{"tie goes to longer", []string{"Moby Dick", "Moby Dick; Or, The Whale", "Moby-Dick"}, nil, "Moby Dick; Or, The Whale"},
 		{"tie goes to cleaner over longer junk", []string{"lll__a_megfojtott_viking_mocsara", "A megfojtott viking mocsara"}, nil, "A megfojtott viking mocsara"},
-		{"junk majority still wins", []string{"lll__a_megfojtott_viking_mocsara", "lll__a_megfojtott_viking_mocsara", "A megfojtott viking mocsara"}, nil, "lll__a_megfojtott_viking_mocsara"},
+		{"artifact majority dropped", []string{"lll__a_megfojtott_viking_mocsara", "lll__a_megfojtott_viking_mocsara", "A megfojtott viking mocsara"}, nil, "A megfojtott viking mocsara"},
+		{"artifact title dropped", []string{`D:\ Munka\ Park\ viktor.qxd`, "A Viktor"}, nil, "A Viktor"},
+		{"artifact only", []string{"/ELP/"}, nil, ""},
+		{"prose title dropped", []string{"Mindketten nehezen szedték a levegot, és egyikük sem volt hajlandó meghátrálni", "A csend pengéi"}, nil, "A csend pengéi"},
+		{"prose only", []string{"A búgás most már élesen és tisztán zengett, és nyálkás zajok hallatszottak mögülük, hangosabbak, mint a lovaik patái alatt szé"}, nil, ""},
 		{"tie goes to title without author", []string{"Steven Saylor - Egy gladiátor csak egyszer hal meg", "Egy gladiátor csak egyszer hal meg"}, []string{"Steven Saylor"}, "Egy gladiátor csak egyszer hal meg"},
-		{"noisy majority still wins", []string{"Steven Saylor - X", "Steven Saylor - X", "X"}, []string{"Steven Saylor"}, "Steven Saylor - X"},
-		{"last first author variant detected", []string{"Steven Saylor - X", "X"}, []string{"Saylor, Steven"}, "X"},
+		{"noisy majority still wins", []string{"Steven Saylor - X", "Steven Saylor - X", "Xx"}, []string{"Steven Saylor"}, "Steven Saylor - X"},
+		{"last first author variant detected", []string{"Steven Saylor - X", "Xx"}, []string{"Saylor, Steven"}, "Xx"},
 		{"reversed comma order detected", []string{"DEAVER , JEFFERY - A majomkirály", "A majomkirály"}, []string{"Jeffery Deaver"}, "A majomkirály"},
 		{"four part name in any order", []string{"García Márquez, Gabriel - Száz év magány", "Száz év magány"}, []string{"Gabriel García Márquez"}, "Száz év magány"},
-		{"particle alone is not enough, length decides", []string{"Van valami", "X"}, []string{"Ludwig van Beethoven"}, "Van valami"},
-		{"partial name without first name is not enough", []string{"Van Beethoven - X", "X"}, []string{"Ludwig van Beethoven"}, "Van Beethoven - X"},
-		{"initial drops out, surname decides", []string{"Verne - X", "X"}, []string{"J. Verne"}, "X"},
-		{"diacritics folded in author match", []string{"Marai Sandor - X", "X"}, []string{"Márai Sándor"}, "X"},
-		{"surname alone is not penalized, longer wins", []string{"Saylor blabla", "X"}, []string{"Steven Saylor"}, "Saylor blabla"},
+		{"particle alone is not enough, length decides", []string{"Van valami", "Xx"}, []string{"Ludwig van Beethoven"}, "Van valami"},
+		{"partial name without first name is not enough", []string{"Van Beethoven - X", "Xx"}, []string{"Ludwig van Beethoven"}, "Van Beethoven - X"},
+		{"initial drops out, surname decides", []string{"Verne - X", "Xx"}, []string{"J. Verne"}, "Xx"},
+		{"diacritics folded in author match", []string{"Marai Sandor - X", "Xx"}, []string{"Márai Sándor"}, "Xx"},
+		{"surname alone is not penalized, longer wins", []string{"Saylor blabla", "Xx"}, []string{"Steven Saylor"}, "Saylor blabla"},
 		{"empty dropped", []string{"", "Moby Dick"}, nil, "Moby Dick"},
 		{"placeholder dropped", []string{"Untitled", "It"}, nil, "It"},
 		{"all placeholders", []string{"Untitled", "Sans titre"}, nil, ""},
@@ -292,6 +296,87 @@ func TestWriteBooksFallsBackToFileName(t *testing.T) {
 	}
 	if b.Authors == nil || b.Files[0].Authors == nil {
 		t.Errorf("expected non-nil author lists, got %+v", b)
+	}
+}
+
+func TestWriteBooksDropsUnusableMetadataTitle(t *testing.T) {
+	cases := []struct {
+		name          string
+		metadataTitle string
+		path          string
+		wantTitle     string
+	}{
+		{
+			name:          "artifact title",
+			metadataTitle: `D:\ Munka\ Park\ viktor.qxd`,
+			path:          "/books/Kende Péter - A Viktor.pdf",
+			wantTitle:     "A Viktor",
+		},
+		{
+			name:          "prose title",
+			metadataTitle: "Mindketten nehezen szedték a levegot, és egyikük sem volt hajlandó meghátrálni",
+			path:          "/books/Leslie L. Lawrence - A csend pengéi.rtf",
+			wantTitle:     "A csend pengéi",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, err := database.Open(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				_ = conn.Close()
+			}()
+
+			q := db.New(conn)
+			ctx := context.Background()
+
+			bookID, err := q.CreateBook(ctx, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			fileID, err := q.CreateBookFile(ctx, db.CreateBookFileParams{
+				Hash:  "hash-unusable-title",
+				Path:  tc.path,
+				Title: tc.metadataTitle,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
+				BookID:     bookID,
+				BookFileID: fileID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := Consolidate(ctx, conn, q); err != nil {
+				t.Fatal(err)
+			}
+
+			out := filepath.Join(t.TempDir(), "books.json")
+			if err := WriteBooks(ctx, q, out); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reports []BookReport
+			if err := json.Unmarshal(data, &reports); err != nil {
+				t.Fatal(err)
+			}
+			if len(reports) != 1 {
+				t.Fatalf("expected 1 book, got %d", len(reports))
+			}
+			if got := reports[0].Title; got != tc.wantTitle {
+				t.Errorf("book title = %q, want %q", got, tc.wantTitle)
+			}
+			if got := reports[0].Files[0].Title; got != tc.metadataTitle {
+				t.Errorf("file title = %q, want raw metadata title %q", got, tc.metadataTitle)
+			}
+		})
 	}
 }
 

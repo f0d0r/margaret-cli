@@ -10,6 +10,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
 	"github.com/f0d0r/margaret-cli/internal/processor"
 	"github.com/f0d0r/margaret-cli/internal/report"
@@ -105,6 +106,42 @@ func configurePDFTools(cfg *processor.ScanProcessorConfig, dir string) {
 	cfg.PDFTools = tools
 }
 
+// ensureMinHashLength rejects resume runs over databases whose MinHash
+// signatures were produced with a different hash count. Comparing signatures
+// of different lengths yields zero similarity.
+func ensureMinHashLength(ctx context.Context, conn *sql.DB) error {
+	rows, err := conn.QueryContext(ctx,
+		`SELECT DISTINCT length(minhash) FROM book_files WHERE minhash IS NOT NULL`)
+	if err != nil {
+		return fmt.Errorf("check minhash length: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	want := parser.MinHashHashes * 8
+	var mismatched []int
+	for rows.Next() {
+		var got int
+		if err := rows.Scan(&got); err != nil {
+			return fmt.Errorf("check minhash length: %w", err)
+		}
+		if got != want {
+			mismatched = append(mismatched, got)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("check minhash length: %w", err)
+	}
+	if len(mismatched) > 0 {
+		sort.Ints(mismatched)
+		return fmt.Errorf(
+			"database contains MinHash signatures of %v bytes; this build uses %d-byte (%d-value) signatures; run with --fresh",
+			mismatched, want, parser.MinHashHashes)
+	}
+	return nil
+}
+
 func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig) error {
 	start := time.Now()
 
@@ -128,6 +165,11 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 		// history are kept.
 		if err := database.Clear(conn); err != nil {
 			return fmt.Errorf("clear database %q: %w", dbPath, err)
+		}
+	}
+	if mode == modeResume {
+		if err := ensureMinHashLength(ctx, conn); err != nil {
+			return err
 		}
 	}
 	cfg.Resume = mode == modeResume

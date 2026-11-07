@@ -101,7 +101,10 @@ func (p RtfParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return nil
 	})
 	fingerprint, err := tools.FingerprintReader(io.TeeReader(decoder, gate),
-		tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
+		tools.WithMinHash(tools.MinHashConfig{
+			NumHashes:   parser.MinHashHashes,
+			ShingleSize: parser.MinHashShingleSize,
+		}))
 	if err != nil {
 		if errors.Is(err, parser.ErrNotABook) {
 			return parser.Metadata{}, parser.ErrNotABook

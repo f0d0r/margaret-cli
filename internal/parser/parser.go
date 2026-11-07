@@ -8,6 +8,16 @@ import (
 	"github.com/f0d0r/margaret-ebook-library/book"
 )
 
+const (
+	// MinHashHashes is the number of MinHash values stored for each file. LSH
+	// uses the first 25*5 values; the remaining values improve Jaccard
+	// verification.
+	MinHashHashes = 512
+
+	// MinHashShingleSize is the number of words per shingle.
+	MinHashShingleSize = 5
+)
+
 // Metadata holds the metadata extracted from an ebook file.
 type Metadata struct {
 	Authors     []string

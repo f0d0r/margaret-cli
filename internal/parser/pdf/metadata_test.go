@@ -168,6 +168,24 @@ func TestIdentifiersFromTexts(t *testing.T) {
 	}
 }
 
+func TestIdentifiersFromTextsDropsPlaceholderISBN(t *testing.T) {
+	ids := identifiersFromTexts([]string{
+		"ISBN 978-0-000000-00-2 and doi:10.1234/Example",
+	})
+	if len(ids) != 1 {
+		t.Fatalf("identifiers = %v, want only a DOI", ids)
+	}
+	if ids[0].Scheme != "DOI" || ids[0].Value != "10.1234/example" {
+		t.Errorf("identifier = %+v", ids[0])
+	}
+}
+
+func TestIsISBNSubjectRecognizesPlaceholder(t *testing.T) {
+	if !isISBNSubject("978-0-000000-00-2") {
+		t.Error("placeholder ISBN should still be recognized as an ISBN subject")
+	}
+}
+
 func TestCleanReader(t *testing.T) {
 	reader := &cleanReader{reader: strings.NewReader("A\x00B\fC\n")}
 	got := make([]byte, 16)

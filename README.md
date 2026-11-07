@@ -116,7 +116,7 @@ validated by language identification), takes a title and authors from a header
 block at the start of the text (`Title:`, `Author:`, `Authors:`, legacy
 `TI:`/`AU:` header keys, YAML front matter or a Project Gutenberg preamble) or
 from Calibre's title-page layout, and extracts at most one validated ISBN from
-the first 64 KiB. The whole decoded text feeds the same 128-hash MinHash
+the first 64 KiB. The whole decoded text feeds the same 512-hash MinHash
 fingerprint as the other formats; the content hash, the decoded head and the
 fingerprint come from a single pass over the file. RTF books are decoded to
 plain text the same way: the `\info` block supplies the title, authors,
@@ -536,12 +536,14 @@ Exact duplicates never get a book of their own.
 
 ### Near-duplicate grouping
 
-Every other file carries a 128-number MinHash content fingerprint. During
+Every other file carries a 512-number MinHash content fingerprint. During
 the scan each new file is grouped as follows:
 
-1. Its MinHash signature is split into 25 bands of 5 numbers (LSH banding).
-   Files sharing at least one band hash become candidates.
-2. Candidates are verified with exact Jaccard similarity in Go.
+1. The first 125 values of its MinHash signature are split into 25 bands of 5
+   numbers (LSH banding). Files sharing at least one band hash become
+   candidates.
+2. Candidates are verified with Jaccard similarity estimated from the full
+   512-value signature in Go.
 3. At Jaccard ≥ 75% the file joins the best-matching candidate's book
    (greedy best match, no transitive merging of books); otherwise a new
    book is created.
@@ -690,6 +692,9 @@ margaret report --db /tmp/test.db --books-out /tmp/books.json
 `report` reads the consolidated book-level metadata but does not recompute
 it; the values come from the last successful scan. Databases created before
 the metadata columns existed need a fresh scan (`--fresh`) to populate them.
+Databases containing 128-value MinHash signatures from older versions also
+need a fresh scan; `--resume` refuses them because the signature length no
+longer matches the 512-value format.
 
 `failures.json` cannot be regenerated: failures are produced during the scan
 and are not stored in the database. Against an empty or missing database the

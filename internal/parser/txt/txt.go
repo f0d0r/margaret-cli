@@ -102,7 +102,10 @@ func (p TxtParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	})
 	fingerprint, err := tools.FingerprintReader(
 		io.TeeReader(transform.NewReader(raw, enc.enc.NewDecoder()), gate),
-		tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
+		tools.WithMinHash(tools.MinHashConfig{
+			NumHashes:   parser.MinHashHashes,
+			ShingleSize: parser.MinHashShingleSize,
+		}))
 	if err != nil {
 		for _, target := range []error{ErrEmptyText, ErrBinaryText, parser.ErrNotABook} {
 			if errors.Is(err, target) {

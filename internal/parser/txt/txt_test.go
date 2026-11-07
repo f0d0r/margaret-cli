@@ -31,7 +31,10 @@ func sha256Hex(data []byte) string {
 
 func minHashOf(t *testing.T, text string) []uint64 {
 	t.Helper()
-	fp, err := tools.FingerprintText(text, tools.WithMinHash(tools.MinHashConfig{NumHashes: 128, ShingleSize: 5}))
+	fp, err := tools.FingerprintText(text, tools.WithMinHash(tools.MinHashConfig{
+		NumHashes:   parser.MinHashHashes,
+		ShingleSize: parser.MinHashShingleSize,
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +65,18 @@ func TestParseLabeledHeader(t *testing.T) {
 	}
 	if want := minHashOf(t, text); !slices.Equal(md.MinHash, want) {
 		t.Errorf("minhash differs from FingerprintText")
+	}
+}
+
+func TestParseIgnoresPlaceholderISBN(t *testing.T) {
+	text := "Title: Placeholder Test\nAuthor: Jane Doe\n\nISBN 978-0-000000-00-2\n\nISBN 978-3-16-148410-0\n\nThe body begins here and continues for a while.\n"
+	md, err := parseText(t, context.Background(), []byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := []identifier.Identifier{{Scheme: "ISBN", Value: "9783161484100", Source: identifier.SourceText}}
+	if !slices.Equal(md.Identifiers, wantIDs) {
+		t.Errorf("identifiers = %v, want %v", md.Identifiers, wantIDs)
 	}
 }
 

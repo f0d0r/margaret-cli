@@ -13,6 +13,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-cli/internal/processor"
 )
 
@@ -341,6 +342,39 @@ func TestPromptScanModeRejectsGarbage(t *testing.T) {
 }
 
 func q2(conn *sql.DB) *db.Queries { return db.New(conn) }
+
+func TestEnsureMinHashLength(t *testing.T) {
+	conn, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	ctx := context.Background()
+	oldBlob := make([]byte, 128*8)
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO book_files (hash, path, minhash) VALUES (?, ?, ?)`,
+		"old-hash", "old-path", oldBlob,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureMinHashLength(ctx, conn); err == nil {
+		t.Fatal("expected an error for 128-value signatures")
+	}
+
+	newBlob := make([]byte, parser.MinHashHashes*8)
+	if _, err := conn.ExecContext(ctx,
+		`UPDATE book_files SET minhash = ? WHERE hash = ?`,
+		newBlob, "old-hash",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureMinHashLength(ctx, conn); err != nil {
+		t.Fatalf("expected no error for %d-value signatures: %v", parser.MinHashHashes, err)
+	}
+}
 
 func TestRunScanResumeDoesNotRefailDuplicates(t *testing.T) {
 	booksDir, _, failures := fileScanSetup(t, false, false, false)

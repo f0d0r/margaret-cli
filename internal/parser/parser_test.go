@@ -33,7 +33,7 @@ const opfXML = `<?xml version="1.0" encoding="UTF-8"?>
     <dc:subject>Fiction</dc:subject>
     <dc:subject>Adventure</dc:subject>
     <dc:language>en</dc:language>
-    <dc:identifier scheme="ISBN">9780000000000</dc:identifier>
+    <dc:identifier scheme="ISBN">9780306406157</dc:identifier>
     <dc:publisher>Test Press</dc:publisher>
     <dc:date>2020-01-02</dc:date>
     <meta name="calibre:series" content="Test Series"/>
@@ -94,6 +94,21 @@ const opfInvalidISBN = `<?xml version="1.0" encoding="UTF-8"?>
     <dc:title>Text ISBN Book</dc:title>
     <dc:language>en</dc:language>
     <dc:identifier scheme="ISBN">9780000000000</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="c1"/>
+  </spine>
+</package>`
+
+const opfPlaceholderISBN = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Text ISBN Book</dc:title>
+    <dc:language>en</dc:language>
+    <dc:identifier scheme="ISBN">9780000000002</dc:identifier>
   </metadata>
   <manifest>
     <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
@@ -298,7 +313,24 @@ func TestEbookParserScansTextWhenMetadataISBNIsInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []identifier.Identifier{
-		{Scheme: "ISBN", Value: "9780000000000", Source: identifier.SourceMetadata},
+		{Scheme: "ISBN", Value: "9780306406157", Source: identifier.SourceText},
+	}
+	if !slices.Equal(md.Identifiers, want) {
+		t.Errorf("identifiers = %v, want %v", md.Identifiers, want)
+	}
+}
+
+func TestEbookParserDropsPlaceholderMetadataISBN(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "book.epub")
+	writeEPUBWithPages(t, path, opfPlaceholderISBN, []epubPage{
+		{"OEBPS/c1.xhtml", xhtmlPage("<p>ISBN 978-0-306-40615-7</p>")},
+	})
+
+	md, err := EbookParser{}.Parse(context.Background(), book.NewPathBlob(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []identifier.Identifier{
 		{Scheme: "ISBN", Value: "9780306406157", Source: identifier.SourceText},
 	}
 	if !slices.Equal(md.Identifiers, want) {
@@ -317,7 +349,11 @@ func TestFingerprintBookMatchesFingerprintContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := tools.FingerprintContent(context.Background(), bk)
+	want, err := tools.FingerprintContent(context.Background(), bk,
+		tools.WithMinHash(tools.MinHashConfig{
+			NumHashes:   MinHashHashes,
+			ShingleSize: MinHashShingleSize,
+		}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +389,7 @@ func TestEbookParser(t *testing.T) {
 	if want := []string{"en"}; !slices.Equal(md.Languages, want) {
 		t.Errorf("expected languages %v, got %v", want, md.Languages)
 	}
-	if want := []identifier.Identifier{{Scheme: "ISBN", Value: "9780000000000", Source: identifier.SourceMetadata}}; !slices.Equal(md.Identifiers, want) {
+	if want := []identifier.Identifier{{Scheme: "ISBN", Value: "9780306406157", Source: identifier.SourceMetadata}}; !slices.Equal(md.Identifiers, want) {
 		t.Errorf("expected identifiers %v, got %v", want, md.Identifiers)
 	}
 	if md.Publisher != "Test Press" {

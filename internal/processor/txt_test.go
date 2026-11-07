@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
+	"github.com/f0d0r/margaret-cli/internal/parser"
 )
 
 // TestProcessTxt pins the end-to-end handling of plain-text books: the txt
@@ -137,8 +138,8 @@ func TestProcessTxt(t *testing.T) {
 		if r.File.Format != "txt" {
 			t.Errorf("%s: format = %q, want %q", r.File.Path, r.File.Format, "txt")
 		}
-		if len(r.Metadata.MinHash) != 128 {
-			t.Errorf("%s: minhash has %d hashes, want 128", r.File.Path, len(r.Metadata.MinHash))
+		if len(r.Metadata.MinHash) != parser.MinHashHashes {
+			t.Errorf("%s: minhash has %d hashes, want %d", r.File.Path, len(r.Metadata.MinHash), parser.MinHashHashes)
 		}
 		if r.Metadata.Hash == "" {
 			t.Errorf("%s: empty hash", r.File.Path)

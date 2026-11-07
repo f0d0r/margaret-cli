@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/lsh"
 	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
@@ -540,15 +541,27 @@ func storeBookFileMetadata(ctx context.Context, q *db.Queries, bookFileID int64,
 			return fmt.Errorf("store language %q: %w", name, err)
 		}
 	}
-	for i, identifier := range md.Identifiers {
+	for i, item := range md.Identifiers {
+		scheme, value := item.Scheme, item.Value
+		if identifier.IsISBNScheme(scheme) {
+			isbn, ok := tools.ValidateBookISBN(value)
+			if !ok {
+				continue
+			}
+			isbn13, ok := isbn.ToISBN13()
+			if !ok {
+				continue
+			}
+			scheme, value = "ISBN", isbn13.String()
+		}
 		if err := q.CreateBookFileIdentifier(ctx, db.CreateBookFileIdentifierParams{
 			BookFileID: bookFileID,
-			Scheme:     identifier.Scheme,
-			Value:      identifier.Value,
-			Source:     string(identifier.Source),
+			Scheme:     scheme,
+			Value:      value,
+			Source:     string(item.Source),
 			Ordinal:    int64(i),
 		}); err != nil {
-			return fmt.Errorf("store identifier %s:%s: %w", identifier.Scheme, identifier.Value, err)
+			return fmt.Errorf("store identifier %s:%s: %w", scheme, value, err)
 		}
 	}
 	return nil

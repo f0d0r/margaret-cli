@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/f0d0r/margaret-cli/internal/parser"
 )
 
 func TestProcessRTF(t *testing.T) {
@@ -49,8 +51,8 @@ func TestProcessRTF(t *testing.T) {
 	if len(r.Metadata.Authors) != 1 || r.Metadata.Authors[0] != "Jane Doe" {
 		t.Errorf("authors = %v, want [Jane Doe]", r.Metadata.Authors)
 	}
-	if len(r.Metadata.MinHash) != 128 {
-		t.Errorf("minhash has %d hashes, want 128", len(r.Metadata.MinHash))
+	if len(r.Metadata.MinHash) != parser.MinHashHashes {
+		t.Errorf("minhash has %d hashes, want %d", len(r.Metadata.MinHash), parser.MinHashHashes)
 	}
 	if r.Metadata.Hash == "" {
 		t.Error("empty hash")
