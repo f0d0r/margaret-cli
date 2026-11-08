@@ -124,6 +124,7 @@ func TestRunEnrichStatus(t *testing.T) {
 		"books with ISBN: 1 (50%)",
 		"distinct ISBNs: 1",
 		"books without ISBN: 1",
+		"matching cache: 2 books (2 with title, 1 with ISBN, 0 with authors)",
 		"OpenLibrary dump search:",
 		"[ok]",
 		"Selected: " + dumpDir,

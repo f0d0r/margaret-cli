@@ -4,6 +4,20 @@ INSERT INTO books (title) VALUES (?) RETURNING id;
 -- name: CountBooks :one
 SELECT count(*) FROM books;
 
+-- name: ListBooksForMatching :many
+SELECT id, title FROM books ORDER BY id;
+
+-- name: ListBookAuthorsForMatching :many
+SELECT ba.book_id, a.name
+FROM book_authors ba
+JOIN authors a ON a.id = ba.author_id
+ORDER BY ba.book_id, a.name;
+
+-- name: ListBookIdentifiersForMatching :many
+SELECT book_id, scheme, value, source
+FROM book_identifiers
+ORDER BY book_id, ordinal;
+
 -- name: CountBooksWithISBN :one
 SELECT
     CAST(count(DISTINCT book_id) AS INTEGER) AS books,

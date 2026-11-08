@@ -11,6 +11,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/matcher"
 	"github.com/f0d0r/margaret-cli/internal/openlibrary"
 	"github.com/spf13/cobra"
 )
@@ -267,7 +268,15 @@ func printScanDatabaseStatus(ctx context.Context) error {
 	fmt.Printf("  books without ISBN: %d\n", books-isbn.Books)
 	if books == 0 {
 		fmt.Println(`  no scanned data (run "margaret scan <path>" first)`)
+		return nil
 	}
+
+	cache, err := matcher.Build(ctx, queries, matcher.Options{})
+	if err != nil {
+		return fmt.Errorf("build matching cache: %w", err)
+	}
+	fmt.Printf("  matching cache: %d books (%d with title, %d with ISBN, %d with authors)\n",
+		cache.Stats.Books, cache.Stats.WithTitle, cache.Stats.WithISBN, cache.Stats.WithAuthors)
 	return nil
 }
 

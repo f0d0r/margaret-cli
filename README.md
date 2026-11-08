@@ -749,12 +749,15 @@ If several directories hold a valid dump, the newest one wins. A combined
 `ol_dump_latest.txt.gz` dump is also accepted and satisfies all three
 families.
 
-Use `--status` to see the resolved paths and the ISBN coverage of the scan
-database:
+Use `--status` to see the resolved paths, the ISBN coverage of the scan
+database and a summary of the in-memory matching cache:
 
 ```sh
 margaret enrich --status
 ```
+
+The cache summary counts the books that have a usable title, ISBN or author.
+Books without any of these will end up as `no_data` when matching runs.
 
 Use `--download` to fetch missing dumps. Without it, an interactive terminal
 is asked whether to download when no dump is found; scripts fail with an
