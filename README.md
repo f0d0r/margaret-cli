@@ -709,10 +709,79 @@ Root-level commands:
 - `report` — regenerate JSON reports from the database.
 - `search` — search books and authors in the database (see
   [Searching](#searching)).
+- `enrich` — prepare local OpenLibrary dump data (see
+  [OpenLibrary data](#openlibrary-data)).
 - `help` — show help for any command.
 - `completion` — generate shell autocompletion scripts.
 
 Run `margaret --help` or `margaret scan --help` for details.
+
+---
+
+## OpenLibrary data
+
+`margaret enrich` prepares the local OpenLibrary bulk data dumps that are
+used to enrich scanned book metadata. The dumps are read from disk; no
+OpenLibrary web API calls are made.
+
+The dumps are published monthly on the
+[OpenLibrary dumps page](https://openlibrary.org/developers/dumps) as
+gzipped TSV. The three families used by Margaret are:
+
+| Dump | Approx. compressed size |
+| --- | --- |
+| editions | ~9.2 GB |
+| works | ~2.9 GB |
+| authors | ~0.5 GB |
+
+Check the dump page for the current license and attribution requirements.
+
+`enrich` searches for the dump in this order:
+
+1. `--openlibrary-dir DIR`
+2. `MARGARET_OPENLIBRARY_DIR`
+3. `./data/openlibrary`
+4. `$XDG_DATA_HOME/margaret/openlibrary` (default
+   `~/.local/share/margaret/openlibrary`)
+5. `data/openlibrary` next to the executable
+
+If several directories hold a valid dump, the newest one wins. A combined
+`ol_dump_latest.txt.gz` dump is also accepted and satisfies all three
+families.
+
+Use `--status` to see the resolved paths and the ISBN coverage of the scan
+database:
+
+```sh
+margaret enrich --status
+```
+
+Use `--download` to fetch missing dumps. Without it, an interactive terminal
+is asked whether to download when no dump is found; scripts fail with an
+error instead of downloading implicitly.
+
+```sh
+margaret enrich --download
+margaret enrich --openlibrary-dir /mnt/dumps/openlibrary
+```
+
+Downloads are resumable: an interrupted transfer is kept as a `.part` file
+and continued from where it stopped. Existing valid dumps are skipped.
+
+The metadata matching pass is not implemented yet. For now `enrich` prepares
+and validates the local dump data; the same command will run the ISBN match
+against `margaret.db` in a follow-up.
+
+### `enrich` flags
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--db` | `string` | `margaret.db` | SQLite database file to read. |
+| `--openlibrary-dir` | `string` | `""` | Directory containing the dump files. |
+| `--download` | `bool` | `false` | Download missing dumps before enriching. |
+| `--status` | `bool` | `false` | Show resolved dump files and scan database statistics, then exit. |
+
+---
 
 ## Regenerating reports
 

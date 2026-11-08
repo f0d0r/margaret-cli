@@ -4,6 +4,20 @@ INSERT INTO books (title) VALUES (?) RETURNING id;
 -- name: CountBooks :one
 SELECT count(*) FROM books;
 
+-- name: CountBooksWithISBN :one
+SELECT
+    CAST(count(DISTINCT book_id) AS INTEGER) AS books,
+    CAST(count(DISTINCT value) AS INTEGER) AS isbns
+FROM (
+    SELECT book_id, value FROM book_identifiers
+    WHERE upper(scheme) IN ('ISBN', 'ISBN-10', 'ISBN-13')
+    UNION
+    SELECT bbf.book_id AS book_id, bfi.value AS value
+    FROM book_file_identifiers bfi
+    JOIN book_book_files bbf ON bbf.book_file_id = bfi.book_file_id
+    WHERE upper(bfi.scheme) IN ('ISBN', 'ISBN-10', 'ISBN-13')
+);
+
 -- name: UpdateBookMetadata :exec
 UPDATE books
 SET title = ?,
