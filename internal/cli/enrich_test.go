@@ -100,14 +100,18 @@ func createScannedDB(t *testing.T, path string) {
 func withEnrichFlags(t *testing.T, databasePath, dumpDir string, download, status, force bool) {
 	t.Helper()
 	oldDB, oldDir, oldDownload, oldStatus, oldForce := dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag
+	oldEnriched, oldReview := enrichEnrichedOut, enrichReviewOut
 	dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag = databasePath, dumpDir, download, status, force
+	enrichEnrichedOut = filepath.Join(t.TempDir(), "books_enriched.json")
+	enrichReviewOut = filepath.Join(t.TempDir(), "review.json")
 	t.Cleanup(func() {
 		dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag = oldDB, oldDir, oldDownload, oldStatus, oldForce
+		enrichEnrichedOut, enrichReviewOut = oldEnriched, oldReview
 	})
 }
 
 func TestEnrichFlags(t *testing.T) {
-	for _, name := range []string{"db", "openlibrary-dir", "download", "status", "force"} {
+	for _, name := range []string{"db", "openlibrary-dir", "download", "status", "force", "enriched-out", "review-out"} {
 		if enrichCmd.Flags().Lookup(name) == nil {
 			t.Fatalf("enrich flag %q is not registered", name)
 		}
@@ -344,6 +348,10 @@ func TestRunEnrichMatchesAndPersists(t *testing.T) {
 			`{"key":"/works/OL1W","title":"One","subjects":["Fiction"],"first_publish_date":"2000"}`+"\n")
 
 	withEnrichFlags(t, dbFile, dumpDir, false, false, false)
+	enrichedPath := filepath.Join(t.TempDir(), "books_enriched.json")
+	reviewPath := filepath.Join(t.TempDir(), "review.json")
+	enrichEnrichedOut = enrichedPath
+	enrichReviewOut = reviewPath
 
 	var runErr error
 	output := captureStdout(t, func() {
@@ -399,6 +407,17 @@ func TestRunEnrichMatchesAndPersists(t *testing.T) {
 	}
 	if status != "not_found" {
 		t.Fatalf("book 2 match_status = %q", status)
+	}
+
+	if _, err := os.Stat(enrichedPath); err != nil {
+		t.Fatalf("enriched report: %v", err)
+	}
+	reviewData, err := os.ReadFile(reviewPath)
+	if err != nil {
+		t.Fatalf("review report: %v", err)
+	}
+	if !strings.Contains(string(reviewData), `"not_found"`) {
+		t.Fatalf("review report does not contain not_found category:\n%s", reviewData)
 	}
 }
 

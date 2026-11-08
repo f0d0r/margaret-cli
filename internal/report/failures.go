@@ -3,7 +3,6 @@ package report
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/f0d0r/margaret-cli/internal/processor"
 )
@@ -24,7 +23,7 @@ func WriteFailures(failures []processor.Failure, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := writeFile(path, data); err != nil {
 		return fmt.Errorf("write failure report: %w", err)
 	}
 	return nil

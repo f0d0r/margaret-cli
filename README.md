@@ -177,14 +177,14 @@ without hints still works.
 | `--pdf-tools-dir` | `string` | `""` | Directory containing Poppler's `pdftotext` and `pdfinfo` (default: search `PATH`). |
 | `--ftp-user` | `string` | `anonymous` | FTP username for `ftp://` scans. |
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
-| `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
-| `--skipped-out` | `string` | `skipped.json` | Path to write a JSON report of the skipped items. |
-| `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
-| `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
+| `--failures-out` | `string` | `reports/failures.json` | Path to write a JSON report of the failed items. |
+| `--skipped-out` | `string` | `reports/skipped.json` | Path to write a JSON report of the skipped items. |
+| `--duplicates-out` | `string` | `reports/duplicates.json` | Path to write a JSON report of the duplicate books. |
+| `--books-out` | `string` | `reports/books.json` | Path to write a JSON report of the grouped books. |
 | `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures and skipped reports are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
 | `--json` | `bool` | `false` | Write search results in JSON format (search only). |
-| `--json-out` | `string` | `search.json` | Path to write the JSON search results (search only). |
+| `--json-out` | `string` | `reports/search.json` | Path to write the JSON search results (search only). |
 | `--author` | `bool` | `false` | Search authors instead of both titles and authors (search only). |
 | `--title` | `bool` | `false` | Search titles instead of both titles and authors (search only). |
 | `--limit` | `int` | `0` | Limit the number of search results (`0` = unlimited, search only). |
@@ -264,12 +264,12 @@ standard `PATH`.
 ### `--failures-out`
 
 The path where the JSON report of failed items is written. Defaults to
-`failures.json` in the current directory.
+`reports/failures.json`.
 
 ### `--skipped-out`
 
 The path where the JSON report of skipped items is written. Defaults to
-`skipped.json` in the current directory. It lists the files that were passed
+`reports/skipped.json`. It lists the files that were passed
 over without being parsed because they are not books, are below
 `--min-doc-size`, or cannot be processed (for example PDFs while Poppler is
 unavailable). Files skipped by a resume run because they were already
@@ -279,7 +279,7 @@ They are counted separately as already processed.
 ### `--duplicates-out`
 
 The path where the JSON report of duplicate books is written. Defaults to
-`duplicates.json` in the current directory. Each entry lists the original book
+`reports/duplicates.json`. Each entry lists the original book
 (`authors`, `title`, `path`) and every other path that holds the same content
 (`duplicates`). When no duplicates are found the file is not created. Only
 written when `--report` is set.
@@ -287,7 +287,7 @@ written when `--report` is set.
 ### `--books-out`
 
 The path where the JSON report of the grouped books is written. Defaults to
-`books.json` in the current directory. See
+`reports/books.json`. See
 [How books are grouped and described](#how-books-are-grouped-and-described).
 When no books were found the file is not created. Only written when
 `--report` is set.
@@ -793,16 +793,40 @@ reprocesses every book.
 | `--download` | `bool` | `false` | Download missing dumps before enriching. |
 | `--status` | `bool` | `false` | Show resolved dump files, scan statistics and match status counts, then exit. |
 | `--force` | `bool` | `false` | Reprocess every book even when a stored match is current. |
+| `--enriched-out` | `string` | `reports/books_enriched.json` | Write a JSON report of confirmed enriched books. |
+| `--review-out` | `string` | `reports/review.json` | Write a JSON report of books needing review. |
 
 ---
+
+## Reports
+
+Generated JSON reports are written under `reports/` by default, relative to
+the current directory. The parent directory is created automatically. Passing
+an explicit `--*-out` path writes there instead.
+
+| Report | Default path |
+| --- | --- |
+| failures | `reports/failures.json` |
+| skipped | `reports/skipped.json` |
+| duplicates | `reports/duplicates.json` |
+| grouped books | `reports/books.json` |
+| confirmed enriched books | `reports/books_enriched.json` |
+| books needing review | `reports/review.json` |
+| search hits | `reports/search.json` |
+
+`books_enriched.json` contains only confirmed matches and their match
+metadata. `review.json` groups the uncertain books into separate arrays:
+`probable`, `ambiguous`, `needs_review`, `not_found` and `no_data`. Empty
+categories are written as `[]`; when no book needs review, the file is not
+created.
 
 ## Regenerating reports
 
 `scan` writes the `books.json` / `duplicates.json` reports only with
 `--report`, but the database always holds the full data. `report` regenerates
-both files from an existing database without scanning — after a report-less
-scan, when the JSON files were deleted, or when they are wanted at different
-paths:
+the book, duplicate, enriched and review reports from an existing database
+without scanning — after a report-less scan, when the JSON files were
+deleted, or when they are wanted at different paths:
 
 ```sh
 margaret report
@@ -853,7 +877,7 @@ alone finds nothing.
 The human-readable table (authors, title, file paths) goes to **stdout**.
 With `--json` the hits are written in the `books.json` shape (same entries,
 restricted to the hits in relevance order) to `--json-out` (default
-`search.json` in the current directory):
+`reports/search.json`):
 
 ```sh
 margaret search "Asimov" --json --json-out /tmp/hits.json

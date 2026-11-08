@@ -6,6 +6,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/report"
 	"github.com/f0d0r/margaret-cli/internal/search"
 	"github.com/spf13/cobra"
 )
@@ -37,7 +38,7 @@ func init() {
 	searchCmd.Flags().BoolVar(&title, "title", false, "Search for titles")
 	searchCmd.Flags().IntVar(&limit, "limit", 0, "Limit the number of results (0 = unlimited)")
 	searchCmd.Flags().BoolVar(&jsonFlag, "json", false, "Write results in JSON format")
-	searchCmd.Flags().StringVar(&jsonOut, "json-out", "search.json", "write the JSON results to this file")
+	searchCmd.Flags().StringVar(&jsonOut, "json-out", report.DefaultPath("search.json"), "write the JSON results to this file")
 	rootCmd.AddCommand(searchCmd)
 }
 

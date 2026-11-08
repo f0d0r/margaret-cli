@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
@@ -224,7 +223,7 @@ func WriteBooks(ctx context.Context, q *db.Queries, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := writeFile(path, data); err != nil {
 		return fmt.Errorf("write books report: %w", err)
 	}
 	return nil
@@ -458,7 +457,7 @@ func WriteBooksFiltered(ctx context.Context, q *db.Queries, ids []int64, path st
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := writeFile(path, data); err != nil {
 		return fmt.Errorf("write books report: %w", err)
 	}
 	return nil

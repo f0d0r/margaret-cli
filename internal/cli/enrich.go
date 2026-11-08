@@ -13,6 +13,7 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/matcher"
 	"github.com/f0d0r/margaret-cli/internal/openlibrary"
+	"github.com/f0d0r/margaret-cli/internal/report"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,8 @@ var (
 	enrichDownloadFlag   bool
 	enrichStatusFlag     bool
 	enrichForceFlag      bool
+	enrichEnrichedOut    string
+	enrichReviewOut      string
 )
 
 // enrichCmd prepares the local OpenLibrary dumps used for metadata
@@ -53,6 +56,8 @@ func init() {
 	enrichCmd.Flags().BoolVar(&enrichDownloadFlag, "download", false, "download missing OpenLibrary dumps before enriching")
 	enrichCmd.Flags().BoolVar(&enrichStatusFlag, "status", false, "show the resolved dump files and scan database statistics, then exit")
 	enrichCmd.Flags().BoolVar(&enrichForceFlag, "force", false, "reprocess every book even when a stored match is current")
+	enrichCmd.Flags().StringVar(&enrichEnrichedOut, "enriched-out", report.DefaultPath("books_enriched.json"), "write a JSON report of confirmed enriched books to this file")
+	enrichCmd.Flags().StringVar(&enrichReviewOut, "review-out", report.DefaultPath("review.json"), "write a JSON report of books needing review to this file")
 	rootCmd.AddCommand(enrichCmd)
 }
 
@@ -116,6 +121,9 @@ func runEnrich(ctx context.Context) error {
 	}
 	if cache.Stats.Books == 0 {
 		fmt.Println("No books need matching.")
+		if err := writeEnrichmentReports(ctx, q); err != nil {
+			return err
+		}
 		return printMatchStatusCounts(ctx, q)
 	}
 
@@ -141,7 +149,20 @@ func runEnrich(ctx context.Context) error {
 	}, matcher.PersistOptions{}); err != nil {
 		return err
 	}
+	if err := writeEnrichmentReports(ctx, q); err != nil {
+		return err
+	}
 	printMatchStats(ranked.Stats)
+	return nil
+}
+
+func writeEnrichmentReports(ctx context.Context, q *db.Queries) error {
+	if err := report.WriteEnrichedBooks(ctx, q, enrichEnrichedOut); err != nil {
+		return err
+	}
+	if err := report.WriteReview(ctx, q, enrichReviewOut); err != nil {
+		return err
+	}
 	return nil
 }
 

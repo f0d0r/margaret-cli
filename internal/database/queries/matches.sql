@@ -83,3 +83,29 @@ SELECT * FROM book_match_candidates WHERE book_id = ? ORDER BY rank;
 
 -- name: CountBooksByMatchStatus :many
 SELECT match_status AS status, count(*) AS count FROM books GROUP BY match_status;
+
+-- name: ListBookMatchesForReview :many
+SELECT * FROM book_matches
+WHERE status IN ('probable', 'ambiguous', 'needs_review', 'not_found', 'no_data')
+ORDER BY
+    CASE status
+        WHEN 'probable' THEN 0
+        WHEN 'ambiguous' THEN 1
+        WHEN 'needs_review' THEN 2
+        WHEN 'not_found' THEN 3
+        ELSE 4
+    END,
+    confidence DESC,
+    book_id;
+
+-- name: ListBookMatchCandidatesForReview :many
+SELECT c.*
+FROM book_match_candidates c
+JOIN book_matches m ON m.book_id = c.book_id
+WHERE m.status IN ('probable', 'ambiguous', 'needs_review', 'not_found', 'no_data')
+ORDER BY c.book_id, c.rank;
+
+-- name: ListConfirmedBookMatches :many
+SELECT * FROM book_matches
+WHERE status = 'confirmed'
+ORDER BY book_id;
