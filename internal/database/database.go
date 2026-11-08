@@ -84,7 +84,46 @@ func Open(dataSource string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureEnrichmentSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func ensureEnrichmentSchema(db *sql.DB) error {
+	columns, err := tableColumns(db, "book_enrichment")
+	if err != nil {
+		return fmt.Errorf("inspect enrichment schema: %w", err)
+	}
+	if len(columns) == 0 || columns["subtitle"] {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE book_enrichment ADD COLUMN subtitle TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("ensure enrichment subtitle: %w", err)
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns[name] = true
+	}
+	return columns, rows.Err()
 }
 
 // ensureConflictSchema is a compatibility shim for databases created before

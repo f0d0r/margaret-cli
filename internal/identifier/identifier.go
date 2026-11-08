@@ -10,6 +10,7 @@ const (
 	SourceMetadata        Source = "METADATA"
 	SourceText            Source = "TEXT"
 	SourceMetadataAndText Source = "METADATA_AND_TEXT"
+	SourceOpenLibrary     Source = "OPENLIBRARY"
 )
 
 // Identifier is a book identifier together with its provenance.

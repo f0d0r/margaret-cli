@@ -100,18 +100,19 @@ func createScannedDB(t *testing.T, path string) {
 func withEnrichFlags(t *testing.T, databasePath, dumpDir string, download, status, force bool) {
 	t.Helper()
 	oldDB, oldDir, oldDownload, oldStatus, oldForce := dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag
-	oldEnriched, oldReview := enrichEnrichedOut, enrichReviewOut
+	oldRefresh, oldEnriched, oldReview := enrichRefreshFlag, enrichEnrichedOut, enrichReviewOut
 	dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag = databasePath, dumpDir, download, status, force
+	enrichRefreshFlag = false
 	enrichEnrichedOut = filepath.Join(t.TempDir(), "books_enriched.json")
 	enrichReviewOut = filepath.Join(t.TempDir(), "review.json")
 	t.Cleanup(func() {
 		dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag = oldDB, oldDir, oldDownload, oldStatus, oldForce
-		enrichEnrichedOut, enrichReviewOut = oldEnriched, oldReview
+		enrichRefreshFlag, enrichEnrichedOut, enrichReviewOut = oldRefresh, oldEnriched, oldReview
 	})
 }
 
 func TestEnrichFlags(t *testing.T) {
-	for _, name := range []string{"db", "openlibrary-dir", "download", "status", "force", "enriched-out", "review-out"} {
+	for _, name := range []string{"db", "openlibrary-dir", "download", "refresh", "status", "force", "enriched-out", "review-out"} {
 		if enrichCmd.Flags().Lookup(name) == nil {
 			t.Fatalf("enrich flag %q is not registered", name)
 		}
@@ -194,6 +195,15 @@ func TestRunEnrichStatusMissingDatabaseDoesNotCreateIt(t *testing.T) {
 
 func TestRunEnrichStatusAndDownloadMutuallyExclusive(t *testing.T) {
 	withEnrichFlags(t, "unused.db", "", true, true, false)
+	err := runEnrich(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("error = %v, want mutually exclusive", err)
+	}
+}
+
+func TestRunEnrichStatusAndRefreshMutuallyExclusive(t *testing.T) {
+	withEnrichFlags(t, "unused.db", "", false, true, false)
+	enrichRefreshFlag = true
 	err := runEnrich(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("error = %v, want mutually exclusive", err)

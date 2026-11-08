@@ -23,12 +23,15 @@ var DefaultURLs = map[Kind]string{
 	KindAuthors:  "https://openlibrary.org/data/ol_dump_authors_latest.txt.gz",
 }
 
-// Downloader fetches missing dump files. Existing valid files are left alone.
+// Downloader fetches missing dump files. Existing valid files are left alone
+// unless Refresh is set, in which case the current remote dumps are resolved
+// again and newer dated files are fetched.
 type Downloader struct {
 	Dir      string
 	URLs     map[Kind]string
 	Client   *http.Client
 	Progress func(kind Kind, done, total int64)
+	Refresh  bool
 }
 
 // DownloadResult describes one dump after Ensure.
@@ -61,14 +64,16 @@ func (d *Downloader) Ensure(ctx context.Context, kinds []Kind) ([]DownloadResult
 	dataset, _ := LoadDataset(d.Dir)
 	results := make([]DownloadResult, 0, len(kinds))
 	for _, kind := range kinds {
-		if file := existingFile(dataset, kind); file != nil {
-			results = append(results, DownloadResult{
-				Kind:    kind,
-				Path:    file.Path,
-				Bytes:   file.Size,
-				Skipped: true,
-			})
-			continue
+		if !d.Refresh {
+			if file := existingFile(dataset, kind); file != nil {
+				results = append(results, DownloadResult{
+					Kind:    kind,
+					Path:    file.Path,
+					Bytes:   file.Size,
+					Skipped: true,
+				})
+				continue
+			}
 		}
 		result, err := d.download(ctx, kind)
 		if err != nil {

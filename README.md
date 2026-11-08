@@ -734,8 +734,6 @@ gzipped TSV. The three families used by Margaret are:
 | works | ~2.9 GB |
 | authors | ~0.5 GB |
 
-Check the dump page for the current license and attribution requirements.
-
 `enrich` searches for the dump in this order:
 
 1. `--openlibrary-dir DIR`
@@ -776,13 +774,37 @@ margaret enrich --openlibrary-dir /mnt/dumps/openlibrary
 Downloads are resumable: an interrupted transfer is kept as a `.part` file
 and continued from where it stopped. Existing valid dumps are skipped.
 
-`enrich` matches the scanned books against the local dump and stores the
-match status, confidence and top candidates in `margaret.db`. Enriched
-OpenLibrary metadata fields (description, subjects, publishers, and so on)
-are not applied yet; those will be merged into the reports in a follow-up.
+The dumps are regenerated monthly. To move to the current month, run:
+
+```sh
+margaret enrich --refresh
+```
+
+`--refresh` re-resolves the rolling dump URLs, downloads the newer dated
+files, reprocesses every book against them, and refreshes the enrichment.
+Old dump files are not deleted automatically; the newest valid file in the
+dump directory is used.
+
+### License and attribution
+
+The OpenLibrary catalog is contributed by libraries and dedicated to the
+public domain. The Internet Archive does not assert new copyright or
+proprietary rights over the database, and contributions are provided under
+the [CC0 1.0 Universal license](https://creativecommons.org/publicdomain/zero/1.0/).
+Individual records may still carry rights in some jurisdictions, so review
+the [OpenLibrary licensing page](https://openlibrary.org/developers/licensing)
+and the dump page before redistributing derived data. Margaret only reads
+the dumps locally; it does not call the OpenLibrary web API.
+
+`enrich` matches the scanned books against the local dump, stores the match
+status, confidence and top candidates in `margaret.db`, applies OpenLibrary
+metadata to confirmed books, and runs a local metadata/content conflict
+check. Enriched values are stored in the separate `book_enrichment_*` tables;
+the raw scan metadata is left untouched. The enrichment pass reads the dump
+again, but only for the selected editions, works and authors.
 
 By default only books without a current match are processed. `--force`
-reprocesses every book.
+reprocesses every book and refreshes the enrichment.
 
 ### `enrich` flags
 
@@ -791,6 +813,7 @@ reprocesses every book.
 | `--db` | `string` | `margaret.db` | SQLite database file to read. |
 | `--openlibrary-dir` | `string` | `""` | Directory containing the dump files. |
 | `--download` | `bool` | `false` | Download missing dumps before enriching. |
+| `--refresh` | `bool` | `false` | Download the current dumps and reprocess every book (implies `--download` and `--force`). |
 | `--status` | `bool` | `false` | Show resolved dump files, scan statistics and match status counts, then exit. |
 | `--force` | `bool` | `false` | Reprocess every book even when a stored match is current. |
 | `--enriched-out` | `string` | `reports/books_enriched.json` | Write a JSON report of confirmed enriched books. |
@@ -814,11 +837,13 @@ an explicit `--*-out` path writes there instead.
 | books needing review | `reports/review.json` |
 | search hits | `reports/search.json` |
 
-`books_enriched.json` contains only confirmed matches and their match
-metadata. `review.json` groups the uncertain books into separate arrays:
-`probable`, `ambiguous`, `needs_review`, `not_found` and `no_data`. Empty
-categories are written as `[]`; when no book needs review, the file is not
-created.
+`books_enriched.json` contains only confirmed matches. Its book fields are
+merged with the OpenLibrary work/edition/author metadata where available, and
+it carries `match`, `enrichment` (source, keys, matcher/dump versions) and
+`author_details` objects for provenance. `review.json` groups the uncertain
+books into separate arrays: `probable`, `ambiguous`, `needs_review`,
+`not_found` and `no_data`. Empty categories are written as `[]`; when no book
+needs review, the file is not created.
 
 `enrich` also runs a local conflict check. Two books with the same normalized
 title and author whose content MinHash Jaccard is below 75% are marked

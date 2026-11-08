@@ -90,6 +90,20 @@ func TestEnsureDownloadsAll(t *testing.T) {
 	if got := requests.Load(); got != before {
 		t.Fatalf("second Ensure made %d requests, want 0", got-before)
 	}
+
+	downloader.Refresh = true
+	results, err = downloader.Ensure(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range results {
+		if !result.Skipped {
+			t.Fatalf("%s was downloaded again during refresh", result.Kind)
+		}
+	}
+	if got := requests.Load(); got <= before {
+		t.Fatalf("refresh made no requests")
+	}
 }
 
 func TestEnsureResumesPartial(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/f0d0r/margaret-cli/internal/conflict"
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/enrich"
 	"github.com/f0d0r/margaret-cli/internal/matcher"
 	"github.com/f0d0r/margaret-cli/internal/openlibrary"
 	"github.com/f0d0r/margaret-cli/internal/report"
@@ -22,6 +23,7 @@ import (
 var (
 	enrichOpenLibraryDir string
 	enrichDownloadFlag   bool
+	enrichRefreshFlag    bool
 	enrichStatusFlag     bool
 	enrichForceFlag      bool
 	enrichEnrichedOut    string
@@ -41,11 +43,13 @@ The dump search checks --openlibrary-dir, MARGARET_OPENLIBRARY_DIR, then
 ./data/openlibrary, the per-user data directory and the directory next to the
 executable. Use --status to see which files would be used. Use --download to
 fetch missing dumps, or accept the interactive prompt when no dump is found.
+Use --refresh to fetch the current monthly dumps and reprocess every book.
 
-The command matches scanned books against the local dump and stores the match
-status, confidence and top candidates. Enriched OpenLibrary metadata fields
-are not applied yet. By default only books without a current match are
-processed; use --force to reprocess every book.`,
+The command matches scanned books against the local dump, stores the match
+status, confidence and top candidates, applies OpenLibrary metadata to
+confirmed books and runs a local metadata/content conflict check. By default
+only books without a current match are processed; use --force to reprocess
+every book.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runEnrich(cmd.Context())
@@ -56,6 +60,7 @@ func init() {
 	enrichCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to read")
 	enrichCmd.Flags().StringVar(&enrichOpenLibraryDir, "openlibrary-dir", "", "directory containing the OpenLibrary dump files")
 	enrichCmd.Flags().BoolVar(&enrichDownloadFlag, "download", false, "download missing OpenLibrary dumps before enriching")
+	enrichCmd.Flags().BoolVar(&enrichRefreshFlag, "refresh", false, "download the current OpenLibrary dumps and reprocess every book (implies --download and --force)")
 	enrichCmd.Flags().BoolVar(&enrichStatusFlag, "status", false, "show the resolved dump files and scan database statistics, then exit")
 	enrichCmd.Flags().BoolVar(&enrichForceFlag, "force", false, "reprocess every book even when a stored match is current")
 	enrichCmd.Flags().StringVar(&enrichEnrichedOut, "enriched-out", report.DefaultPath("books_enriched.json"), "write a JSON report of confirmed enriched books to this file")
@@ -70,8 +75,8 @@ var newOpenLibraryDownloader = func(dir string) *openlibrary.Downloader {
 }
 
 func runEnrich(ctx context.Context) error {
-	if enrichStatusFlag && enrichDownloadFlag {
-		return errors.New("--status and --download are mutually exclusive")
+	if enrichStatusFlag && (enrichDownloadFlag || enrichRefreshFlag) {
+		return errors.New("--status, --download and --refresh are mutually exclusive")
 	}
 	if enrichStatusFlag {
 		return runEnrichStatus(ctx)
@@ -92,7 +97,7 @@ func runEnrich(ctx context.Context) error {
 		return err
 	}
 	if !ready {
-		if enrichDownloadFlag {
+		if enrichDownloadFlag || enrichRefreshFlag {
 			fmt.Println("OpenLibrary data ready.")
 			return nil
 		}
@@ -114,7 +119,7 @@ func runEnrich(ctx context.Context) error {
 	matcherVersion := matcher.Version
 	dumpVersion := matcher.DatasetVersion(dataset)
 	cache, err := matcher.Build(ctx, q, matcher.Options{
-		Pending:        !enrichForceFlag,
+		Pending:        !enrichForceFlag && !enrichRefreshFlag,
 		MatcherVersion: matcherVersion,
 		DumpVersion:    dumpVersion,
 	})
@@ -124,6 +129,9 @@ func runEnrich(ctx context.Context) error {
 	if cache.Stats.Books == 0 {
 		fmt.Println("No books need matching.")
 		if err := runConflictDetection(ctx, conn, q); err != nil {
+			return err
+		}
+		if err := runEnrichment(ctx, dataset, conn, q, matcherVersion, dumpVersion); err != nil {
 			return err
 		}
 		if err := writeEnrichmentReports(ctx, q); err != nil {
@@ -157,10 +165,28 @@ func runEnrich(ctx context.Context) error {
 	if err := runConflictDetection(ctx, conn, q); err != nil {
 		return err
 	}
+	if err := runEnrichment(ctx, dataset, conn, q, matcherVersion, dumpVersion); err != nil {
+		return err
+	}
 	if err := writeEnrichmentReports(ctx, q); err != nil {
 		return err
 	}
 	return printMatchStatusCounts(ctx, q)
+}
+
+func runEnrichment(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *db.Queries, matcherVersion, dumpVersion string) error {
+	result, err := enrich.Enrich(ctx, dataset, conn, q, enrich.Options{
+		MatcherVersion: matcherVersion,
+		DumpVersion:    dumpVersion,
+		Force:          enrichForceFlag || enrichRefreshFlag,
+	})
+	if err != nil {
+		return fmt.Errorf("enrich metadata: %w", err)
+	}
+	if result.Targets > 0 {
+		fmt.Printf("Enriched %d/%d book(s)\n", result.Enriched, result.Targets)
+	}
+	return nil
 }
 
 func runConflictDetection(ctx context.Context, conn *sql.DB, q *db.Queries) error {
@@ -192,7 +218,7 @@ func resolveOrDownloadDataset(ctx context.Context) (*openlibrary.Dataset, error)
 		if !errors.As(err, &notFound) {
 			return nil, err
 		}
-		if !enrichDownloadFlag {
+		if !enrichDownloadFlag && !enrichRefreshFlag {
 			dir, dirErr := openlibrary.DownloadDir(enrichOpenLibraryDir)
 			if dirErr != nil {
 				return nil, dirErr
@@ -211,7 +237,7 @@ func resolveOrDownloadDataset(ctx context.Context) (*openlibrary.Dataset, error)
 		}
 	}
 
-	download := enrichDownloadFlag || dataset == nil
+	download := enrichDownloadFlag || enrichRefreshFlag || dataset == nil
 	if download {
 		dir, dirErr := chooseDownloadDir(dataset)
 		if dirErr != nil {
@@ -289,6 +315,7 @@ func chooseDownloadDir(dataset *openlibrary.Dataset) (string, error) {
 func downloadDumps(ctx context.Context, dir string) ([]openlibrary.DownloadResult, error) {
 	downloader := newOpenLibraryDownloader(dir)
 	downloader.Progress = printDownloadProgress
+	downloader.Refresh = enrichRefreshFlag
 	results, err := downloader.Ensure(ctx, nil)
 	fmt.Fprintln(os.Stderr)
 	return results, err

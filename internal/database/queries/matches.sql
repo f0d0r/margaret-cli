@@ -170,3 +170,150 @@ FROM book_conflicts c
 JOIN books b ON b.id = c.book_id
 WHERE b.match_status IN ('probable', 'ambiguous', 'needs_review', 'not_found', 'no_data')
 ORDER BY c.book_id, c.peer_book_id;
+
+-- name: ListBookEnrichmentTargets :many
+SELECT
+    b.id AS book_id,
+    m.edition_key,
+    m.work_key,
+    COALESCE(c.author_keys, '[]') AS author_keys
+FROM books b
+JOIN book_matches m ON m.book_id = b.id
+LEFT JOIN book_enrichment e ON e.book_id = b.id
+LEFT JOIN book_match_candidates c ON c.book_id = b.id AND c.selected = 1
+WHERE b.match_status = 'confirmed'
+  AND (
+      sqlc.arg(force) = 1
+      OR e.book_id IS NULL
+      OR e.matcher_version <> sqlc.arg(matcher_version)
+      OR e.dump_version <> sqlc.arg(dump_version)
+  )
+ORDER BY b.id;
+
+-- name: GetBookEnrichmentByBookID :one
+SELECT * FROM book_enrichment WHERE book_id = ?;
+
+-- name: ListBookEnrichments :many
+SELECT * FROM book_enrichment ORDER BY book_id;
+
+-- name: UpsertBookEnrichment :exec
+INSERT INTO book_enrichment (
+    book_id,
+    edition_key,
+    work_key,
+    source,
+    title,
+    subtitle,
+    description,
+    series,
+    series_index,
+    first_publish_date,
+    matcher_version,
+    dump_version,
+    enriched_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(book_id) DO UPDATE SET
+    edition_key = excluded.edition_key,
+    work_key = excluded.work_key,
+    source = excluded.source,
+    title = excluded.title,
+    subtitle = excluded.subtitle,
+    description = excluded.description,
+    series = excluded.series,
+    series_index = excluded.series_index,
+    first_publish_date = excluded.first_publish_date,
+    matcher_version = excluded.matcher_version,
+    dump_version = excluded.dump_version,
+    enriched_at = excluded.enriched_at;
+
+-- name: DeleteBookEnrichmentByBookID :exec
+DELETE FROM book_enrichment WHERE book_id = ?;
+
+-- name: DeleteBookEnrichmentSubjectsByBookID :exec
+DELETE FROM book_enrichment_subjects WHERE book_id = ?;
+
+-- name: DeleteBookEnrichmentLanguagesByBookID :exec
+DELETE FROM book_enrichment_languages WHERE book_id = ?;
+
+-- name: DeleteBookEnrichmentPublicationsByBookID :exec
+DELETE FROM book_enrichment_publications WHERE book_id = ?;
+
+-- name: DeleteBookEnrichmentIdentifiersByBookID :exec
+DELETE FROM book_enrichment_identifiers WHERE book_id = ?;
+
+-- name: DeleteBookEnrichmentAuthorsByBookID :exec
+DELETE FROM book_enrichment_authors WHERE book_id = ?;
+
+-- name: CreateBookEnrichmentSubject :exec
+INSERT INTO book_enrichment_subjects (book_id, name, ordinal)
+VALUES (?, ?, ?)
+ON CONFLICT(book_id, name) DO NOTHING;
+
+-- name: CreateBookEnrichmentLanguage :exec
+INSERT INTO book_enrichment_languages (book_id, name, ordinal)
+VALUES (?, ?, ?)
+ON CONFLICT(book_id, name) DO NOTHING;
+
+-- name: CreateBookEnrichmentPublication :exec
+INSERT INTO book_enrichment_publications (book_id, publisher, publication_date, ordinal)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(book_id, publisher, publication_date) DO NOTHING;
+
+-- name: CreateBookEnrichmentIdentifier :exec
+INSERT INTO book_enrichment_identifiers (book_id, scheme, value, source, ordinal)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(book_id, scheme, value) DO NOTHING;
+
+-- name: CreateBookEnrichmentAuthor :exec
+INSERT INTO book_enrichment_authors (
+    book_id,
+    author_key,
+    name,
+    alternate_names,
+    birth_date,
+    death_date,
+    bio,
+    ordinal
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(book_id, author_key) DO NOTHING;
+
+-- name: ListBookEnrichmentSubjects :many
+SELECT book_id, name, ordinal FROM book_enrichment_subjects ORDER BY book_id, ordinal, name;
+
+-- name: ListBookEnrichmentLanguages :many
+SELECT book_id, name, ordinal FROM book_enrichment_languages ORDER BY book_id, ordinal, name;
+
+-- name: ListBookEnrichmentPublications :many
+SELECT book_id, publisher, publication_date, ordinal FROM book_enrichment_publications ORDER BY book_id, ordinal, publisher, publication_date;
+
+-- name: ListBookEnrichmentIdentifiers :many
+SELECT book_id, scheme, value, source, ordinal FROM book_enrichment_identifiers ORDER BY book_id, ordinal, scheme, value;
+
+-- name: ListBookEnrichmentAuthors :many
+SELECT book_id, author_key, name, alternate_names, birth_date, death_date, bio, ordinal FROM book_enrichment_authors ORDER BY book_id, ordinal, author_key;
+
+-- name: DeleteNonConfirmedEnrichmentSubjects :exec
+DELETE FROM book_enrichment_subjects
+WHERE book_id NOT IN (SELECT id FROM books WHERE match_status = 'confirmed');
+
+-- name: DeleteNonConfirmedEnrichmentLanguages :exec
+DELETE FROM book_enrichment_languages
+WHERE book_id NOT IN (SELECT id FROM books WHERE match_status = 'confirmed');
+
+-- name: DeleteNonConfirmedEnrichmentPublications :exec
+DELETE FROM book_enrichment_publications
+WHERE book_id NOT IN (SELECT id FROM books WHERE match_status = 'confirmed');
+
+-- name: DeleteNonConfirmedEnrichmentIdentifiers :exec
+DELETE FROM book_enrichment_identifiers
+WHERE book_id NOT IN (SELECT id FROM books WHERE match_status = 'confirmed');
+
+-- name: DeleteNonConfirmedEnrichmentAuthors :exec
+DELETE FROM book_enrichment_authors
+WHERE book_id NOT IN (SELECT id FROM books WHERE match_status = 'confirmed');
+
+-- name: DeleteNonConfirmedEnrichment :exec
+DELETE FROM book_enrichment
+WHERE book_id NOT IN (SELECT id FROM books WHERE match_status = 'confirmed');

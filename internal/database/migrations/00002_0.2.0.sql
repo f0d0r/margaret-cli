@@ -178,6 +178,7 @@ CREATE TABLE book_enrichment (
     work_key TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'OPENLIBRARY',
     title TEXT NOT NULL DEFAULT '',
+    subtitle TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
     series TEXT NOT NULL DEFAULT '',
     series_index TEXT NOT NULL DEFAULT '',
