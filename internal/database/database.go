@@ -28,6 +28,14 @@ const DefaultPath = "margaret.db"
 // starts a new history with its own run row. When a migration adds a table, extend this list:
 // TestClearCoversEntireSchema fails until you do.
 var clearStatements = []string{
+	`DELETE FROM book_match_candidates;`,
+	`DELETE FROM book_matches;`,
+	`DELETE FROM book_enrichment_authors;`,
+	`DELETE FROM book_enrichment_identifiers;`,
+	`DELETE FROM book_enrichment_publications;`,
+	`DELETE FROM book_enrichment_languages;`,
+	`DELETE FROM book_enrichment_subjects;`,
+	`DELETE FROM book_enrichment;`,
 	`DELETE FROM book_file_lsh_buckets;`,
 	`DELETE FROM book_book_files;`,
 	`DELETE FROM book_authors;`,

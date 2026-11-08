@@ -22,6 +22,11 @@ type Options struct {
 	// BookIDs limits the cache to the given books. A nil slice includes all
 	// books.
 	BookIDs []int64
+	// Pending limits the cache to books without a match, or with a match
+	// produced by a different matcher or dump version.
+	Pending        bool
+	MatcherVersion string
+	DumpVersion    string
 }
 
 // ISBN is one normalized ISBN of a scanned book with its provenance.
@@ -65,9 +70,32 @@ type Stats struct {
 
 // Build loads the scanned books and builds the matching indexes.
 func Build(ctx context.Context, q *db.Queries, opts Options) (*Cache, error) {
-	rows, err := q.ListBooksForMatching(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list books for matching: %w", err)
+	type bookRow struct {
+		ID    int64
+		Title string
+	}
+	var rows []bookRow
+	if opts.Pending && opts.BookIDs == nil {
+		pending, err := q.ListBooksNeedingMatching(ctx, db.ListBooksNeedingMatchingParams{
+			MatcherVersion: opts.MatcherVersion,
+			DumpVersion:    opts.DumpVersion,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list books needing matching: %w", err)
+		}
+		rows = make([]bookRow, len(pending))
+		for i, row := range pending {
+			rows[i] = bookRow{ID: row.ID, Title: row.Title}
+		}
+	} else {
+		all, err := q.ListBooksForMatching(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list books for matching: %w", err)
+		}
+		rows = make([]bookRow, len(all))
+		for i, row := range all {
+			rows[i] = bookRow{ID: row.ID, Title: row.Title}
+		}
 	}
 
 	var include map[int64]struct{}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/matcher"
 	"github.com/f0d0r/margaret-cli/internal/openlibrary"
 )
 
@@ -25,6 +26,24 @@ func writeCLIDump(t *testing.T, dir, name string) {
 	}
 	writer := gzip.NewWriter(file)
 	if _, err := writer.Write([]byte("/type/edition\t/books/OL1M\t1\t2024-01-01\t{\"title\":\"Test\"}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeCLIDumpBody(t *testing.T, dir, name, body string) {
+	t.Helper()
+	file, err := os.Create(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := gzip.NewWriter(file)
+	if _, err := writer.Write([]byte(body)); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -69,7 +88,7 @@ func createScannedDB(t *testing.T, path string) {
 		BookID: bookID,
 		Scheme: "ISBN",
 		Value:  "9780306406157",
-		Source: "METADATA",
+		Source: "METADATA_AND_TEXT",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,17 +97,17 @@ func createScannedDB(t *testing.T, path string) {
 	}
 }
 
-func withEnrichFlags(t *testing.T, databasePath, dumpDir string, download, status bool) {
+func withEnrichFlags(t *testing.T, databasePath, dumpDir string, download, status, force bool) {
 	t.Helper()
-	oldDB, oldDir, oldDownload, oldStatus := dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag
-	dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag = databasePath, dumpDir, download, status
+	oldDB, oldDir, oldDownload, oldStatus, oldForce := dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag
+	dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag = databasePath, dumpDir, download, status, force
 	t.Cleanup(func() {
-		dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag = oldDB, oldDir, oldDownload, oldStatus
+		dbPath, enrichOpenLibraryDir, enrichDownloadFlag, enrichStatusFlag, enrichForceFlag = oldDB, oldDir, oldDownload, oldStatus, oldForce
 	})
 }
 
 func TestEnrichFlags(t *testing.T) {
-	for _, name := range []string{"db", "openlibrary-dir", "download", "status"} {
+	for _, name := range []string{"db", "openlibrary-dir", "download", "status", "force"} {
 		if enrichCmd.Flags().Lookup(name) == nil {
 			t.Fatalf("enrich flag %q is not registered", name)
 		}
@@ -108,7 +127,7 @@ func TestRunEnrichStatus(t *testing.T) {
 	}
 	dbFile := filepath.Join(t.TempDir(), "margaret.db")
 	createScannedDB(t, dbFile)
-	withEnrichFlags(t, dbFile, dumpDir, false, true)
+	withEnrichFlags(t, dbFile, dumpDir, false, true, false)
 
 	var err error
 	output := captureStdout(t, func() {
@@ -140,7 +159,7 @@ func TestRunEnrichStatusCombined(t *testing.T) {
 	dumpDir := t.TempDir()
 	writeCLIDump(t, dumpDir, "ol_dump_latest.txt.gz")
 	dbFile := filepath.Join(t.TempDir(), "missing.db")
-	withEnrichFlags(t, dbFile, dumpDir, false, true)
+	withEnrichFlags(t, dbFile, dumpDir, false, true, false)
 
 	output := captureStdout(t, func() {
 		if err := runEnrichStatus(context.Background()); err != nil {
@@ -154,7 +173,7 @@ func TestRunEnrichStatusCombined(t *testing.T) {
 
 func TestRunEnrichStatusMissingDatabaseDoesNotCreateIt(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "missing.db")
-	withEnrichFlags(t, dbFile, t.TempDir(), false, true)
+	withEnrichFlags(t, dbFile, t.TempDir(), false, true, false)
 
 	output := captureStdout(t, func() {
 		if err := runEnrichStatus(context.Background()); err != nil {
@@ -170,7 +189,7 @@ func TestRunEnrichStatusMissingDatabaseDoesNotCreateIt(t *testing.T) {
 }
 
 func TestRunEnrichStatusAndDownloadMutuallyExclusive(t *testing.T) {
-	withEnrichFlags(t, "unused.db", "", true, true)
+	withEnrichFlags(t, "unused.db", "", true, true, false)
 	err := runEnrich(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("error = %v, want mutually exclusive", err)
@@ -180,7 +199,7 @@ func TestRunEnrichStatusAndDownloadMutuallyExclusive(t *testing.T) {
 func TestRunEnrichNoDumpNonInteractive(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "margaret.db")
 	createScannedDB(t, dbFile)
-	withEnrichFlags(t, dbFile, "", false, false)
+	withEnrichFlags(t, dbFile, "", false, false, false)
 
 	t.Chdir(t.TempDir())
 	t.Setenv(openlibrary.EnvDir, "")
@@ -205,7 +224,7 @@ func TestRunEnrichNoDumpNonInteractive(t *testing.T) {
 func TestRunEnrichInteractiveDecline(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "margaret.db")
 	createScannedDB(t, dbFile)
-	withEnrichFlags(t, dbFile, "", false, false)
+	withEnrichFlags(t, dbFile, "", false, false, false)
 
 	t.Chdir(t.TempDir())
 	t.Setenv(openlibrary.EnvDir, "")
@@ -247,7 +266,7 @@ func TestRunEnrichDownload(t *testing.T) {
 	defer server.Close()
 
 	dumpDir := t.TempDir()
-	withEnrichFlags(t, "unused.db", dumpDir, true, false)
+	withEnrichFlags(t, "unused.db", dumpDir, true, false, false)
 
 	oldDownloader := newOpenLibraryDownloader
 	newOpenLibraryDownloader = func(dir string) *openlibrary.Downloader {
@@ -268,8 +287,8 @@ func TestRunEnrichDownload(t *testing.T) {
 	if !strings.Contains(output, "Downloading OpenLibrary dumps to") {
 		t.Fatalf("output does not mention downloading:\n%s", output)
 	}
-	if !strings.Contains(output, "Metadata matching is not implemented yet.") {
-		t.Fatalf("output does not mention the missing matching pass:\n%s", output)
+	if !strings.Contains(output, "OpenLibrary data ready.") {
+		t.Fatalf("output does not mention the ready data:\n%s", output)
 	}
 	for _, family := range []string{"editions", "works", "authors"} {
 		path := filepath.Join(dumpDir, "ol_dump_"+family+"_2024-01-31.txt.gz")
@@ -287,7 +306,7 @@ func TestRunEnrichDownloadSkipsExisting(t *testing.T) {
 	for _, family := range []string{"editions", "works", "authors"} {
 		writeCLIDump(t, dumpDir, "ol_dump_"+family+"_2024-01-31.txt.gz")
 	}
-	withEnrichFlags(t, "unused.db", dumpDir, true, false)
+	withEnrichFlags(t, "unused.db", dumpDir, true, false, false)
 
 	oldDownloader := newOpenLibraryDownloader
 	newOpenLibraryDownloader = func(dir string) *openlibrary.Downloader {
@@ -306,6 +325,124 @@ func TestRunEnrichDownloadSkipsExisting(t *testing.T) {
 	}
 	if got := strings.Count(output, "already present"); got != 3 {
 		t.Fatalf("already present count = %d, want 3:\n%s", got, output)
+	}
+}
+
+func TestRunEnrichMatchesAndPersists(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "margaret.db")
+	createScannedDB(t, dbFile)
+	dumpDir := t.TempDir()
+	writeCLIDumpBody(t, dumpDir, "ol_dump_editions_2024-01-31.txt.gz",
+		"/type/edition\t/books/OL1M\t1\t2024-01-31\t"+
+			`{"key":"/books/OL1M","title":"One","isbn_13":["9780306406157"],`+
+			`"authors":[{"key":"/authors/OL1A"}],"works":[{"key":"/works/OL1W"}]}`+"\n")
+	writeCLIDumpBody(t, dumpDir, "ol_dump_authors_2024-01-31.txt.gz",
+		"/type/author\t/authors/OL1A\t1\t2024-01-31\t"+
+			`{"key":"/authors/OL1A","name":"Author One"}`+"\n")
+	writeCLIDumpBody(t, dumpDir, "ol_dump_works_2024-01-31.txt.gz",
+		"/type/work\t/works/OL1W\t1\t2024-01-31\t"+
+			`{"key":"/works/OL1W","title":"One","subjects":["Fiction"],"first_publish_date":"2000"}`+"\n")
+
+	withEnrichFlags(t, dbFile, dumpDir, false, false, false)
+
+	var runErr error
+	output := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			runErr = runEnrich(context.Background())
+		})
+	})
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	for _, want := range []string{"Matching 2 book(s)", "confirmed     1", "not_found     1"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output does not contain %q:\n%s", want, output)
+		}
+	}
+
+	conn, err := database.Open(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+	q := db.New(conn)
+
+	match, err := q.GetBookMatchByBookID(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match.Status != "confirmed" || match.EditionKey != "/books/OL1M" {
+		t.Fatalf("match = %+v", match)
+	}
+	if match.MatcherVersion != matcher.Version || match.DumpVersion == "" {
+		t.Fatalf("versions = %q / %q", match.MatcherVersion, match.DumpVersion)
+	}
+	candidates, err := q.ListBookMatchCandidatesByBookID(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].Rank != 1 || candidates[0].Selected != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+
+	var status string
+	if err := conn.QueryRow("SELECT match_status FROM books WHERE id = 1").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "confirmed" {
+		t.Fatalf("book 1 match_status = %q", status)
+	}
+	if err := conn.QueryRow("SELECT match_status FROM books WHERE id = 2").Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "not_found" {
+		t.Fatalf("book 2 match_status = %q", status)
+	}
+}
+
+func TestRunEnrichSkipsCurrentMatchesAndForceReprocesses(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "margaret.db")
+	createScannedDB(t, dbFile)
+	dumpDir := t.TempDir()
+	writeCLIDumpBody(t, dumpDir, "ol_dump_editions_2024-01-31.txt.gz",
+		"/type/edition\t/books/OL1M\t1\t2024-01-31\t"+
+			`{"key":"/books/OL1M","title":"One","isbn_13":["9780306406157"],`+
+			`"authors":[{"key":"/authors/OL1A"}],"works":[{"key":"/works/OL1W"}]}`+"\n")
+	writeCLIDumpBody(t, dumpDir, "ol_dump_authors_2024-01-31.txt.gz",
+		"/type/author\t/authors/OL1A\t1\t2024-01-31\t"+
+			`{"key":"/authors/OL1A","name":"Author One"}`+"\n")
+	writeCLIDumpBody(t, dumpDir, "ol_dump_works_2024-01-31.txt.gz",
+		"/type/work\t/works/OL1W\t1\t2024-01-31\t"+
+			`{"key":"/works/OL1W","title":"One"}`+"\n")
+	withEnrichFlags(t, dbFile, dumpDir, false, false, false)
+
+	if err := runEnrich(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			if err := runEnrich(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	if !strings.Contains(output, "No books need matching.") {
+		t.Fatalf("second run did not skip current matches:\n%s", output)
+	}
+
+	enrichForceFlag = true
+	output = captureStdout(t, func() {
+		_ = captureStderr(t, func() {
+			if err := runEnrich(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	if !strings.Contains(output, "Matching 2 book(s)") {
+		t.Fatalf("force run did not reprocess books:\n%s", output)
 	}
 }
 

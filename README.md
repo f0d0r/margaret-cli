@@ -755,7 +755,7 @@ removed when the run finishes, but it may need about 1 GB of temporary disk.
 For full work-level enrichment, the three family dumps are recommended.
 
 Use `--status` to see the resolved paths, the ISBN coverage of the scan
-database and a summary of the in-memory matching cache:
+database, the in-memory matching cache and the stored match status counts:
 
 ```sh
 margaret enrich --status
@@ -776,9 +776,13 @@ margaret enrich --openlibrary-dir /mnt/dumps/openlibrary
 Downloads are resumable: an interrupted transfer is kept as a `.part` file
 and continued from where it stopped. Existing valid dumps are skipped.
 
-The metadata matching pass is not implemented yet. For now `enrich` prepares
-and validates the local dump data; the same command will run the ISBN match
-against `margaret.db` in a follow-up.
+`enrich` matches the scanned books against the local dump and stores the
+match status, confidence and top candidates in `margaret.db`. Enriched
+OpenLibrary metadata fields (description, subjects, publishers, and so on)
+are not applied yet; those will be merged into the reports in a follow-up.
+
+By default only books without a current match are processed. `--force`
+reprocesses every book.
 
 ### `enrich` flags
 
@@ -787,7 +791,8 @@ against `margaret.db` in a follow-up.
 | `--db` | `string` | `margaret.db` | SQLite database file to read. |
 | `--openlibrary-dir` | `string` | `""` | Directory containing the dump files. |
 | `--download` | `bool` | `false` | Download missing dumps before enriching. |
-| `--status` | `bool` | `false` | Show resolved dump files and scan database statistics, then exit. |
+| `--status` | `bool` | `false` | Show resolved dump files, scan statistics and match status counts, then exit. |
+| `--force` | `bool` | `false` | Reprocess every book even when a stored match is current. |
 
 ---
 

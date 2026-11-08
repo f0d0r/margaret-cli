@@ -20,6 +20,7 @@ var (
 	enrichOpenLibraryDir string
 	enrichDownloadFlag   bool
 	enrichStatusFlag     bool
+	enrichForceFlag      bool
 )
 
 // enrichCmd prepares the local OpenLibrary dumps used for metadata
@@ -36,8 +37,10 @@ The dump search checks --openlibrary-dir, MARGARET_OPENLIBRARY_DIR, then
 executable. Use --status to see which files would be used. Use --download to
 fetch missing dumps, or accept the interactive prompt when no dump is found.
 
-The metadata matching pass is not implemented yet; this command currently
-prepares and reports the OpenLibrary data.`,
+The command matches scanned books against the local dump and stores the match
+status, confidence and top candidates. Enriched OpenLibrary metadata fields
+are not applied yet. By default only books without a current match are
+processed; use --force to reprocess every book.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runEnrich(cmd.Context())
@@ -49,6 +52,7 @@ func init() {
 	enrichCmd.Flags().StringVar(&enrichOpenLibraryDir, "openlibrary-dir", "", "directory containing the OpenLibrary dump files")
 	enrichCmd.Flags().BoolVar(&enrichDownloadFlag, "download", false, "download missing OpenLibrary dumps before enriching")
 	enrichCmd.Flags().BoolVar(&enrichStatusFlag, "status", false, "show the resolved dump files and scan database statistics, then exit")
+	enrichCmd.Flags().BoolVar(&enrichForceFlag, "force", false, "reprocess every book even when a stored match is current")
 	rootCmd.AddCommand(enrichCmd)
 }
 
@@ -66,33 +70,103 @@ func runEnrich(ctx context.Context) error {
 		return runEnrichStatus(ctx)
 	}
 
-	if !enrichDownloadFlag {
-		if err := requireEnrichDatabase(ctx); err != nil {
-			return err
+	dataset, err := resolveOrDownloadDataset(ctx)
+	if err != nil {
+		return err
+	}
+	if dataset == nil {
+		return nil
+	}
+	printDatasetWarnings(dataset)
+	printDataset(dataset)
+
+	ready, err := databaseReady(dbPath)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		if enrichDownloadFlag {
+			fmt.Println("OpenLibrary data ready.")
+			return nil
 		}
+		return fmt.Errorf("database %q does not exist: run \"margaret scan <path>\" first", dbPath)
 	}
 
+	conn, err := database.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("open database %q: %w", dbPath, err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+	q := db.New(conn)
+	if err := requireScannedData(ctx, q, dbPath); err != nil {
+		return err
+	}
+
+	matcherVersion := matcher.Version
+	dumpVersion := matcher.DatasetVersion(dataset)
+	cache, err := matcher.Build(ctx, q, matcher.Options{
+		Pending:        !enrichForceFlag,
+		MatcherVersion: matcherVersion,
+		DumpVersion:    dumpVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("build matching cache: %w", err)
+	}
+	if cache.Stats.Books == 0 {
+		fmt.Println("No books need matching.")
+		return printMatchStatusCounts(ctx, q)
+	}
+
+	fmt.Printf("Matching %d book(s)...\n", cache.Stats.Books)
+	stream, err := matcher.StreamDataset(ctx, dataset, cache, matcher.StreamOptions{
+		Progress: printStreamProgress,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, warning := range stream.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+	}
+
+	ranked, err := matcher.Rank(stream, cache, matcher.RankOptions{})
+	if err != nil {
+		return err
+	}
+	if err := matcher.Persist(ctx, conn, q, ranked, matcher.PersistMeta{
+		MatcherVersion: matcherVersion,
+		DumpVersion:    dumpVersion,
+	}, matcher.PersistOptions{}); err != nil {
+		return err
+	}
+	printMatchStats(ranked.Stats)
+	return nil
+}
+
+func resolveOrDownloadDataset(ctx context.Context) (*openlibrary.Dataset, error) {
 	dataset, err := openlibrary.Resolve(enrichOpenLibraryDir)
 	if err != nil {
 		var notFound *openlibrary.NotFoundError
 		if !errors.As(err, &notFound) {
-			return err
+			return nil, err
 		}
 		if !enrichDownloadFlag {
 			dir, dirErr := openlibrary.DownloadDir(enrichOpenLibraryDir)
 			if dirErr != nil {
-				return dirErr
+				return nil, dirErr
 			}
 			if !stdinIsTerminal() {
-				return noDumpError(notFound.Candidates)
+				return nil, noDumpError(notFound.Candidates)
 			}
 			ok, promptErr := promptDownload(ctx, os.Stdin, notFound.Candidates, dir, openlibrary.Missing(dir))
 			if promptErr != nil {
-				return promptErr
+				return nil, promptErr
 			}
 			if !ok {
 				fmt.Println("No changes made.")
-				return nil
+				return nil, nil
 			}
 		}
 	}
@@ -101,44 +175,80 @@ func runEnrich(ctx context.Context) error {
 	if download {
 		dir, dirErr := chooseDownloadDir(dataset)
 		if dirErr != nil {
-			return dirErr
+			return nil, dirErr
 		}
 		fmt.Printf("Downloading OpenLibrary dumps to %s\n", dir)
 		results, downloadErr := downloadDumps(ctx, dir)
 		if downloadErr != nil {
-			return downloadErr
+			return nil, downloadErr
 		}
 		printDownloadResults(results)
 		dataset, err = openlibrary.Resolve(enrichOpenLibraryDir)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if dataset == nil {
-		return errors.New("no OpenLibrary dump available")
+		return nil, errors.New("no OpenLibrary dump available")
 	}
-	printDatasetWarnings(dataset)
-	printDataset(dataset)
-	fmt.Println("Metadata matching is not implemented yet.")
-	return nil
+	return dataset, nil
 }
 
-func requireEnrichDatabase(ctx context.Context) error {
-	if dbPath == "" {
-		return errors.New("database path must not be empty")
+func databaseReady(path string) (bool, error) {
+	if path == "" {
+		return false, errors.New("database path must not be empty")
 	}
-	if err := requireDatabaseFile(dbPath); err != nil {
-		return err
+	if path == ":memory:" {
+		return true, nil
 	}
-	conn, err := database.Open(dbPath)
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if os.IsNotExist(err) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("stat database %q: %w", path, err)
+	}
+}
+
+func printStreamProgress(progress matcher.StreamProgress) {
+	line := fmt.Sprintf("%s: lines=%d records=%d candidates=%d",
+		progress.Pass, progress.Lines, progress.Records, progress.Candidates)
+	if progress.Pending > 0 {
+		line += fmt.Sprintf(" pending=%d", progress.Pending)
+	}
+	fmt.Fprintf(os.Stderr, "\r%s", line)
+}
+
+func printMatchStats(stats matcher.RankStats) {
+	total := stats.Confirmed + stats.Probable + stats.Ambiguous +
+		stats.NeedsReview + stats.NotFound + stats.NoData
+	fmt.Printf("Matched books: %d\n", total)
+	fmt.Printf("  confirmed     %d\n", stats.Confirmed)
+	fmt.Printf("  probable      %d\n", stats.Probable)
+	fmt.Printf("  ambiguous     %d\n", stats.Ambiguous)
+	fmt.Printf("  needs_review  %d\n", stats.NeedsReview)
+	fmt.Printf("  not_found     %d\n", stats.NotFound)
+	fmt.Printf("  no_data       %d\n", stats.NoData)
+}
+
+func printMatchStatusCounts(ctx context.Context, q *db.Queries) error {
+	rows, err := q.CountBooksByMatchStatus(ctx)
 	if err != nil {
-		return fmt.Errorf("open database %q: %w", dbPath, err)
+		return fmt.Errorf("count match statuses: %w", err)
 	}
-	defer func() {
-		_ = conn.Close()
-	}()
-	return requireScannedData(ctx, db.New(conn), dbPath)
+	counts := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		counts[row.Status] = row.Count
+	}
+	fmt.Println("Match status:")
+	for _, status := range []string{
+		"confirmed", "probable", "ambiguous", "needs_review",
+		"not_found", "no_data", "unmatched",
+	} {
+		fmt.Printf("  %-12s %d\n", status, counts[status])
+	}
+	return nil
 }
 
 func chooseDownloadDir(dataset *openlibrary.Dataset) (string, error) {
@@ -280,7 +390,7 @@ func printScanDatabaseStatus(ctx context.Context) error {
 	}
 	fmt.Printf("  matching cache: %d books (%d with title, %d with ISBN, %d with authors)\n",
 		cache.Stats.Books, cache.Stats.WithTitle, cache.Stats.WithISBN, cache.Stats.WithAuthors)
-	return nil
+	return printMatchStatusCounts(ctx, queries)
 }
 
 func printCandidateLine(candidate openlibrary.Candidate) {
