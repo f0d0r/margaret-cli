@@ -7,9 +7,12 @@ import (
 )
 
 // IsProseTitle reports metadata titles that are really prose lines: body
-// sentences, truncated paragraphs and blurb fragments. It is intentionally
-// conservative and never rejects a line that ends like a complete sentence
-// title; the filename fallback remains available for everything it rejects.
+// sentences, truncated paragraphs and blurb fragments. Only structural signals
+// are used; language-specific word lists and capitalization assumptions are
+// deliberately avoided because neither generalizes across languages. It is
+// intentionally conservative and never rejects a line that ends like a
+// complete sentence title; the filename fallback remains available for
+// everything it rejects.
 func IsProseTitle(s string) bool {
 	s = Normalize(s)
 	if s == "" {
@@ -23,10 +26,8 @@ func IsProseTitle(s string) bool {
 	}
 
 	words := strings.Fields(s)
-	if len(words) >= 6 {
-		if endsWithClausePunctuation(s) || startsLower(s) || endsWithProseWord(words) {
-			return true
-		}
+	if len(words) >= 6 && endsWithClausePunctuation(s) {
+		return true
 	}
 	// A long line with a lowercase continuation after a comma or semicolon is
 	// a truncated clause rather than a title; colons usually introduce a real
@@ -48,21 +49,6 @@ func endsWithClausePunctuation(s string) bool {
 	s = strings.TrimRight(strings.TrimSpace(s), `"'”’)]}`)
 	r, _ := utf8.DecodeLastRuneInString(s)
 	return r == ',' || r == ';' || r == ':'
-}
-
-func startsLower(s string) bool {
-	for _, r := range s {
-		if unicode.IsLetter(r) {
-			return unicode.IsLower(r)
-		}
-	}
-	return false
-}
-
-func endsWithProseWord(words []string) bool {
-	last := strings.ToLower(trimWord(words[len(words)-1]))
-	_, ok := proseEndingWords[last]
-	return ok
 }
 
 // lowerClauseContinuation reports two consecutive lowercase words directly
@@ -96,26 +82,4 @@ func lowerClauseContinuation(s string) bool {
 		}
 	}
 	return false
-}
-
-// proseEndingWords are common function words that end a truncated sentence but
-// rarely end a title. Matching uses lower case without diacritic folding so
-// that e.g. Hungarian "tó" is not confused with English "to".
-var proseEndingWords = map[string]struct{}{
-	"a": {}, "az": {}, "egy": {},
-	"és": {}, "de": {}, "vagy": {}, "hogy": {}, "mert": {}, "mivel": {},
-	"amikor": {}, "ahol": {}, "ahová": {}, "aki": {}, "ami": {}, "amely": {},
-	"amelyek": {}, "amit": {}, "akit": {}, "akik": {}, "mintha": {}, "mint": {},
-	"ha": {}, "bár": {}, "még": {}, "már": {}, "csak": {}, "is": {}, "nem": {},
-	"sem": {}, "volt": {}, "van": {}, "lesz": {}, "lehet": {}, "kell": {},
-	"the": {}, "an": {}, "and": {}, "or": {}, "but": {}, "that": {}, "which": {},
-	"who": {}, "whom": {}, "whose": {}, "when": {}, "where": {}, "while": {},
-	"if": {}, "as": {}, "of": {}, "to": {}, "in": {}, "on": {}, "at": {},
-	"by": {}, "for": {}, "with": {}, "from": {}, "into": {}, "over": {},
-	"under": {}, "about": {}, "after": {}, "before": {}, "between": {},
-	"through": {}, "during": {}, "than": {}, "then": {}, "so": {}, "because": {},
-	"although": {}, "though": {}, "are": {}, "was": {}, "were": {},
-	"be": {}, "been": {}, "being": {}, "have": {}, "has": {}, "had": {},
-	"do": {}, "does": {}, "did": {}, "can": {}, "could": {}, "will": {},
-	"would": {}, "shall": {}, "should": {}, "may": {}, "might": {}, "must": {},
 }

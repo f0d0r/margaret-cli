@@ -107,14 +107,17 @@ type ScanProcessor struct {
 	// cancellation errors apart from real failures.
 	ctx context.Context
 
-	parsed   atomic.Int64
-	failed   atomic.Int64
-	found    atomic.Int64
-	skipped  atomic.Int64
-	progMu   sync.Mutex
-	lastScan scanner.Progress
-	failMu   sync.Mutex
-	failures []Failure
+	parsed           atomic.Int64
+	failed           atomic.Int64
+	found            atomic.Int64
+	skipped          atomic.Int64
+	alreadyProcessed atomic.Int64
+	progMu           sync.Mutex
+	lastScan         scanner.Progress
+	failMu           sync.Mutex
+	failures         []Failure
+	skipMu           sync.Mutex
+	skips            []Skip
 
 	extMu     sync.Mutex
 	extCounts map[string]int64
@@ -165,6 +168,10 @@ func (p *ScanProcessor) Process(ctx context.Context) error {
 	p.failMu.Lock()
 	p.failures = p.failures[:0]
 	p.failMu.Unlock()
+
+	p.skipMu.Lock()
+	p.skips = p.skips[:0]
+	p.skipMu.Unlock()
 
 	results := newResultQueue()
 
@@ -261,6 +268,14 @@ func (p *ScanProcessor) Failures() []Failure {
 	return append([]Failure(nil), p.failures...)
 }
 
+// Skips returns the actionable skips of the last Process run. Resume skips
+// are not included; see Progress.AlreadyProcessed.
+func (p *ScanProcessor) Skips() []Skip {
+	p.skipMu.Lock()
+	defer p.skipMu.Unlock()
+	return append([]Skip(nil), p.skips...)
+}
+
 // pdfDisabled reports whether format is PDF and the Poppler tools are not
 // available, in which case PDF files are skipped without being opened.
 func (p *ScanProcessor) pdfDisabled(format string) bool {
@@ -269,21 +284,22 @@ func (p *ScanProcessor) pdfDisabled(format string) bool {
 
 // belowMinSize lets a format-specific parser reject files that are too small
 // to be a book before the processor opens or spools them. Unknown sizes are
-// checked by the parser after reading.
-func (p *ScanProcessor) belowMinSize(format string, size int64) bool {
+// checked by the parser after reading. It returns the applicable size limit
+// and whether size is below it.
+func (p *ScanProcessor) belowMinSize(format string, size int64) (int64, bool) {
 	if size < 0 {
-		return false
+		return 0, false
 	}
 	par := p.parsers[format]
 	if par == nil {
-		return false
+		return 0, false
 	}
 	filter, ok := par.(parser.SizeFilter)
 	if !ok {
-		return false
+		return 0, false
 	}
 	min := filter.MinSize()
-	return min > 0 && size < min
+	return min, min > 0 && size < min
 }
 
 // processSource handles a single unit of work: either an ebook to parse or
@@ -297,16 +313,16 @@ func (p *ScanProcessor) processSource(ctx context.Context, r scanner.Result, src
 		p.processArchive(ctx, r, 0, src)
 		return
 	}
-	if p.pdfDisabled(r.Format) {
-		p.skip()
-		return
-	}
-	if p.belowMinSize(r.Format, r.Size) {
-		p.skip()
-		return
-	}
 	if p.shouldSkip(ctx, r.Path) {
-		p.skip()
+		p.skipAlreadyProcessed()
+		return
+	}
+	if p.pdfDisabled(r.Format) {
+		p.skip(r.Path, reasonPDFUnavailable)
+		return
+	}
+	if minSize, skip := p.belowMinSize(r.Format, r.Size); skip {
+		p.skip(r.Path, minSizeReason(r.Size, minSize))
 		return
 	}
 	rc, err := src.Open(r.Path)
@@ -358,7 +374,11 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			return
 		}
 		if errors.Is(err, parser.ErrNotABook) {
-			p.skip()
+			p.skip(displayPath, notABookReason(err))
+			return
+		}
+		if errors.Is(err, pdf.ErrToolsUnavailable) {
+			p.skip(displayPath, reasonPDFUnavailable)
 			return
 		}
 		p.fail(displayPath, err)
@@ -688,13 +708,14 @@ func (p *ScanProcessor) Stats() Progress {
 	cur := append([]string(nil), p.current...)
 	p.curMu.Unlock()
 	return Progress{
-		Scan:      sp,
-		Found:     sp.Found + p.found.Load(),
-		Parsed:    p.parsed.Load(),
-		Failed:    p.failed.Load(),
-		Skipped:   p.skipped.Load(),
-		ExtCounts: p.extCountsCopy(),
-		Active:    p.active.Load(),
-		Current:   cur,
+		Scan:             sp,
+		Found:            sp.Found + p.found.Load(),
+		Parsed:           p.parsed.Load(),
+		Failed:           p.failed.Load(),
+		Skipped:          p.skipped.Load(),
+		AlreadyProcessed: p.alreadyProcessed.Load(),
+		ExtCounts:        p.extCountsCopy(),
+		Active:           p.active.Load(),
+		Current:          cur,
 	}
 }

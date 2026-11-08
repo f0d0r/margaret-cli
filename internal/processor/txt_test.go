@@ -21,7 +21,7 @@ func TestProcessSkipsJunkTxt(t *testing.T) {
 	body := strings.Repeat("A reggel még hűvös volt, a folyó felett köd ült. ", 350)
 	files := map[string]string{
 		"small.txt":  "Title: Tiny Metadata\nAuthor: Jane Doe\n\nBody text.\n",
-		"html.txt":   "<!DOCTYPE html>\n<html><body>" + strings.Repeat("<p>not a book</p>", 100) + "</body></html>\n",
+		"html.txt":   "<!DOCTYPE html>\n<html><body>" + strings.Repeat("<p>not a book</p>", 1500) + "</body></html>\n",
 		"normal.txt": "Móricz Zsigmond\n\nAz arany ember\n\n" + body,
 		"01.txt":     "Title: Chapter One\nAuthor: Jane Doe\n\n" + body,
 	}
@@ -60,6 +60,20 @@ func TestProcessSkipsJunkTxt(t *testing.T) {
 	if got := proc.Stats().Skipped; got != 2 {
 		t.Errorf("skipped = %d, want 2", got)
 	}
+	skips := proc.Skips()
+	if len(skips) != 2 {
+		t.Fatalf("skips = %+v, want 2 entries", skips)
+	}
+	reasons := make(map[string]string, len(skips))
+	for _, s := range skips {
+		reasons[s.Path] = s.Reason
+	}
+	if reason := reasons[filepath.Join(dir, "small.txt")]; !strings.Contains(reason, "below minimum document size") {
+		t.Errorf("small.txt skip reason = %q", reason)
+	}
+	if reason := reasons[filepath.Join(dir, "html.txt")]; reason != "not a book" {
+		t.Errorf("html.txt skip reason = %q, want %q", reason, "not a book")
+	}
 
 	var rows int
 	if err := proc.db.QueryRow("SELECT count(*) FROM book_files").Scan(&rows); err != nil {
@@ -67,6 +81,35 @@ func TestProcessSkipsJunkTxt(t *testing.T) {
 	}
 	if rows != 2 {
 		t.Errorf("book_files rows = %d, want 2", rows)
+	}
+}
+
+func TestProcessEmptyTextIsSkip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(path, []byte("   \n\t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultScanProcessorConfig()
+	cfg.MinDocSize = -1 // reach the parser-level empty-text check
+	proc := newTestProcessor(t, cfg, dir)
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if failures := proc.Failures(); len(failures) != 0 {
+		t.Fatalf("empty text must not be a failure: %v", failures)
+	}
+	stats := proc.Stats()
+	if stats.Parsed != 0 || stats.Skipped != 1 || stats.AlreadyProcessed != 0 {
+		t.Fatalf("stats = %+v, want parsed=0 skipped=1", stats)
+	}
+	skips := proc.Skips()
+	if len(skips) != 1 || skips[0].Path != path {
+		t.Fatalf("skips = %+v, want the empty file", skips)
+	}
+	if !strings.Contains(skips[0].Reason, "empty or whitespace-only text") {
+		t.Errorf("skip reason = %q, want an empty-text reason", skips[0].Reason)
 	}
 }
 

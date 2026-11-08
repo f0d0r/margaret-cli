@@ -206,8 +206,11 @@ func TestResumeSkipsNestedMembers(t *testing.T) {
 	if err := proc2.Process(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 0 || got.Skipped != 2 {
-		t.Fatalf("resume run: expected 0 parsed 0 failed 2 skipped, got %+v", got)
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 0 || got.Skipped != 0 || got.AlreadyProcessed != 2 {
+		t.Fatalf("resume run: expected 0 parsed 0 failed 0 skipped 2 already processed, got %+v", got)
+	}
+	if skips := proc2.Skips(); len(skips) != 0 {
+		t.Fatalf("resume skips must not be reported, got %+v", skips)
 	}
 }
 

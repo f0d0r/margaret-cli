@@ -124,7 +124,8 @@ description, subjects and publisher (following Calibre's field mapping), while
 documents without `\info` metadata fall back to Calibre's title-page layout.
 Files smaller than `--min-doc-size` (15 KiB by default) are treated as
 distribution metadata or fragments rather than books and are counted as
-skipped. Empty and binary files are reported as failures.
+skipped. Empty files are counted as skipped as well. Binary files are
+reported as failures.
 
 PDF books are read through the system-installed Poppler tools: `pdfinfo`
 supplies the Info dictionary and XMP metadata, and `pdftotext` supplies the
@@ -177,9 +178,10 @@ without hints still works.
 | `--ftp-user` | `string` | `anonymous` | FTP username for `ftp://` scans. |
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
 | `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
+| `--skipped-out` | `string` | `skipped.json` | Path to write a JSON report of the skipped items. |
 | `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
 | `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
-| `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures are always written). |
+| `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures and skipped reports are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
 | `--json` | `bool` | `false` | Write search results in JSON format (search only). |
 | `--json-out` | `string` | `search.json` | Path to write the JSON search results (search only). |
@@ -264,6 +266,16 @@ standard `PATH`.
 The path where the JSON report of failed items is written. Defaults to
 `failures.json` in the current directory.
 
+### `--skipped-out`
+
+The path where the JSON report of skipped items is written. Defaults to
+`skipped.json` in the current directory. It lists the files that were passed
+over without being parsed because they are not books, are below
+`--min-doc-size`, or cannot be processed (for example PDFs while Poppler is
+unavailable). Files skipped by a resume run because they were already
+processed are **not** listed: there is nothing left to inspect for those.
+They are counted separately as already processed.
+
 ### `--duplicates-out`
 
 The path where the JSON report of duplicate books is written. Defaults to
@@ -288,8 +300,9 @@ of books these files grow to hundreds of megabytes, while the database itself
 is already kept as a stable, queryable artifact (see [`--db`](#--db)), so
 there is no reason to pay that disk cost on every run.
 
-`failures.json` is not affected: it is the error channel (like logs), normally
-small, and is written on every run, as is the stdout summary.
+`failures.json` and `skipped.json` are not affected: they are the error and
+skip channels, normally small, and are written on every run, as is the stdout
+summary.
 
 ```sh
 margaret scan ./books --report
@@ -333,8 +346,8 @@ Controls what happens when the database already holds scanned data:
 - `--resume` keeps the existing rows: files whose path is already recorded
   are skipped without being read again — even if they changed on disk —
   while never-seen paths are processed. Failures leave no row behind, so
-  they are retried on every run. The scan summary reports skipped files
-  separately.
+  they are retried on every run. The scan summary counts already processed
+  files as a separate line, and they are not listed in the skipped report.
 
 With neither flag and a non-empty database, an interactive terminal asks
 whether to resume (the default) or start fresh, showing the database path,
@@ -412,13 +425,16 @@ Failed     0
 Duration   1ms
 ```
 
-- **Total** — total number of ebook files encountered (succeeded + failed + skipped).
+- **Total** — total number of ebook files encountered
+  (`succeeded + failed + skipped + already processed`).
 - **Succeeded** — ebooks whose metadata was read successfully.
 - **Failed** — items that could not be processed.
-- **Skipped** — files passed over without being parsed: already-recorded files
-  in resume runs, document files that are too small or otherwise not books,
-  and PDFs skipped because Poppler is unavailable or their extracted text is
-  too short.
+- **Skipped** — actionable skips: document files that are too small or
+  otherwise not books, empty files, and PDFs skipped because Poppler is
+  unavailable or their extracted text is too short. These are listed in
+  `skipped.json`.
+- **Already processed** — files a resume run passed over because they were
+  recorded in an earlier run. These are not listed in `skipped.json`.
 - **Duration** — wall-clock time of the scan.
 
 With `--ext-stats` the summary is followed by per-extension file counts,
@@ -441,8 +457,8 @@ Unsupported:
 margaret scan ./books --ext-stats
 ```
 
-The report is followed by the failures JSON file. Empty output is written even
-when nothing failed:
+The report is followed by the failures and skipped JSON files. Empty output is
+written even when nothing failed or was skipped:
 
 ```json
 []
@@ -461,6 +477,28 @@ When items fail, the report lists each item and the reason:
 
 Note that paths of items found inside archives are shown as
 `<archive-path>!<member-name>`.
+
+The skipped report follows the same conventions and is written even when
+nothing was skipped:
+
+```json
+[]
+```
+
+Skipped items list the path and the reason:
+
+```json
+[
+  {
+    "path": "books/short.txt",
+    "reason": "below minimum document size (1200 bytes, minimum 15360)"
+  },
+  {
+    "path": "books/bundle.zip!scanned.pdf",
+    "reason": "no extractable text"
+  }
+]
+```
 
 Duplicate books are reported in `duplicates.json`. Each entry describes the
 original book and every other path that holds the same content:
@@ -696,10 +734,10 @@ Databases containing 128-value MinHash signatures from older versions also
 need a fresh scan; `--resume` refuses them because the signature length no
 longer matches the 512-value format.
 
-`failures.json` cannot be regenerated: failures are produced during the scan
-and are not stored in the database. Against an empty or missing database the
-command fails with an error pointing to `scan`, instead of writing empty
-reports or creating an empty database file.
+`failures.json` and `skipped.json` cannot be regenerated: they are produced
+during the scan and are not stored in the database. Against an empty or
+missing database the command fails with an error pointing to `scan`, instead
+of writing empty reports or creating an empty database file.
 
 ---
 

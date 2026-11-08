@@ -77,7 +77,7 @@ func (p RtfParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return parser.Metadata{}, fmt.Errorf("rtf: invalid size %d", size)
 	}
 	if min := p.MinSize(); min > 0 && size < min {
-		return parser.Metadata{}, parser.ErrNotABook
+		return parser.Metadata{}, fmt.Errorf("%w: file is smaller than %d bytes", parser.ErrNotABook, min)
 	}
 	if size == 0 {
 		return parser.Metadata{}, ErrNotRTF
@@ -95,8 +95,11 @@ func (p RtfParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	rawHash := sha256.New()
 	decoder := newTextDecoder(io.TeeReader(io.NewSectionReader(data, 0, size), rawHash))
 	gate := textdoc.NewHeadGate(headLimit, size, func(head string, size int64) error {
-		if strings.TrimSpace(head) == "" || textdoc.IsJunkContent(head, size) {
-			return parser.ErrNotABook
+		if strings.TrimSpace(head) == "" {
+			return fmt.Errorf("%w: empty text", parser.ErrNotABook)
+		}
+		if textdoc.IsJunkContent(head, size) {
+			return fmt.Errorf("%w: junk content", parser.ErrNotABook)
 		}
 		return nil
 	})
@@ -107,7 +110,7 @@ func (p RtfParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		}))
 	if err != nil {
 		if errors.Is(err, parser.ErrNotABook) {
-			return parser.Metadata{}, parser.ErrNotABook
+			return parser.Metadata{}, err
 		}
 		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("rtf: read text: %w", err))
 	}

@@ -20,23 +20,24 @@ import (
 // withScanOutputs swaps the package-level scan output settings for the
 // duration of a test and restores them afterwards. Tests in this package
 // must not run in parallel: they share these globals.
-func withScanOutputs(t *testing.T, dir string, report bool) (failures, duplicates, books string) {
+func withScanOutputs(t *testing.T, dir string, report bool) (failures, duplicates, books, skipped string) {
 	t.Helper()
 
-	oldDB, oldFailures, oldDuplicates, oldBooks, oldReport, oldExt := dbPath, failuresOutPath, duplicatesOut, booksOut, reportEnabled, extStats
+	oldDB, oldFailures, oldSkipped, oldDuplicates, oldBooks, oldReport, oldExt := dbPath, failuresOutPath, skippedOutPath, duplicatesOut, booksOut, reportEnabled, extStats
 	oldMinDocSize := minDocSize
 	t.Cleanup(func() {
-		dbPath, failuresOutPath, duplicatesOut, booksOut, reportEnabled, extStats = oldDB, oldFailures, oldDuplicates, oldBooks, oldReport, oldExt
+		dbPath, failuresOutPath, skippedOutPath, duplicatesOut, booksOut, reportEnabled, extStats = oldDB, oldFailures, oldSkipped, oldDuplicates, oldBooks, oldReport, oldExt
 		minDocSize = oldMinDocSize
 	})
 
 	dbPath = ":memory:"
 	failures = filepath.Join(dir, "failures.json")
+	skipped = filepath.Join(dir, "skipped.json")
 	duplicates = filepath.Join(dir, "duplicates.json")
 	books = filepath.Join(dir, "books.json")
-	failuresOutPath, duplicatesOut, booksOut, reportEnabled = failures, duplicates, books, report
+	failuresOutPath, skippedOutPath, duplicatesOut, booksOut, reportEnabled = failures, skipped, duplicates, books, report
 	extStats = false
-	return failures, duplicates, books
+	return failures, duplicates, books, skipped
 }
 
 func writeTestEpub(t *testing.T, path, title, author, body string) {
@@ -180,7 +181,7 @@ func captureStderr(t *testing.T, f func()) string {
 
 func TestRunScanDefaultSkipsBulkReports(t *testing.T) {
 	dir := t.TempDir()
-	failures, duplicates, books := withScanOutputs(t, dir, false)
+	failures, duplicates, books, skipped := withScanOutputs(t, dir, false)
 
 	if err := runScan(context.Background(), scanFixture(t), processor.DefaultScanProcessorConfig()); err != nil {
 		t.Fatal(err)
@@ -188,6 +189,9 @@ func TestRunScanDefaultSkipsBulkReports(t *testing.T) {
 
 	if !exists(t, failures) {
 		t.Errorf("expected %s to be written on every run", failures)
+	}
+	if !exists(t, skipped) {
+		t.Errorf("expected %s to be written on every run", skipped)
 	}
 	if exists(t, duplicates) {
 		t.Errorf("expected no %s without --report", duplicates)
@@ -199,15 +203,40 @@ func TestRunScanDefaultSkipsBulkReports(t *testing.T) {
 
 func TestRunScanReportWritesBulkReports(t *testing.T) {
 	dir := t.TempDir()
-	failures, duplicates, books := withScanOutputs(t, dir, true)
+	failures, duplicates, books, skipped := withScanOutputs(t, dir, true)
 
 	if err := runScan(context.Background(), scanFixture(t), processor.DefaultScanProcessorConfig()); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, path := range []string{failures, duplicates, books} {
+	for _, path := range []string{failures, skipped, duplicates, books} {
 		if !exists(t, path) {
 			t.Errorf("expected %s to be written with --report", path)
+		}
+	}
+}
+
+func TestRunScanWritesSkippedReport(t *testing.T) {
+	dir := t.TempDir()
+	_, _, _, skipped := withScanOutputs(t, dir, false)
+
+	booksDir := t.TempDir()
+	path := filepath.Join(booksDir, "small.txt")
+	if err := os.WriteFile(path, []byte("Title: Tiny\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runScan(context.Background(), booksDir, processor.DefaultScanProcessorConfig()); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(skipped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"small.txt", "below minimum document size"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("skipped report does not contain %q: %s", want, data)
 		}
 	}
 }
@@ -233,9 +262,13 @@ func (p *cancelingProcessor) Failures() []processor.Failure {
 	return []processor.Failure{{Path: "/books/broken.epub", Err: errors.New("parse failed")}}
 }
 
+func (p *cancelingProcessor) Skips() []processor.Skip {
+	return nil
+}
+
 func TestRunScanCancelWritesFailuresAndFinishesRun(t *testing.T) {
 	dir := t.TempDir()
-	failures, duplicates, books := withScanOutputs(t, dir, true)
+	failures, duplicates, books, skipped := withScanOutputs(t, dir, true)
 	dbPath = filepath.Join(dir, "test.db")
 
 	oldNew := newScanProcessor
@@ -277,6 +310,9 @@ func TestRunScanCancelWritesFailuresAndFinishesRun(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "broken.epub") {
 		t.Errorf("failures report does not list the recorded failure: %s", data)
+	}
+	if !exists(t, skipped) {
+		t.Errorf("expected %s to be written on cancellation", skipped)
 	}
 	if exists(t, duplicates) || exists(t, books) {
 		t.Error("bulk reports must not be written for a canceled scan")
