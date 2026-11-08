@@ -136,6 +136,22 @@ func TestRunEnrichStatus(t *testing.T) {
 	}
 }
 
+func TestRunEnrichStatusCombined(t *testing.T) {
+	dumpDir := t.TempDir()
+	writeCLIDump(t, dumpDir, "ol_dump_latest.txt.gz")
+	dbFile := filepath.Join(t.TempDir(), "missing.db")
+	withEnrichFlags(t, dbFile, dumpDir, false, true)
+
+	output := captureStdout(t, func() {
+		if err := runEnrichStatus(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(output, "mode: combined dump (works metadata deferred)") {
+		t.Fatalf("status output does not mention combined mode:\n%s", output)
+	}
+}
+
 func TestRunEnrichStatusMissingDatabaseDoesNotCreateIt(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "missing.db")
 	withEnrichFlags(t, dbFile, t.TempDir(), false, true)

@@ -140,6 +140,9 @@ func TestDatasetUsesCombined(t *testing.T) {
 	if !dataset.UsesCombined() {
 		t.Fatal("combined fallback should be reported")
 	}
+	if !dataset.EditionsFromCombined() {
+		t.Fatal("combined editions fallback should be reported")
+	}
 
 	familyDir := t.TempDir()
 	writeGzipDump(t, filepath.Join(familyDir, "ol_dump_editions_2024-02-29.txt.gz"))
@@ -151,6 +154,9 @@ func TestDatasetUsesCombined(t *testing.T) {
 	}
 	if family.UsesCombined() {
 		t.Fatal("family dumps should not be reported as combined")
+	}
+	if family.EditionsFromCombined() {
+		t.Fatal("family editions should not be reported as combined")
 	}
 }
 

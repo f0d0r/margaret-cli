@@ -749,6 +749,11 @@ If several directories hold a valid dump, the newest one wins. A combined
 `ol_dump_latest.txt.gz` dump is also accepted and satisfies all three
 families.
 
+A combined dump is processed in one combined pass plus a small temporary
+author sidecar; work-level metadata is deferred in that mode. The sidecar is
+removed when the run finishes, but it may need about 1 GB of temporary disk.
+For full work-level enrichment, the three family dumps are recommended.
+
 Use `--status` to see the resolved paths, the ISBN coverage of the scan
 database and a summary of the in-memory matching cache:
 

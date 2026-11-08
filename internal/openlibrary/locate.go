@@ -109,6 +109,13 @@ func (d *Dataset) UsesCombined() bool {
 	return false
 }
 
+// EditionsFromCombined reports whether the editions source is the combined
+// all-types dump, which also contains the authors needed by the combined
+// extraction pass.
+func (d *Dataset) EditionsFromCombined() bool {
+	return d != nil && d.Combined != nil && d.Editions != nil && d.Editions.Path == d.Combined.Path
+}
+
 // VersionDate returns the date used to compare datasets from different
 // directories.
 func (d *Dataset) VersionDate() time.Time {

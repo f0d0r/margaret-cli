@@ -114,7 +114,8 @@ func streamCache(t *testing.T) (*Cache, int64, int64, int64) {
 	return cache, first, second, third
 }
 
-func TestStreamDataset(t *testing.T) {
+func streamDataset(t *testing.T) (*Cache, int64, int64, int64, *openlibrary.Dataset) {
+	t.Helper()
 	cache, first, second, third := streamCache(t)
 	dir := t.TempDir()
 	editions := writeStreamDump(t, dir, "editions.txt.gz", strings.Join([]string{
@@ -132,13 +133,17 @@ func TestStreamDataset(t *testing.T) {
 		workLine("/works/OL2W", "The Hobbit", "Another edition.", []string{"Fantasy"}),
 		workLine("/works/OL3W", "A Title Without ISBN", "A third work.", []string{"Fiction"}),
 	}, ""), openlibrary.KindWorks)
-
-	result, err := StreamDataset(context.Background(), &openlibrary.Dataset{
+	return cache, first, second, third, &openlibrary.Dataset{
 		Dir:      dir,
 		Editions: editions,
 		Authors:  authors,
 		Works:    works,
-	}, cache, StreamOptions{})
+	}
+}
+
+func TestStreamDataset(t *testing.T) {
+	cache, first, second, third, dataset := streamDataset(t)
+	result, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +180,30 @@ func TestStreamDataset(t *testing.T) {
 	}
 	if result.Works["/works/OL1W"].Title != "The Hobbit" {
 		t.Fatalf("works = %+v", result.Works)
+	}
+}
+
+func TestStreamAndRank(t *testing.T) {
+	cache, first, second, third, dataset := streamDataset(t)
+	stream, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ranked, err := Rank(stream, cache, RankOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ranked.Books[first].Status; got != StatusConfirmed {
+		t.Fatalf("first status = %q, want confirmed", got)
+	}
+	if got := ranked.Books[second].Status; got != StatusProbable {
+		t.Fatalf("second status = %q, want probable", got)
+	}
+	if got := ranked.Books[third].Status; got != StatusConfirmed {
+		t.Fatalf("third status = %q, want confirmed", got)
+	}
+	if ranked.Books[first].WorkKey != "/works/OL1W" {
+		t.Fatalf("first work = %q", ranked.Books[first].WorkKey)
 	}
 }
 
@@ -267,17 +296,102 @@ func TestStreamMalformedRows(t *testing.T) {
 	findCandidate(t, result.Candidates[bookID], "/books/OL1M")
 }
 
-func TestStreamCombinedRejected(t *testing.T) {
-	file := &openlibrary.File{Path: "combined.txt", Kind: openlibrary.KindAll}
-	_, err := StreamDataset(context.Background(), &openlibrary.Dataset{
-		Dir:      ".",
+func TestStreamCombined(t *testing.T) {
+	cache, first, second, third := streamCache(t)
+	dir := t.TempDir()
+	tempDir := t.TempDir()
+	file := writeStreamDump(t, dir, "ol_dump_latest.txt.gz", strings.Join([]string{
+		authorLine("/authors/OL1A", "J. R. R. Tolkien"),
+		editionLine("/books/OL1M", "The Hobbit", []string{"9780306406157"}, []string{"/authors/OL1A"}, []string{"/works/OL1W"}),
+		workLine("/works/OL1W", "The Hobbit", "A hobbit goes there and back again.", []string{"Fantasy"}),
+		authorLine("/authors/OL2A", "Someone Else"),
+		editionLine("/books/OL2M", "The Hobbit", []string{"9780375704024"}, []string{"/authors/OL2A"}, []string{"/works/OL2W"}),
+		workLine("/works/OL2W", "The Hobbit", "Another edition.", []string{"Fantasy"}),
+		authorLine("/authors/OL3A", "Jane Doe"),
+		editionLine("/books/OL3M", "A Title Without ISBN", nil, []string{"/authors/OL3A"}, []string{"/works/OL3W"}),
+		workLine("/works/OL3W", "A Title Without ISBN", "A third work.", []string{"Fiction"}),
+	}, ""), openlibrary.KindAll)
+	dataset := &openlibrary.Dataset{
+		Dir:      dir,
 		Editions: file,
 		Works:    file,
 		Authors:  file,
 		Combined: file,
-	}, &Cache{Books: map[int64]*Book{}}, StreamOptions{})
-	if err == nil || !strings.Contains(err.Error(), "combined") {
-		t.Fatalf("error = %v, want combined dump rejection", err)
+	}
+
+	result, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{TempDir: tempDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stats.Editions != 3 || result.Stats.Authors != 3 || result.Stats.Works != 0 {
+		t.Fatalf("stats = %+v", result.Stats)
+	}
+	if len(result.Works) != 0 {
+		t.Fatalf("works = %+v, want deferred", result.Works)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, " "), "works metadata deferred") {
+		t.Fatalf("warnings = %v", result.Warnings)
+	}
+	if result.Authors["/authors/OL1A"].Names[0] != "J. R. R. Tolkien" {
+		t.Fatalf("authors = %+v", result.Authors)
+	}
+	findCandidate(t, result.Candidates[first], "/books/OL1M")
+	findCandidate(t, result.Candidates[second], "/books/OL2M")
+	findCandidate(t, result.Candidates[third], "/books/OL3M")
+
+	ranked, err := Rank(result, cache, RankOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ranked.Books[first].Status; got != StatusConfirmed {
+		t.Fatalf("first status = %q, want confirmed", got)
+	}
+	if got := ranked.Books[second].Status; got != StatusProbable {
+		t.Fatalf("second status = %q, want probable", got)
+	}
+	if got := ranked.Books[third].Status; got != StatusConfirmed {
+		t.Fatalf("third status = %q, want confirmed", got)
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temp dir is not clean: %v", entries)
+	}
+}
+
+func TestStreamCombinedNoCandidatesCleansSidecar(t *testing.T) {
+	queries := newTestQueries(t)
+	addBook(t, queries, "No Match", nil, nil)
+	cache, err := Build(context.Background(), queries, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	tempDir := t.TempDir()
+	file := writeStreamDump(t, dir, "ol_dump_latest.txt.gz", editionLine("/books/OL1M", "Different", nil, nil, nil), openlibrary.KindAll)
+	result, err := StreamDataset(context.Background(), &openlibrary.Dataset{
+		Dir:      dir,
+		Editions: file,
+		Works:    file,
+		Authors:  file,
+		Combined: file,
+	}, cache, StreamOptions{TempDir: tempDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 0 {
+		t.Fatalf("candidates = %+v", result.Candidates)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temp dir is not clean: %v", entries)
 	}
 }
 

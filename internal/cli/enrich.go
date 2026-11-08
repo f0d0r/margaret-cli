@@ -195,6 +195,9 @@ func printDataset(dataset *openlibrary.Dataset) {
 	for _, invalid := range dataset.Invalid {
 		fmt.Printf("  %-8s %-42s %s\n", "invalid", filepath.Base(invalid.Path), invalid.Err)
 	}
+	if dataset.EditionsFromCombined() {
+		fmt.Println("  mode: combined dump (works metadata deferred)")
+	}
 }
 
 func runEnrichStatus(ctx context.Context) error {

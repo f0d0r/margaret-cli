@@ -42,7 +42,10 @@ type StreamOptions struct {
 	MaxPosting                int
 	MinTitleScore             float64
 	ISBNTitleConfirm          float64
-	Progress                  func(StreamProgress)
+	// TempDir overrides the directory used for the temporary author sidecar
+	// in combined-dump mode. An empty value uses the operating system default.
+	TempDir  string
+	Progress func(StreamProgress)
 }
 
 func (o StreamOptions) withDefaults() StreamOptions {
