@@ -30,11 +30,21 @@ type ReviewCandidate struct {
 	Evidence       json.RawMessage `json:"evidence"`
 }
 
+// ConflictInfo is one peer in a metadata/content conflict.
+type ConflictInfo struct {
+	PeerBookID int64   `json:"peer_book_id"`
+	Reason     string  `json:"reason"`
+	Score      float64 `json:"score"`
+}
+
 // ReviewBook is one uncertain book with its stored candidates.
 type ReviewBook struct {
 	BookReport
 	MatchInfo
-	Candidates []ReviewCandidate `json:"candidates"`
+	MatchStatus       string            `json:"match_status"`
+	MatchReviewReason string            `json:"match_review_reason"`
+	Conflicts         []ConflictInfo    `json:"conflicts"`
+	Candidates        []ReviewCandidate `json:"candidates"`
 }
 
 // ReviewReport groups uncertain books by match status.
@@ -64,6 +74,18 @@ func WriteReview(ctx context.Context, q *db.Queries, path string) error {
 	for _, row := range candidateRows {
 		candidates[row.BookID] = append(candidates[row.BookID], reviewCandidate(row))
 	}
+	conflictRows, err := q.ListBookConflictsForReview(ctx)
+	if err != nil {
+		return fmt.Errorf("list review conflicts: %w", err)
+	}
+	conflicts := make(map[int64][]ConflictInfo)
+	for _, row := range conflictRows {
+		conflicts[row.BookID] = append(conflicts[row.BookID], ConflictInfo{
+			PeerBookID: row.PeerBookID,
+			Reason:     row.Reason,
+			Score:      row.Score,
+		})
+	}
 
 	report := ReviewReport{
 		Probable:    []ReviewBook{},
@@ -80,15 +102,40 @@ func WriteReview(ctx context.Context, q *db.Queries, path string) error {
 		if !ok {
 			continue
 		}
+		reviewReason := match.ReviewReason
+		bookConflicts := conflicts[match.BookID]
+		if len(bookConflicts) > 0 {
+			reviewReason = bookConflicts[0].Reason
+		}
 		item := ReviewBook{
 			BookReport: book,
-			MatchInfo:  matchInfo(match),
-			Candidates: candidates[match.BookID],
+			MatchInfo: MatchInfo{
+				Status:         match.FinalStatus,
+				Confidence:     match.Confidence,
+				Method:         match.Method,
+				EditionKey:     match.EditionKey,
+				WorkKey:        match.WorkKey,
+				ISBN:           match.Isbn,
+				ISBNSource:     match.IsbnSource,
+				ReviewReason:   reviewReason,
+				ScoreGap:       match.ScoreGap,
+				CandidateCount: match.CandidateCount,
+				WorkCount:      match.WorkCount,
+				MatcherVersion: match.MatcherVersion,
+				DumpVersion:    match.DumpVersion,
+			},
+			MatchStatus:       match.MatchStatus,
+			MatchReviewReason: match.ReviewReason,
+			Conflicts:         bookConflicts,
+			Candidates:        candidates[match.BookID],
+		}
+		if item.Conflicts == nil {
+			item.Conflicts = []ConflictInfo{}
 		}
 		if item.Candidates == nil {
 			item.Candidates = []ReviewCandidate{}
 		}
-		switch match.Status {
+		switch match.FinalStatus {
 		case "probable":
 			report.Probable = append(report.Probable, item)
 		case "ambiguous":

@@ -28,6 +28,7 @@ const DefaultPath = "margaret.db"
 // starts a new history with its own run row. When a migration adds a table, extend this list:
 // TestClearCoversEntireSchema fails until you do.
 var clearStatements = []string{
+	`DELETE FROM book_conflicts;`,
 	`DELETE FROM book_match_candidates;`,
 	`DELETE FROM book_matches;`,
 	`DELETE FROM book_enrichment_authors;`,
@@ -79,7 +80,34 @@ func Open(dataSource string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
+	if err := ensureConflictSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// ensureConflictSchema is a compatibility shim for databases created before
+// book_conflicts was added to the migration. Fresh databases get the table
+// from the migration.
+func ensureConflictSchema(db *sql.DB) error {
+	const table = `CREATE TABLE IF NOT EXISTS book_conflicts (
+		book_id INTEGER NOT NULL,
+		peer_book_id INTEGER NOT NULL,
+		reason TEXT NOT NULL,
+		score REAL NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (book_id, peer_book_id),
+		FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+		FOREIGN KEY (peer_book_id) REFERENCES books(id) ON DELETE CASCADE
+	)`
+	if _, err := db.Exec(table); err != nil {
+		return fmt.Errorf("ensure conflict schema: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS book_conflicts_peer_idx ON book_conflicts(peer_book_id)`); err != nil {
+		return fmt.Errorf("ensure conflict index: %w", err)
+	}
+	return nil
 }
 
 // Clear deletes all scanned content so a new scan starts with a clean slate.

@@ -83,6 +83,12 @@ func seedReportMatch(t *testing.T, q *db.Queries, bookID int64, status string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := q.SetBookMatchStatus(context.Background(), db.SetBookMatchStatusParams{
+		MatchStatus: status,
+		ID:          bookID,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedReportCandidate(t *testing.T, q *db.Queries, bookID int64) {
@@ -196,6 +202,54 @@ func TestWriteReviewCategories(t *testing.T) {
 	}
 	if evidence["work_group_editions"] != float64(1) {
 		t.Fatalf("evidence = %v", evidence)
+	}
+}
+
+func TestWriteReviewConflict(t *testing.T) {
+	_, q := openReportDB(t)
+	bookID := seedReportBook(t, q, "Title", "hash-conflict")
+	peerID := seedReportBook(t, q, "Title", "hash-conflict-peer")
+	seedReportMatch(t, q, bookID, "confirmed")
+	if err := q.SetBookMatchStatus(context.Background(), db.SetBookMatchStatusParams{
+		MatchStatus: "needs_review",
+		ID:          bookID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.CreateBookConflict(context.Background(), db.CreateBookConflictParams{
+		BookID:     bookID,
+		PeerBookID: peerID,
+		Reason:     "metadata_content_mismatch",
+		Score:      0.12,
+		CreatedAt:  1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "review.json")
+	if err := WriteReview(context.Background(), q, path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report ReviewReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.NeedsReview) != 1 {
+		t.Fatalf("needs_review = %d, want 1", len(report.NeedsReview))
+	}
+	item := report.NeedsReview[0]
+	if item.Status != "needs_review" || item.MatchStatus != "confirmed" {
+		t.Fatalf("statuses = %q / %q", item.Status, item.MatchStatus)
+	}
+	if item.ReviewReason != "metadata_content_mismatch" {
+		t.Fatalf("review reason = %q", item.ReviewReason)
+	}
+	if len(item.Conflicts) != 1 || item.Conflicts[0].PeerBookID != peerID {
+		t.Fatalf("conflicts = %+v", item.Conflicts)
 	}
 }
 

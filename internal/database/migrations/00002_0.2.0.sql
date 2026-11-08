@@ -155,6 +155,21 @@ CREATE INDEX book_match_candidates_book_score_idx
 CREATE INDEX book_match_candidates_edition_idx
     ON book_match_candidates(edition_key);
 
+-- Book pairs whose local metadata claims they are the same book but whose
+-- content MinHash similarity is below the near-duplicate threshold.
+CREATE TABLE book_conflicts (
+    book_id INTEGER NOT NULL,
+    peer_book_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (book_id, peer_book_id),
+    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+    FOREIGN KEY (peer_book_id) REFERENCES books(id) ON DELETE CASCADE
+);
+
+CREATE INDEX book_conflicts_peer_idx ON book_conflicts(peer_book_id);
+
 -- Enriched values are stored separately so the raw scan metadata stays
 -- auditable and nothing is silently overwritten.
 CREATE TABLE book_enrichment (
@@ -228,6 +243,7 @@ DROP TABLE IF EXISTS book_enrichment_publications;
 DROP TABLE IF EXISTS book_enrichment_languages;
 DROP TABLE IF EXISTS book_enrichment_subjects;
 DROP TABLE IF EXISTS book_enrichment;
+DROP TABLE IF EXISTS book_conflicts;
 DROP TABLE IF EXISTS book_match_candidates;
 DROP TABLE IF EXISTS book_matches;
 DROP INDEX IF EXISTS books_match_status_idx;

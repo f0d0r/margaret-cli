@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/f0d0r/margaret-cli/internal/conflict"
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/matcher"
@@ -121,6 +123,9 @@ func runEnrich(ctx context.Context) error {
 	}
 	if cache.Stats.Books == 0 {
 		fmt.Println("No books need matching.")
+		if err := runConflictDetection(ctx, conn, q); err != nil {
+			return err
+		}
 		if err := writeEnrichmentReports(ctx, q); err != nil {
 			return err
 		}
@@ -149,10 +154,24 @@ func runEnrich(ctx context.Context) error {
 	}, matcher.PersistOptions{}); err != nil {
 		return err
 	}
+	if err := runConflictDetection(ctx, conn, q); err != nil {
+		return err
+	}
 	if err := writeEnrichmentReports(ctx, q); err != nil {
 		return err
 	}
-	printMatchStats(ranked.Stats)
+	return printMatchStatusCounts(ctx, q)
+}
+
+func runConflictDetection(ctx context.Context, conn *sql.DB, q *db.Queries) error {
+	result, err := conflict.DetectAndPersist(ctx, conn, q, conflict.Options{})
+	if err != nil {
+		return fmt.Errorf("detect conflicts: %w", err)
+	}
+	if result.Stats.Conflicts > 0 {
+		fmt.Printf("Conflicts: %d pair(s), %d book(s)\n",
+			result.Stats.Conflicts, result.Stats.ConflictBooks)
+	}
 	return nil
 }
 
@@ -239,18 +258,6 @@ func printStreamProgress(progress matcher.StreamProgress) {
 		line += fmt.Sprintf(" pending=%d", progress.Pending)
 	}
 	fmt.Fprintf(os.Stderr, "\r%s", line)
-}
-
-func printMatchStats(stats matcher.RankStats) {
-	total := stats.Confirmed + stats.Probable + stats.Ambiguous +
-		stats.NeedsReview + stats.NotFound + stats.NoData
-	fmt.Printf("Matched books: %d\n", total)
-	fmt.Printf("  confirmed     %d\n", stats.Confirmed)
-	fmt.Printf("  probable      %d\n", stats.Probable)
-	fmt.Printf("  ambiguous     %d\n", stats.Ambiguous)
-	fmt.Printf("  needs_review  %d\n", stats.NeedsReview)
-	fmt.Printf("  not_found     %d\n", stats.NotFound)
-	fmt.Printf("  no_data       %d\n", stats.NoData)
 }
 
 func printMatchStatusCounts(ctx context.Context, q *db.Queries) error {

@@ -820,6 +820,14 @@ metadata. `review.json` groups the uncertain books into separate arrays:
 categories are written as `[]`; when no book needs review, the file is not
 created.
 
+`enrich` also runs a local conflict check. Two books with the same normalized
+title and author whose content MinHash Jaccard is below 75% are marked
+`needs_review` with reason `metadata_content_mismatch`: the metadata claims
+they are the same book, but the content says otherwise. Both books appear in
+`review.json` with their peer IDs and content similarity, and they are
+excluded from `books_enriched.json` even when the OpenLibrary match itself was
+confirmed.
+
 ## Regenerating reports
 
 `scan` writes the `books.json` / `duplicates.json` reports only with

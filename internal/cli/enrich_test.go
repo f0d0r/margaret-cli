@@ -362,7 +362,7 @@ func TestRunEnrichMatchesAndPersists(t *testing.T) {
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
-	for _, want := range []string{"Matching 2 book(s)", "confirmed     1", "not_found     1"} {
+	for _, want := range []string{"Matching 2 book(s)", "Match status:", "confirmed    1", "not_found    1"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output does not contain %q:\n%s", want, output)
 		}
