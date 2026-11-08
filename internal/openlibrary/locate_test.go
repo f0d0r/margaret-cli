@@ -129,6 +129,31 @@ func TestLoadDatasetCombinedFallback(t *testing.T) {
 	}
 }
 
+func TestDatasetUsesCombined(t *testing.T) {
+	dir := t.TempDir()
+	writeGzipDump(t, filepath.Join(dir, "ol_dump_2024-02-29.txt.gz"))
+
+	dataset, err := LoadDataset(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dataset.UsesCombined() {
+		t.Fatal("combined fallback should be reported")
+	}
+
+	familyDir := t.TempDir()
+	writeGzipDump(t, filepath.Join(familyDir, "ol_dump_editions_2024-02-29.txt.gz"))
+	writeGzipDump(t, filepath.Join(familyDir, "ol_dump_works_2024-02-29.txt.gz"))
+	writeGzipDump(t, filepath.Join(familyDir, "ol_dump_authors_2024-02-29.txt.gz"))
+	family, err := LoadDataset(familyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if family.UsesCombined() {
+		t.Fatal("family dumps should not be reported as combined")
+	}
+}
+
 func TestLoadDatasetMissingFamilies(t *testing.T) {
 	dir := t.TempDir()
 	writePlainDump(t, filepath.Join(dir, "ol_dump_editions_2024-01-31.txt"))

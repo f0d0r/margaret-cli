@@ -95,6 +95,20 @@ func (d *Dataset) Files() []File {
 	return files
 }
 
+// UsesCombined reports whether any dump family is backed by the combined
+// all-types dump.
+func (d *Dataset) UsesCombined() bool {
+	if d == nil || d.Combined == nil {
+		return false
+	}
+	for _, file := range []*File{d.Editions, d.Works, d.Authors} {
+		if file != nil && file.Path == d.Combined.Path {
+			return true
+		}
+	}
+	return false
+}
+
 // VersionDate returns the date used to compare datasets from different
 // directories.
 func (d *Dataset) VersionDate() time.Time {
