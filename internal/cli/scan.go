@@ -25,6 +25,7 @@ var (
 	spoolMemLimit   int64
 	minDocSize      int64
 	failuresOutPath string
+	skippedOutPath  string
 	ftpUser         string
 	ftpPass         string
 	duplicatesOut   string
@@ -46,7 +47,10 @@ and title metadata of every ebook found. Ebooks are also searched
 inside zip, tar, gz, bz2, rar and 7z archives (nested archives are
 unpacked up to the depth given with --archive-depth).
 PDF files are processed only when Poppler's pdftotext and pdfinfo are
-available (on PATH or in --pdf-tools-dir); otherwise they are skipped.`,
+available (on PATH or in --pdf-tools-dir); otherwise they are skipped.
+Files skipped because they are not books or cannot be parsed are listed in
+the skipped report; files already recorded by a resume run are counted
+separately.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := processor.DefaultScanProcessorConfig()
@@ -78,11 +82,12 @@ func init() {
 	scanCmd.Flags().Int64Var(&minDocSize, "min-doc-size", processor.DefaultMinDocumentSize, "minimum bytes for a document-format file (txt, rtf, pdf) and its extracted text to be treated as a book (0 = default, negative = disable)")
 	scanCmd.Flags().StringVar(&pdfToolsDir, "pdf-tools-dir", "", "directory containing poppler's pdftotext and pdfinfo (default: search PATH)")
 	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
+	scanCmd.Flags().StringVar(&skippedOutPath, "skipped-out", "skipped.json", "write a JSON report of the skipped items to this file")
 	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
 	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
 	scanCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
-	scanCmd.Flags().BoolVar(&reportEnabled, "report", false, "write the books and duplicates JSON reports (failures are always written)")
+	scanCmd.Flags().BoolVar(&reportEnabled, "report", false, "write the books and duplicates JSON reports (failures and skipped reports are always written)")
 	scanCmd.Flags().BoolVar(&freshFlag, "fresh", false, "delete existing scan data and start from a clean slate")
 	scanCmd.Flags().BoolVar(&resumeFlag, "resume", false, "keep existing scan data and only process new or changed files")
 	scanCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to use (use \":memory:\" for an ephemeral database)")
@@ -264,6 +269,7 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	<-tickDone
 	stats := proc.Stats()
 	failures := proc.Failures()
+	skips := proc.Skips()
 	if rep != nil {
 		rep.sync(stats)
 	}
@@ -275,10 +281,13 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 	if cfg.CollectExtStats {
 		printExtStats(stats)
 	}
-	// The failures report is written on every run, including interrupted
-	// ones: failures are only produced during the scan and cannot be
-	// regenerated later.
+	// The failures and skipped reports are written on every run, including
+	// interrupted ones: they can only be produced during the scan and cannot
+	// be regenerated later.
 	if err := report.WriteFailures(failures, failuresOutPath); err != nil {
+		return err
+	}
+	if err := report.WriteSkips(skips, skippedOutPath); err != nil {
 		return err
 	}
 	if canceled {
@@ -308,12 +317,15 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 
 func printReport(s processor.Progress, d time.Duration) {
 	succeeded := s.Parsed
-	total := succeeded + s.Failed + s.Skipped
+	total := succeeded + s.Failed + s.Skipped + s.AlreadyProcessed
 	fmt.Printf("Total      %d ebook(s)\n", total)
 	fmt.Printf("Succeeded  %d\n", succeeded)
 	fmt.Printf("Failed     %d\n", s.Failed)
 	if s.Skipped > 0 {
 		fmt.Printf("Skipped    %d\n", s.Skipped)
+	}
+	if s.AlreadyProcessed > 0 {
+		fmt.Printf("Already processed %d\n", s.AlreadyProcessed)
 	}
 	fmt.Printf("Duration   %s\n", d.Round(time.Millisecond))
 }

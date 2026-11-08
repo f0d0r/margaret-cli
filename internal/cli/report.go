@@ -18,8 +18,8 @@ var reportCmd = &cobra.Command{
 database without scanning. Useful after a scan that ran without --report,
 or when the report files were deleted or are wanted at different paths.
 
-Failures cannot be regenerated: they are produced during the scan and are
-not stored in the database.`,
+Failures and skipped items cannot be regenerated: they are produced during
+the scan and are not stored in the database.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runReport(cmd.Context())

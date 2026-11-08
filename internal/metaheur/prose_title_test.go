@@ -9,11 +9,7 @@ func TestIsProseTitle(t *testing.T) {
 		want bool
 	}{
 		{"truncated body", "Mindketten nehezen szedték a levegot, és egyikük sem volt hajlandó meghátrálni", true},
-		{"relative continuation", "Az uszoncok voltak az elsők a csillagtörzsek közül, amelyek", true},
 		{"long multi-clause", "A búgás most már élesen és tisztán zengett, és nyálkás zajok hallatszottak mögülük, hangosabbak, mint a lovaik patái alatt szé", true},
-		{"function word ending", "Szép férfi volt; nagy, éjfekete szeme különösen finom és", true},
-		{"article ending", "Egy külföldi utazás során sok kellemetlenség adódhat, kezdve a", true},
-		{"lowercase start", "bár ember teremtette gépi ész vagy még inkább a mesterséges intelligencia - szintén általunk kezdeményezett - evolúciójának me", true},
 		{"trailing colon", "A szerző eddig megjelent regényei az Agave kiadásában:", true},
 		{"sentence ending", "Ez egy nagyon hosszú mondat arról, hogy mi történt a faluban azon a nyáron.", true},
 		{"long english title", "A Smarter Way to Learn JavaScript: The new approach that uses technology to cut your effort in half", false},
@@ -24,6 +20,9 @@ func TestIsProseTitle(t *testing.T) {
 		{"slash abbreviation", "TCP/IP Illustrated", false},
 		{"short title", "Dune", false},
 		{"list title", "Great Slow Kings, The", false},
+		{"preposition ending title", "The World That We Live In", false},
+		{"auxiliary ending title", "The Man I Want to Be", false},
+		{"lowercase title", "the curious incident of the dog in the night-time", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

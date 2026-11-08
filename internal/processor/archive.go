@@ -226,7 +226,7 @@ func (p *ScanProcessor) handleArchiveFile(displayPath string, depth int) func(co
 		}
 		display := displayPath + "!" + f.NameInArchive
 		if p.shouldSkip(ctx, display) {
-			p.skip()
+			p.skipAlreadyProcessed()
 			return nil
 		}
 		opened, err := f.Open()
@@ -262,7 +262,7 @@ func (p *ScanProcessor) processZip(ctx context.Context, ra io.ReaderAt, size int
 			continue
 		}
 		if p.shouldSkip(ctx, display) {
-			p.skip()
+			p.skipAlreadyProcessed()
 			continue
 		}
 		if zf.Flags&0x1 != 0 {
@@ -320,7 +320,11 @@ func (p *ScanProcessor) processSingleStream(ctx context.Context, r io.Reader, in
 		return
 	}
 	if p.shouldSkip(ctx, innerPath) {
-		p.skip()
+		p.skipAlreadyProcessed()
+		return
+	}
+	if p.pdfDisabled(format) {
+		p.skip(innerPath, reasonPDFUnavailable)
 		return
 	}
 	p.found.Add(1)
@@ -342,16 +346,16 @@ func (p *ScanProcessor) handleMember(ctx context.Context, name string, r io.Read
 		p.processArchiveStream(ctx, format, r, display, depth, size)
 		return
 	}
-	if p.pdfDisabled(format) {
-		p.skip()
-		return
-	}
-	if p.belowMinSize(format, size) {
-		p.skip()
-		return
-	}
 	if p.shouldSkip(ctx, display) {
-		p.skip()
+		p.skipAlreadyProcessed()
+		return
+	}
+	if p.pdfDisabled(format) {
+		p.skip(display, reasonPDFUnavailable)
+		return
+	}
+	if minSize, skip := p.belowMinSize(format, size); skip {
+		p.skip(display, minSizeReason(size, minSize))
 		return
 	}
 	p.found.Add(1)

@@ -18,11 +18,12 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// ErrEmptyText reports a file with no textual content.
-var ErrEmptyText = errors.New("txt: empty or whitespace-only text")
-
-// ErrBinaryText reports content that does not look like plain text.
-var ErrBinaryText = errors.New("txt: binary content")
+var (
+	// ErrEmptyText reports a file with no textual content.
+	ErrEmptyText = fmt.Errorf("%w: empty or whitespace-only text", parser.ErrNotABook)
+	// ErrBinaryText reports content that does not look like plain text.
+	ErrBinaryText = errors.New("txt: binary content")
+)
 
 // TxtParser extracts metadata from plain-text books. The title and the authors
 // come from a header block at the start of the text (label lines, YAML front
@@ -68,7 +69,7 @@ func (p TxtParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return parser.Metadata{}, fmt.Errorf("txt: invalid size %d", size)
 	}
 	if min := p.MinSize(); min > 0 && size < min {
-		return parser.Metadata{}, parser.ErrNotABook
+		return parser.Metadata{}, fmt.Errorf("%w: file is smaller than %d bytes", parser.ErrNotABook, min)
 	}
 	if size == 0 {
 		return parser.Metadata{}, ErrEmptyText

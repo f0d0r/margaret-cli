@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/f0d0r/margaret-cli/internal/parser/pdf"
@@ -51,7 +52,14 @@ func TestProcessPDFSkipsWithoutTools(t *testing.T) {
 	if failures := proc.Failures(); len(failures) != 0 {
 		t.Fatalf("unexpected failures: %v", failures)
 	}
-	if stats := proc.Stats(); stats.Parsed != 0 || stats.Skipped != 1 {
+	if stats := proc.Stats(); stats.Parsed != 0 || stats.Skipped != 1 || stats.AlreadyProcessed != 0 {
 		t.Fatalf("stats = %+v, want parsed=0 skipped=1", stats)
+	}
+	skips := proc.Skips()
+	if len(skips) != 1 || skips[0].Path != filepath.Join(dir, "a.pdf") {
+		t.Fatalf("skips = %+v, want the PDF path", skips)
+	}
+	if !strings.Contains(skips[0].Reason, "PDF support unavailable") {
+		t.Errorf("skip reason = %q, want a PDF support reason", skips[0].Reason)
 	}
 }

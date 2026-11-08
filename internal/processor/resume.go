@@ -22,10 +22,3 @@ func (p *ScanProcessor) shouldSkip(ctx context.Context, displayPath string) bool
 	_, err := p.q.GetBookFileDuplicateByPath(ctx, displayPath)
 	return err == nil
 }
-
-// skip records a resume skip and emits progress, mirroring fail() without
-// the failure bookkeeping.
-func (p *ScanProcessor) skip() {
-	p.skipped.Add(1)
-	p.report()
-}

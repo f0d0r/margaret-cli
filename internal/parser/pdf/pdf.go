@@ -80,7 +80,7 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return parser.Metadata{}, fmt.Errorf("pdf: invalid size %d", size)
 	}
 	if min := p.MinSize(); min > 0 && size < min {
-		return parser.Metadata{}, parser.ErrNotABook
+		return parser.Metadata{}, fmt.Errorf("%w: file is smaller than %d bytes", parser.ErrNotABook, min)
 	}
 	if size == 0 {
 		return parser.Metadata{}, ErrNotPDF
@@ -134,14 +134,14 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	if err != nil {
 		_ = text.Close()
 		waitErr := wait()
-		if errors.Is(err, ErrNoText) || errors.Is(err, parser.ErrNotABook) {
-			if waitErr != nil {
-				return parser.Metadata{}, parser.ContextError(ctx, waitErr)
-			}
-			return parser.Metadata{}, parser.ErrNotABook
-		}
 		if waitErr != nil {
 			return parser.Metadata{}, parser.ContextError(ctx, waitErr)
+		}
+		if errors.Is(err, ErrNoText) {
+			return parser.Metadata{}, fmt.Errorf("%w: no extractable text", parser.ErrNotABook)
+		}
+		if errors.Is(err, parser.ErrNotABook) {
+			return parser.Metadata{}, err
 		}
 		return parser.Metadata{}, parser.ContextError(ctx, fmt.Errorf("pdf: read text: %w", err))
 	}
@@ -150,7 +150,7 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	}
 	if err := gate.Finish(); err != nil {
 		if errors.Is(err, ErrNoText) {
-			return parser.Metadata{}, parser.ErrNotABook
+			return parser.Metadata{}, fmt.Errorf("%w: no extractable text", parser.ErrNotABook)
 		}
 		return parser.Metadata{}, err
 	}
@@ -158,7 +158,7 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 		return parser.Metadata{}, err
 	}
 	if min := p.MinSize(); min > 0 && cleaned.n < min {
-		return parser.Metadata{}, parser.ErrNotABook
+		return parser.Metadata{}, fmt.Errorf("%w: extracted text is shorter than %d bytes", parser.ErrNotABook, min)
 	}
 
 	head := gate.Head()

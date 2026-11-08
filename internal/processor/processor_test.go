@@ -333,8 +333,8 @@ func TestFailedFilesRetriedOnResume(t *testing.T) {
 	if err := proc2.Process(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 1 || got.Skipped != 1 {
-		t.Fatalf("resume run: expected 0 parsed 1 failed 1 skipped, got %+v", got)
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 1 || got.Skipped != 0 || got.AlreadyProcessed != 1 {
+		t.Fatalf("resume run: expected 0 parsed 1 failed 0 skipped 1 already processed, got %+v", got)
 	}
 	if failures := proc2.Failures(); len(failures) != 1 || failures[0].Path != badPath {
 		t.Fatalf("expected the retried failure for %q, got %+v", badPath, failures)
@@ -355,8 +355,8 @@ func TestFailedFilesRetriedOnResume(t *testing.T) {
 	if err := proc3.Process(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := proc3.Stats(); got.Parsed != 1 || got.Failed != 0 || got.Skipped != 1 {
-		t.Fatalf("fixed run: expected 1 parsed 0 failed 1 skipped, got %+v", got)
+	if got := proc3.Stats(); got.Parsed != 1 || got.Failed != 0 || got.Skipped != 0 || got.AlreadyProcessed != 1 {
+		t.Fatalf("fixed run: expected 1 parsed 0 failed 0 skipped 1 already processed, got %+v", got)
 	}
 	if files, books := counts(); files != 2 || books != 2 {
 		t.Fatalf("after fixed run: files=%d books=%d, want 2/2", files, books)
@@ -524,8 +524,8 @@ func TestResumeSkipsDuplicates(t *testing.T) {
 	if err := proc2.Process(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 0 || got.Skipped != 3 {
-		t.Fatalf("resume run: expected 0 parsed 0 failed 3 skipped, got %+v", got)
+	if got := proc2.Stats(); got.Parsed != 0 || got.Failed != 0 || got.Skipped != 0 || got.AlreadyProcessed != 3 {
+		t.Fatalf("resume run: expected 0 parsed 0 failed 0 skipped 3 already processed, got %+v", got)
 	}
 	var files, books int
 	if err := conn.QueryRow("SELECT count(*) FROM book_files").Scan(&files); err != nil {
@@ -1200,8 +1200,8 @@ func TestExtStatsIncludesResumeSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats2 := proc2.Stats()
-	if stats2.Skipped != 4 {
-		t.Fatalf("resume run: expected 4 skipped (2 epubs + 2 PDFs without Poppler), got %+v", stats2)
+	if stats2.Skipped != 2 || stats2.AlreadyProcessed != 2 {
+		t.Fatalf("resume run: expected 2 skipped (PDFs without Poppler) and 2 already processed, got %+v", stats2)
 	}
 	if !equalExtCounts(stats2.ExtCounts, want) {
 		t.Fatalf("resume run: expected ext counts %v (skipped files included), got %v", want, stats2.ExtCounts)

@@ -23,11 +23,11 @@ import (
 func fileScanSetup(t *testing.T, fresh, resume, term bool) (booksDir, dbFile, failures string) {
 	t.Helper()
 
-	oldDB, oldFailures, oldDuplicates, oldBooks := dbPath, failuresOutPath, duplicatesOut, booksOut
+	oldDB, oldFailures, oldSkipped, oldDuplicates, oldBooks := dbPath, failuresOutPath, skippedOutPath, duplicatesOut, booksOut
 	oldReport, oldFresh, oldResume := reportEnabled, freshFlag, resumeFlag
 	oldTerm := stdinIsTerminal
 	t.Cleanup(func() {
-		dbPath, failuresOutPath, duplicatesOut, booksOut = oldDB, oldFailures, oldDuplicates, oldBooks
+		dbPath, failuresOutPath, skippedOutPath, duplicatesOut, booksOut = oldDB, oldFailures, oldSkipped, oldDuplicates, oldBooks
 		reportEnabled, freshFlag, resumeFlag = oldReport, oldFresh, oldResume
 		stdinIsTerminal = oldTerm
 	})
@@ -44,6 +44,7 @@ func fileScanSetup(t *testing.T, fresh, resume, term bool) (booksDir, dbFile, fa
 
 	dbFile = filepath.Join(dir, "test.db")
 	failures = filepath.Join(dir, "failures.json")
+	skippedOutPath = filepath.Join(dir, "skipped.json")
 	dbPath, failuresOutPath = dbFile, failures
 	duplicatesOut = filepath.Join(dir, "duplicates.json")
 	booksOut = filepath.Join(dir, "books.json")
@@ -152,12 +153,19 @@ func TestRunScanResumeSkipsUnchanged(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "Skipped") {
-		t.Errorf("expected Skipped line in summary, got:\n%s", out)
+	if !strings.Contains(out, "Already processed 2") {
+		t.Errorf("expected an Already processed line in summary, got:\n%s", out)
 	}
-	// Total counts every encountered unit, including skipped ones.
+	// Total counts every encountered unit, including already processed ones.
 	if !strings.Contains(out, "Total      2 ebook(s)") {
-		t.Errorf("expected Total 2 (both files skipped), got:\n%s", out)
+		t.Errorf("expected Total 2 (both files already processed), got:\n%s", out)
+	}
+	data, err := os.ReadFile(skippedOutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "[]" {
+		t.Errorf("resume skips must not be listed in the skipped report, got: %s", data)
 	}
 	filesAfter, booksAfter, runs := dbCounts(t, dbFile)
 	if filesAfter != filesBefore || booksAfter != booksBefore {
@@ -185,8 +193,8 @@ func TestRunScanResumeSkipsChangedFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(out, "Skipped") {
-		t.Errorf("expected Skipped line in summary, got:\n%s", out)
+	if !strings.Contains(out, "Already processed 2") {
+		t.Errorf("expected an Already processed line in summary, got:\n%s", out)
 	}
 
 	conn := openTestDB(t, dbFile)
@@ -250,8 +258,8 @@ func TestRunScanResumeRetriesFailedFiles(t *testing.T) {
 	if !strings.Contains(out, "Failed     1") {
 		t.Errorf("expected the retried failure on resume, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Skipped") {
-		t.Errorf("expected a Skipped line in summary, got:\n%s", out)
+	if !strings.Contains(out, "Already processed 1") {
+		t.Errorf("expected the already processed file on resume, got:\n%s", out)
 	}
 	data, err = os.ReadFile(failuresPath)
 	if err != nil {

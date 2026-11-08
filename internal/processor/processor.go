@@ -10,11 +10,12 @@ import (
 
 // Processor runs the pipeline of a CLI command to completion, reporting
 // progress along the way. Implementations are constructed with their inputs
-// and expose the outcome of the run through Stats and Failures.
+// and expose the outcome of the run through Stats, Failures and Skips.
 type Processor interface {
 	Process(ctx context.Context) error
 	Stats() Progress
 	Failures() []Failure
+	Skips() []Skip
 }
 
 // Result is an ebook together with its extracted metadata.
@@ -29,6 +30,14 @@ type Failure struct {
 	Err  error
 }
 
+// Skip is an item that was passed over without being parsed for a reason
+// worth reporting. Files skipped by a resume run because they were already
+// processed are counted in Progress.AlreadyProcessed instead.
+type Skip struct {
+	Path   string
+	Reason string
+}
+
 // Progress reports the state of a running Process call.
 type Progress struct {
 	Scan   scanner.Progress
@@ -36,10 +45,14 @@ type Progress struct {
 	Parsed int64
 	Failed int64
 
-	// Skipped counts files that were passed over without being parsed: files
-	// already recorded in a previous resume run, and plain-text files that are
-	// too small or otherwise not books.
+	// Skipped counts files that were passed over without being parsed because
+	// they are not books or cannot be parsed. These are the actionable skips
+	// listed in the skipped report.
 	Skipped int64
+
+	// AlreadyProcessed counts files skipped by a resume run because they were
+	// recorded in an earlier run. These are not listed in the skipped report.
+	AlreadyProcessed int64
 
 	// ExtCounts holds per-extension file counts (supported + unsupported,
 	// archives excluded) when collection was enabled. It is nil otherwise.
