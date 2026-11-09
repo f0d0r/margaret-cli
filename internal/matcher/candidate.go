@@ -110,6 +110,7 @@ type WorkRecord struct {
 	Description      string
 	Subjects         []string
 	FirstPublishDate string
+	AuthorKeys       []string
 }
 
 // StreamResult is the output of the dump streaming step.

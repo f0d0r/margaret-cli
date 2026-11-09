@@ -286,3 +286,32 @@ func TestEnrichRemovesNonConfirmedEnrichment(t *testing.T) {
 		t.Fatalf("subjects = %d, want 0", count)
 	}
 }
+
+func TestEnrichWorkAuthors(t *testing.T) {
+	conn, q := openEnrichDB(t)
+	bookID := seedEnrichBook(t, q, "hash-work-authors", "/books/OL1M", "/works/OL1W", `[]`)
+	dir := t.TempDir()
+	edition := `{"key":"/books/OL1M","title":"OL Title","works":[{"key":"/works/OL1W"}]}`
+	work := `{"key":"/works/OL1W","title":"OL Title","authors":[{"type":{"key":"/type/author_role"},"author":{"key":"/authors/OL1A"}}]}`
+	editions := writeDumpFile(t, dir, "editions.txt",
+		"/type/edition\t/books/OL1M\t1\t2024-01-31\t"+edition+"\n", openlibrary.KindEditions)
+	works := writeDumpFile(t, dir, "works.txt",
+		"/type/work\t/works/OL1W\t1\t2024-01-31\t"+work+"\n", openlibrary.KindWorks)
+	authors := writeDumpFile(t, dir, "authors.txt",
+		"/type/author\t/authors/OL1A\t1\t2024-01-31\t"+testAuthor+"\n", openlibrary.KindAuthors)
+	dataset := &openlibrary.Dataset{Dir: dir, Editions: editions, Works: works, Authors: authors}
+
+	if _, err := Enrich(context.Background(), dataset, conn, q, Options{
+		MatcherVersion: "1",
+		DumpVersion:    "dump",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := q.ListBookEnrichmentAuthors(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].BookID != bookID || rows[0].Name != "OL Author" {
+		t.Fatalf("work authors = %+v", rows)
+	}
+}

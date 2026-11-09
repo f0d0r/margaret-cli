@@ -382,11 +382,12 @@ func authorKeysFromEditions(editions map[string]*editionRecord, known map[string
 	extra := make(map[string]struct{})
 	for _, edition := range editions {
 		for _, author := range edition.Authors {
-			if author.Key == "" {
+			key := author.authorKey()
+			if key == "" {
 				continue
 			}
-			if _, ok := known[author.Key]; !ok {
-				extra[author.Key] = struct{}{}
+			if _, ok := known[key]; !ok {
+				extra[key] = struct{}{}
 			}
 		}
 	}
@@ -397,11 +398,12 @@ func authorKeysFromWorks(works map[string]*workRecord, known map[string]struct{}
 	extra := make(map[string]struct{})
 	for _, work := range works {
 		for _, author := range work.Authors {
-			if author.Key == "" {
+			key := author.authorKey()
+			if key == "" {
 				continue
 			}
-			if _, ok := known[author.Key]; !ok {
-				extra[author.Key] = struct{}{}
+			if _, ok := known[key]; !ok {
+				extra[key] = struct{}{}
 			}
 		}
 	}

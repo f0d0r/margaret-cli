@@ -12,6 +12,23 @@ type linkedKey struct {
 	Key string `json:"key"`
 }
 
+// authorRef reads an author link from either the edition form (top-level key)
+// or the work form (nested author.key with an optional role).
+type authorRef struct {
+	Key    string     `json:"key"`
+	Author *linkedKey `json:"author"`
+}
+
+func (a authorRef) authorKey() string {
+	if a.Key != "" {
+		return a.Key
+	}
+	if a.Author != nil {
+		return a.Author.Key
+	}
+	return ""
+}
+
 type editionRecord struct {
 	Key         string          `json:"key"`
 	Title       string          `json:"title"`
@@ -27,7 +44,7 @@ type editionRecord struct {
 	Dewey       []string        `json:"dewey_decimal_class"`
 	LC          []string        `json:"lc_classifications"`
 	OCAID       string          `json:"ocaid"`
-	Authors     []linkedKey     `json:"authors"`
+	Authors     []authorRef     `json:"authors"`
 	Works       []linkedKey     `json:"works"`
 	Subjects    []string        `json:"subjects"`
 	Description json.RawMessage `json:"description"`
@@ -39,7 +56,7 @@ type workRecord struct {
 	Description      json.RawMessage `json:"description"`
 	Subjects         []string        `json:"subjects"`
 	FirstPublishDate string          `json:"first_publish_date"`
-	Authors          []linkedKey     `json:"authors"`
+	Authors          []authorRef     `json:"authors"`
 }
 
 type authorRecord struct {
@@ -207,14 +224,14 @@ func identifiersFor(edition *editionRecord) []identifierValue {
 func authorsFor(edition *editionRecord, work *workRecord, authors map[string]*authorRecord) []authorInfo {
 	keys := make([]string, 0, len(edition.Authors))
 	for _, author := range edition.Authors {
-		if author.Key != "" {
-			keys = append(keys, author.Key)
+		if key := author.authorKey(); key != "" {
+			keys = append(keys, key)
 		}
 	}
 	if len(keys) == 0 && work != nil {
 		for _, author := range work.Authors {
-			if author.Key != "" {
-				keys = append(keys, author.Key)
+			if key := author.authorKey(); key != "" {
+				keys = append(keys, key)
 			}
 		}
 	}

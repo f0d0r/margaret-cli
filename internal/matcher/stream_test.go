@@ -405,3 +405,67 @@ func findCandidate(t *testing.T, candidates []Candidate, editionKey string) Cand
 	t.Fatalf("candidate %q not found in %+v", editionKey, candidates)
 	return Candidate{}
 }
+
+func workLineWithAuthors(key, title string, authorKeys []string) string {
+	authors := make([]map[string]any, 0, len(authorKeys))
+	for _, authorKey := range authorKeys {
+		authors = append(authors, map[string]any{
+			"type":   map[string]string{"key": "/type/author_role"},
+			"author": map[string]string{"key": authorKey},
+		})
+	}
+	data, err := json.Marshal(map[string]any{
+		"key":     key,
+		"title":   title,
+		"authors": authors,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return dumpLine("/type/work", key, string(data))
+}
+
+func TestStreamWorkAuthorsFillMissingEditionAuthors(t *testing.T) {
+	queries := newTestQueries(t)
+	bookID := addBook(t, queries, "The Hobbit", []string{"J. R. R. Tolkien"}, nil)
+	cache, err := Build(context.Background(), queries, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	editions := writeStreamDump(t, dir, "editions.txt.gz",
+		editionLine("/books/OL1M", "The Hobbit", nil, nil, []string{"/works/OL1W"}),
+		openlibrary.KindEditions)
+	works := writeStreamDump(t, dir, "works.txt.gz",
+		workLineWithAuthors("/works/OL1W", "The Hobbit", []string{"/authors/OL1A"}),
+		openlibrary.KindWorks)
+	authors := writeStreamDump(t, dir, "authors.txt.gz",
+		authorLine("/authors/OL1A", "J. R. R. Tolkien"),
+		openlibrary.KindAuthors)
+	dataset := &openlibrary.Dataset{Dir: dir, Editions: editions, Works: works, Authors: authors}
+
+	result, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := result.Candidates[bookID]
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(candidates))
+	}
+	candidate := candidates[0]
+	if len(candidate.AuthorKeys) != 1 || candidate.AuthorKeys[0] != "/authors/OL1A" {
+		t.Fatalf("author keys = %v", candidate.AuthorKeys)
+	}
+	if candidate.AuthorScore == 0 {
+		t.Fatalf("author score = %f, want a work-level author score", candidate.AuthorScore)
+	}
+
+	ranked, err := Rank(result, cache, RankOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ranked.Books[bookID].Status; got != StatusConfirmed {
+		t.Fatalf("status = %q, want confirmed", got)
+	}
+}

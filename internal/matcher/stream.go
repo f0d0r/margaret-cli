@@ -24,13 +24,30 @@ type linkedKey struct {
 	Key string `json:"key"`
 }
 
+// authorRef reads an author link from either the edition form (top-level key)
+// or the work form (nested author.key with an optional role).
+type authorRef struct {
+	Key    string     `json:"key"`
+	Author *linkedKey `json:"author"`
+}
+
+func (a authorRef) authorKey() string {
+	if a.Key != "" {
+		return a.Key
+	}
+	if a.Author != nil {
+		return a.Author.Key
+	}
+	return ""
+}
+
 type editionRecord struct {
 	Key      string      `json:"key"`
 	Title    string      `json:"title"`
 	Subtitle string      `json:"subtitle"`
 	ISBN10   []string    `json:"isbn_10"`
 	ISBN13   []string    `json:"isbn_13"`
-	Authors  []linkedKey `json:"authors"`
+	Authors  []authorRef `json:"authors"`
 	Works    []linkedKey `json:"works"`
 }
 
@@ -47,6 +64,7 @@ type workRecord struct {
 	Description      json.RawMessage `json:"description"`
 	Subjects         []string        `json:"subjects"`
 	FirstPublishDate string          `json:"first_publish_date"`
+	Authors          []authorRef     `json:"authors"`
 }
 
 // StreamDataset runs the editions, authors and works passes over a dataset and
@@ -104,6 +122,9 @@ func StreamDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cac
 			}
 			result.Works = works
 			applyWorkTitles(candidates, works)
+			if err := applyMissingWorkAuthors(ctx, dataset, candidates, result, cache, opts); err != nil {
+				return nil, err
+			}
 		}
 	}
 	applyContentScores(candidates, cache)
@@ -159,6 +180,9 @@ func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, ca
 			}
 			result.Works = works
 			applyWorkTitles(candidates, works)
+			if err := applyMissingWorkAuthors(ctx, dataset, candidates, result, cache, opts); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		result.Warnings = append(result.Warnings, "works metadata deferred for combined dump")
@@ -734,6 +758,7 @@ func streamWorks(ctx context.Context, file *openlibrary.File, keys map[string]st
 			Description:      descriptionText(record.Description),
 			Subjects:         record.Subjects,
 			FirstPublishDate: record.FirstPublishDate,
+			AuthorKeys:       uniqueKeys(record.Authors),
 		}
 		if len(found) == len(keys) {
 			break
@@ -805,18 +830,19 @@ func findBookISBN(book *Book, value string) (identifier.Source, int, bool) {
 	return "", 0, false
 }
 
-func uniqueKeys(keys []linkedKey) []string {
+func uniqueKeys(keys []authorRef) []string {
 	out := make([]string, 0, len(keys))
 	seen := make(map[string]struct{}, len(keys))
 	for _, item := range keys {
-		if item.Key == "" {
+		key := item.authorKey()
+		if key == "" {
 			continue
 		}
-		if _, ok := seen[item.Key]; ok {
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[item.Key] = struct{}{}
-		out = append(out, item.Key)
+		seen[key] = struct{}{}
+		out = append(out, key)
 	}
 	return out
 }
