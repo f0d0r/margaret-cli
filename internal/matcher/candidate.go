@@ -52,9 +52,6 @@ type StreamOptions struct {
 	MaxPosting                int
 	MinTitleScore             float64
 	ISBNTitleConfirm          float64
-	// TempDir overrides the directory used for the temporary author sidecar
-	// in combined-dump mode. An empty value uses the operating system default.
-	TempDir string
 	// Workers is the number of editions-pass workers. Values <= 1 run the
 	// pass in the calling goroutine. The combined-dump extraction pass remains
 	// single-threaded because it also writes the author sidecar.

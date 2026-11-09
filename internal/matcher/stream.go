@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/openlibrary"
+	"github.com/f0d0r/margaret-cli/internal/tempfile"
 	"github.com/f0d0r/margaret-cli/internal/textmatch"
 	"github.com/f0d0r/margaret-ebook-library/tools"
 )
@@ -147,13 +147,13 @@ func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, ca
 	}
 
 	stats := &result.Stats
-	candidates, sidecarPath, err := streamCombinedExtraction(ctx, dataset.Editions, cache, opts, stats)
+	candidates, authorSidecar, err := streamCombinedExtraction(ctx, dataset.Editions, cache, opts, stats)
 	if err != nil {
 		return nil, err
 	}
-	if sidecarPath != "" {
+	if authorSidecar != nil {
 		defer func() {
-			_ = os.Remove(sidecarPath)
+			_ = authorSidecar.close()
 		}()
 	}
 	if candidates.total() == 0 {
@@ -162,7 +162,7 @@ func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, ca
 
 	authorKeys := candidates.authorKeys()
 	if len(authorKeys) > 0 {
-		authors, err := streamAuthorSidecar(ctx, sidecarPath, authorKeys, opts)
+		authors, err := streamAuthorSidecar(ctx, authorSidecar, authorKeys, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -429,30 +429,28 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 	return candidates, nil
 }
 
-func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats) (*candidateSet, string, error) {
+func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats) (*candidateSet, *authorSidecar, error) {
 	tracker := newEditionTracker(cache)
 	candidates := newCandidateSet()
 	if tracker.totalCount() == 0 {
-		return candidates, "", nil
+		return candidates, nil, nil
 	}
 	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
 
-	sidecar, err := newAuthorSidecar(opts.TempDir)
+	authors, err := newAuthorSidecar()
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	success := false
 	defer func() {
-		if success {
-			return
+		if !success {
+			_ = authors.close()
 		}
-		_ = sidecar.close()
-		_ = os.Remove(sidecar.path)
 	}()
 
 	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
 	if err != nil {
-		return nil, "", fmt.Errorf("open combined dump: %w", err)
+		return nil, nil, fmt.Errorf("open combined dump: %w", err)
 	}
 	defer func() {
 		_ = reader.Close()
@@ -463,7 +461,7 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		row, err := openlibrary.ReadRow(scanner)
 		if errors.Is(err, io.EOF) {
@@ -474,7 +472,7 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 			continue
 		}
 		if err != nil {
-			return nil, "", err
+			return nil, nil, err
 		}
 		stats.Lines++
 
@@ -497,8 +495,8 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 				stats.Malformed++
 				continue
 			}
-			if err := sidecar.write(key, authorNames(record)); err != nil {
-				return nil, "", fmt.Errorf("write author sidecar: %w", err)
+			if err := authors.write(key, authorNames(record)); err != nil {
+				return nil, nil, fmt.Errorf("write author sidecar: %w", err)
 			}
 			stats.Authors++
 		}
@@ -540,37 +538,36 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 			Pending:    total - done,
 		})
 	}
-	if err := sidecar.close(); err != nil {
-		return nil, "", fmt.Errorf("close author sidecar: %w", err)
+	if err := authors.finish(); err != nil {
+		return nil, nil, fmt.Errorf("close author sidecar: %w", err)
 	}
 	success = true
-	return candidates, sidecar.path, nil
+	return candidates, authors, nil
 }
 
 type authorSidecar struct {
-	path   string
-	file   *os.File
-	gzip   *gzip.Writer
-	buffer *bufio.Writer
-	closed bool
+	temp     *tempfile.Temp
+	gzip     *gzip.Writer
+	buffer   *bufio.Writer
+	finished bool
+	closed   bool
 }
 
-func newAuthorSidecar(dir string) (*authorSidecar, error) {
-	file, err := os.CreateTemp(dir, "margaret-authors-*.tsv.gz")
+func newAuthorSidecar() (*authorSidecar, error) {
+	temp, err := tempfile.New("margaret-authors-*.tsv.gz")
 	if err != nil {
 		return nil, fmt.Errorf("create author sidecar: %w", err)
 	}
-	writer := gzip.NewWriter(file)
+	writer := gzip.NewWriter(temp.File())
 	return &authorSidecar{
-		path:   file.Name(),
-		file:   file,
+		temp:   temp,
 		gzip:   writer,
 		buffer: bufio.NewWriter(writer),
 	}, nil
 }
 
 func (s *authorSidecar) write(key string, names []string) error {
-	if s.closed {
+	if s.closed || s.finished {
 		return errors.New("author sidecar is closed")
 	}
 	var line strings.Builder
@@ -587,11 +584,13 @@ func (s *authorSidecar) write(key string, names []string) error {
 	return err
 }
 
-func (s *authorSidecar) close() error {
-	if s.closed {
+// finish flushes the compressed stream but keeps the descriptor open so the
+// collected records can be read back.
+func (s *authorSidecar) finish() error {
+	if s.finished {
 		return nil
 	}
-	s.closed = true
+	s.finished = true
 	var err error
 	if flushErr := s.buffer.Flush(); flushErr != nil {
 		err = flushErr
@@ -599,26 +598,32 @@ func (s *authorSidecar) close() error {
 	if gzipErr := s.gzip.Close(); err == nil {
 		err = gzipErr
 	}
-	if fileErr := s.file.Close(); err == nil {
-		err = fileErr
+	return err
+}
+
+func (s *authorSidecar) close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	err := s.finish()
+	if closeErr := s.temp.Close(); err == nil {
+		err = closeErr
 	}
 	return err
 }
 
-func streamAuthorSidecar(ctx context.Context, path string, keys map[string]struct{}, opts StreamOptions) (map[string]AuthorRecord, error) {
+func streamAuthorSidecar(ctx context.Context, sidecar *authorSidecar, keys map[string]struct{}, opts StreamOptions) (map[string]AuthorRecord, error) {
 	found := make(map[string]AuthorRecord, len(keys))
-	if path == "" || len(keys) == 0 {
+	if sidecar == nil || len(keys) == 0 {
 		return found, nil
 	}
 
-	file, err := os.Open(path)
+	raw, err := sidecar.temp.Reader()
 	if err != nil {
 		return nil, fmt.Errorf("open author sidecar: %w", err)
 	}
-	defer func() {
-		_ = file.Close()
-	}()
-	reader, err := gzip.NewReader(file)
+	reader, err := gzip.NewReader(raw)
 	if err != nil {
 		return nil, fmt.Errorf("open gzip author sidecar: %w", err)
 	}

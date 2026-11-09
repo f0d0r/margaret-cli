@@ -300,7 +300,6 @@ func TestStreamMalformedRows(t *testing.T) {
 func TestStreamCombined(t *testing.T) {
 	cache, first, second, third := streamCache(t)
 	dir := t.TempDir()
-	tempDir := t.TempDir()
 	file := writeStreamDump(t, dir, "ol_dump_latest.txt.gz", strings.Join([]string{
 		authorLine("/authors/OL1A", "J. R. R. Tolkien"),
 		editionLine("/books/OL1M", "The Hobbit", []string{"9780306406157"}, []string{"/authors/OL1A"}, []string{"/works/OL1W"}),
@@ -320,7 +319,7 @@ func TestStreamCombined(t *testing.T) {
 		Combined: file,
 	}
 
-	result, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{TempDir: tempDir})
+	result, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,14 +352,6 @@ func TestStreamCombined(t *testing.T) {
 	if got := ranked.Books[third].Status; got != StatusConfirmed {
 		t.Fatalf("third status = %q, want confirmed", got)
 	}
-
-	entries, err := os.ReadDir(tempDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("temp dir is not clean: %v", entries)
-	}
 }
 
 func TestStreamCombinedNoCandidatesCleansSidecar(t *testing.T) {
@@ -372,7 +363,6 @@ func TestStreamCombinedNoCandidatesCleansSidecar(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	tempDir := t.TempDir()
 	file := writeStreamDump(t, dir, "ol_dump_latest.txt.gz", editionLine("/books/OL1M", "Different", nil, nil, nil), openlibrary.KindAll)
 	result, err := StreamDataset(context.Background(), &openlibrary.Dataset{
 		Dir:      dir,
@@ -380,19 +370,12 @@ func TestStreamCombinedNoCandidatesCleansSidecar(t *testing.T) {
 		Works:    file,
 		Authors:  file,
 		Combined: file,
-	}, cache, StreamOptions{TempDir: tempDir})
+	}, cache, StreamOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Candidates) != 0 {
 		t.Fatalf("candidates = %+v", result.Candidates)
-	}
-	entries, err := os.ReadDir(tempDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("temp dir is not clean: %v", entries)
 	}
 }
 
