@@ -14,6 +14,7 @@ import (
 type MatchInfo struct {
 	Status         string  `json:"status"`
 	Confidence     float64 `json:"confidence"`
+	ContentScore   float64 `json:"content_score"`
 	Method         string  `json:"method"`
 	EditionKey     string  `json:"edition_key"`
 	WorkKey        string  `json:"work_key"`
@@ -266,6 +267,7 @@ func matchInfo(match db.BookMatch) MatchInfo {
 	return MatchInfo{
 		Status:         match.Status,
 		Confidence:     match.Confidence,
+		ContentScore:   match.ContentScore,
 		Method:         match.Method,
 		EditionKey:     match.EditionKey,
 		WorkKey:        match.WorkKey,

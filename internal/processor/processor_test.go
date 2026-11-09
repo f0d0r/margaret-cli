@@ -16,6 +16,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/headprint"
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/parser"
 	"github.com/f0d0r/margaret-ebook-library/book"
@@ -57,7 +58,7 @@ func (f fakeParser) Parse(_ context.Context, b book.Blob) (parser.Metadata, erro
 	if strings.Contains(string(content), f.failSubstr) {
 		return parser.Metadata{}, errors.New("boom")
 	}
-	return parser.Metadata{Authors: []string{"Author"}, Title: "Title"}, nil
+	return parser.Metadata{Authors: []string{"Author"}, Title: "Title", Head: string(content)}, nil
 }
 
 func TestProcess(t *testing.T) {
@@ -250,6 +251,7 @@ func (p hashOrFailParser) Parse(_ context.Context, b book.Blob) (parser.Metadata
 		Authors: []string{"Author"},
 		Title:   "Title " + string(content),
 		Hash:    "hash-" + string(content),
+		Head:    string(content),
 	}, nil
 }
 
@@ -1218,4 +1220,46 @@ func equalExtCounts(got, want map[string]int64) bool {
 		}
 	}
 	return true
+}
+
+func TestResumeBackfillsContentHead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.epub")
+	if err := os.WriteFile(path, []byte("The Hobbit by J.R.R. Tolkien"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := ScanProcessorConfig{Resume: true}
+	proc := newTestProcessor(t, cfg, dir)
+	proc.parsers = map[string]parser.Parser{"epub": hashOrFailParser{failSubstr: "\x00never-matches"}}
+	if err := proc.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	file, err := proc.q.GetBookFileByPath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.HeadBloom) != headprint.BloomBytes {
+		t.Fatalf("head bloom length = %d, want %d", len(file.HeadBloom), headprint.BloomBytes)
+	}
+
+	if _, err := proc.db.Exec("UPDATE book_files SET head_bloom = NULL WHERE id = ?", file.ID); err != nil {
+		t.Fatal(err)
+	}
+	proc2 := NewScanProcessor(proc.db, proc.q, cfg, dir)
+	proc2.parsers = proc.parsers
+	if err := proc2.Process(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stats := proc2.Stats()
+	if stats.Parsed != 1 || stats.AlreadyProcessed != 0 {
+		t.Fatalf("backfill stats = %+v, want 1 parsed and 0 already processed", stats)
+	}
+	file, err = proc.q.GetBookFileByPath(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.HeadBloom) != headprint.BloomBytes {
+		t.Fatalf("backfilled head bloom length = %d, want %d", len(file.HeadBloom), headprint.BloomBytes)
+	}
 }

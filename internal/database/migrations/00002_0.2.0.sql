@@ -5,6 +5,7 @@ ALTER TABLE book_files ADD COLUMN publisher TEXT NOT NULL DEFAULT '';
 ALTER TABLE book_files ADD COLUMN publication_date TEXT NOT NULL DEFAULT '';
 ALTER TABLE book_files ADD COLUMN series TEXT NOT NULL DEFAULT '';
 ALTER TABLE book_files ADD COLUMN series_index TEXT NOT NULL DEFAULT '';
+ALTER TABLE book_files ADD COLUMN head_bloom BLOB;
 
 ALTER TABLE books ADD COLUMN description TEXT NOT NULL DEFAULT '';
 ALTER TABLE books ADD COLUMN series TEXT NOT NULL DEFAULT '';
@@ -95,6 +96,7 @@ CREATE TABLE book_matches (
         'needs_review', 'not_found', 'no_data'
     )),
     confidence REAL NOT NULL DEFAULT 0,
+    content_score REAL NOT NULL DEFAULT 0,
     method TEXT NOT NULL DEFAULT '',
     edition_key TEXT NOT NULL DEFAULT '',
     work_key TEXT NOT NULL DEFAULT '',
@@ -263,6 +265,7 @@ ALTER TABLE books DROP COLUMN description;
 
 ALTER TABLE book_files DROP COLUMN series_index;
 ALTER TABLE book_files DROP COLUMN series;
+ALTER TABLE book_files DROP COLUMN head_bloom;
 ALTER TABLE book_files DROP COLUMN publication_date;
 ALTER TABLE book_files DROP COLUMN publisher;
 ALTER TABLE book_files DROP COLUMN description;

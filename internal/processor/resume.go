@@ -15,8 +15,10 @@ func (p *ScanProcessor) shouldSkip(ctx context.Context, displayPath string) bool
 	if !p.cfg.Resume {
 		return false
 	}
-	if _, err := p.q.GetBookFileByPath(ctx, displayPath); err == nil {
-		return true
+	if file, err := p.q.GetBookFileByPath(ctx, displayPath); err == nil {
+		// Files recorded before content fingerprints were added are parsed
+		// again so their head bloom can be backfilled.
+		return len(file.HeadBloom) > 0
 	}
 	// Exact duplicates live in book_file_duplicates rather than book_files.
 	_, err := p.q.GetBookFileDuplicateByPath(ctx, displayPath)

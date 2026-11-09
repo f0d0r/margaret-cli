@@ -88,7 +88,33 @@ func Open(dataSource string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureContentSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func ensureContentSchema(db *sql.DB) error {
+	fileColumns, err := tableColumns(db, "book_files")
+	if err != nil {
+		return fmt.Errorf("inspect book file schema: %w", err)
+	}
+	if len(fileColumns) > 0 && !fileColumns["head_bloom"] {
+		if _, err := db.Exec(`ALTER TABLE book_files ADD COLUMN head_bloom BLOB`); err != nil {
+			return fmt.Errorf("ensure book file content head: %w", err)
+		}
+	}
+	matchColumns, err := tableColumns(db, "book_matches")
+	if err != nil {
+		return fmt.Errorf("inspect book match schema: %w", err)
+	}
+	if len(matchColumns) > 0 && !matchColumns["content_score"] {
+		if _, err := db.Exec(`ALTER TABLE book_matches ADD COLUMN content_score REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("ensure match content score: %w", err)
+		}
+	}
+	return nil
 }
 
 func ensureEnrichmentSchema(db *sql.DB) error {

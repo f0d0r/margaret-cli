@@ -4,13 +4,14 @@ INSERT INTO book_files (
     path,
     title,
     minhash,
+    head_bloom,
     description,
     publisher,
     publication_date,
     series,
     series_index
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(hash) DO NOTHING
 RETURNING id;
 
@@ -61,6 +62,19 @@ HAVING MIN(d.path) < bf.path;
 
 -- name: UpdateBookFilePath :exec
 UPDATE book_files SET path = ? WHERE hash = ?;
+
+-- name: UpdateBookFileHeadBloom :exec
+UPDATE book_files SET head_bloom = ? WHERE id = ?;
+
+-- name: ListBookFileHeadBlooms :many
+SELECT bbf.book_id, bf.head_bloom
+FROM book_book_files bbf
+JOIN book_files bf ON bf.id = bbf.book_file_id
+WHERE length(bf.head_bloom) > 0
+ORDER BY bbf.book_id, bf.id;
+
+-- name: CountBookFilesMissingHeadBloom :one
+SELECT count(*) FROM book_files WHERE head_bloom IS NULL OR length(head_bloom) = 0;
 
 -- name: DeleteBookFileDuplicate :exec
 DELETE FROM book_file_duplicates WHERE hash = ? AND path = ?;

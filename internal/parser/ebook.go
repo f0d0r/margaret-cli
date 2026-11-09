@@ -61,6 +61,7 @@ func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata,
 		SeriesIndex:     md.SeriesIndex,
 		Hash:            hash,
 		MinHash:         fingerprint.MinHash,
+		Head:            head,
 	}, nil
 }
 

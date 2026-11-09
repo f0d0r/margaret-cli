@@ -54,6 +54,34 @@ func AuthorTokens(s string) []string {
 	return uniqueSorted(out)
 }
 
+var contentStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {},
+	"but": {}, "by": {}, "for": {}, "from": {}, "has": {}, "he": {}, "her": {},
+	"his": {}, "if": {}, "in": {}, "into": {}, "is": {}, "it": {}, "its": {},
+	"no": {}, "not": {}, "of": {}, "on": {}, "or": {}, "over": {}, "so": {},
+	"than": {}, "that": {}, "the": {}, "then": {}, "these": {}, "this": {},
+	"those": {}, "to": {}, "was": {}, "were": {}, "will": {}, "with": {},
+	"de": {}, "la": {}, "le": {}, "les": {}, "el": {}, "los": {}, "las": {},
+	"un": {}, "una": {}, "und": {}, "der": {}, "die": {}, "das": {}, "des": {},
+	"dem": {}, "den": {}, "et": {}, "en": {}, "du": {}, "au": {}, "aux": {},
+	"sur": {},
+}
+
+// ContentTokens returns the distinctive tokens of a text for content
+// confirmation: folded, lower-cased, punctuation separated and stripped of
+// common stopwords.
+func ContentTokens(s string) []string {
+	fields := strings.Fields(TitleKey(s))
+	out := make([]string, 0, len(fields))
+	for _, token := range fields {
+		if _, ok := contentStopwords[token]; ok {
+			continue
+		}
+		out = append(out, token)
+	}
+	return uniqueSorted(out)
+}
+
 // Jaccard returns the Jaccard similarity of two sorted, deduplicated token
 // sets. It returns 0 when either set is empty.
 func Jaccard(a, b []string) float64 {

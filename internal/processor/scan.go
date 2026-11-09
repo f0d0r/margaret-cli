@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/headprint"
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/lsh"
 	"github.com/f0d0r/margaret-cli/internal/parser"
@@ -393,6 +394,21 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			return nil
 		}
 
+		headBloom := headprint.Build(md.Head)
+		// A recorded path without a content fingerprint is backfilled on the
+		// next scan; the rest of its metadata is already stored.
+		if existing, err := q.GetBookFileByPath(txCtx, displayPath); err == nil {
+			if existing.Hash == md.Hash && len(existing.HeadBloom) == 0 {
+				if err := q.UpdateBookFileHeadBloom(txCtx, db.UpdateBookFileHeadBloomParams{
+					HeadBloom: headBloom,
+					ID:        existing.ID,
+				}); err != nil {
+					return fmt.Errorf("update content head: %w", err)
+				}
+				return nil
+			}
+		}
+
 		// Resume already skipped every recorded path, so this path is new:
 		// insert it directly. A changed file keeps its old row until the
 		// owner reruns with a fresh database.
@@ -416,6 +432,7 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 			Path:            displayPath,
 			Title:           md.Title,
 			Minhash:         encodeMinHash(md.MinHash),
+			HeadBloom:       headBloom,
 			Description:     md.Description,
 			Publisher:       md.Publisher,
 			PublicationDate: md.PublicationDate,

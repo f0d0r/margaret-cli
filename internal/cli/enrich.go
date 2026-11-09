@@ -115,6 +115,7 @@ func runEnrich(ctx context.Context) error {
 	if err := requireScannedData(ctx, q, dbPath); err != nil {
 		return err
 	}
+	warnMissingContentHeads(ctx, q)
 
 	matcherVersion := matcher.Version
 	dumpVersion := matcher.DatasetVersion(dataset)
@@ -122,6 +123,7 @@ func runEnrich(ctx context.Context) error {
 		Pending:        !enrichForceFlag && !enrichRefreshFlag,
 		MatcherVersion: matcherVersion,
 		DumpVersion:    dumpVersion,
+		Content:        true,
 	})
 	if err != nil {
 		return fmt.Errorf("build matching cache: %w", err)
@@ -286,6 +288,16 @@ func printStreamProgress(progress matcher.StreamProgress) {
 	fmt.Fprintf(os.Stderr, "\r%s", line)
 }
 
+func warnMissingContentHeads(ctx context.Context, q *db.Queries) {
+	missing, err := q.CountBookFilesMissingHeadBloom(ctx)
+	if err != nil || missing == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: %d book file(s) have no content head; run \"margaret scan <path>\" to enable content confirmation\n",
+		missing)
+}
+
 func printMatchStatusCounts(ctx context.Context, q *db.Queries) error {
 	rows, err := q.CountBooksByMatchStatus(ctx)
 	if err != nil {
@@ -423,10 +435,15 @@ func printScanDatabaseStatus(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("count ISBNs: %w", err)
 	}
+	missingHeads, err := queries.CountBookFilesMissingHeadBloom(ctx)
+	if err != nil {
+		return fmt.Errorf("count content heads: %w", err)
+	}
 
 	fmt.Printf("Scan database: %s\n", dbPath)
 	fmt.Printf("  books: %d\n", books)
 	fmt.Printf("  files: %d\n", files)
+	fmt.Printf("  content heads missing: %d\n", missingHeads)
 	fmt.Printf("  books with ISBN: %d", isbn.Books)
 	if books > 0 {
 		fmt.Printf(" (%s)", formatPercent(isbn.Books, books))

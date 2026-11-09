@@ -752,8 +752,9 @@ author sidecar; work-level metadata is deferred in that mode. The sidecar is
 removed when the run finishes, but it may need about 1 GB of temporary disk.
 For full work-level enrichment, the three family dumps are recommended.
 
-Use `--status` to see the resolved paths, the ISBN coverage of the scan
-database, the in-memory matching cache and the stored match status counts:
+Use `--status` to see the resolved paths, the ISBN and content-head coverage
+of the scan database, the in-memory matching cache and the stored match status
+counts:
 
 ```sh
 margaret enrich --status
@@ -806,6 +807,22 @@ again, but only for the selected editions, works and authors.
 By default only books without a current match are processed. `--force`
 reprocesses every book and refreshes the enrichment.
 
+### Content confirmation
+
+Scanned metadata is often wrong even when the ISBN is right. The scanner
+stores a compact fingerprint of the first 64 KB of each book's text in
+`book_files.head_bloom`. When an ISBN match disagrees with the scanned title
+or author, `enrich` checks whether the OpenLibrary title and author appear in
+that head. If they do, the ISBN is trusted and the book is confirmed with
+method `isbn+content`; the scanned metadata is assumed to be wrong. The
+confirmation is positive-only: a missing head or a low score never rejects a
+candidate.
+
+The fingerprint is added during `scan`. Files scanned by an older version do
+not have one; run `margaret scan <path>` once more to backfill them. The
+resume pass re-parses only the files whose fingerprint is missing. Use
+`margaret enrich --status` to see how many are still missing.
+
 ### `enrich` flags
 
 | Flag | Type | Default | Description |
@@ -814,7 +831,7 @@ reprocesses every book and refreshes the enrichment.
 | `--openlibrary-dir` | `string` | `""` | Directory containing the dump files. |
 | `--download` | `bool` | `false` | Download missing dumps before enriching. |
 | `--refresh` | `bool` | `false` | Download the current dumps and reprocess every book (implies `--download` and `--force`). |
-| `--status` | `bool` | `false` | Show resolved dump files, scan statistics and match status counts, then exit. |
+| `--status` | `bool` | `false` | Show resolved dump files, scan statistics, content-head coverage and match status counts, then exit. |
 | `--force` | `bool` | `false` | Reprocess every book even when a stored match is current. |
 | `--enriched-out` | `string` | `reports/books_enriched.json` | Write a JSON report of confirmed enriched books. |
 | `--review-out` | `string` | `reports/review.json` | Write a JSON report of books needing review. |
@@ -839,11 +856,11 @@ an explicit `--*-out` path writes there instead.
 
 `books_enriched.json` contains only confirmed matches. Its book fields are
 merged with the OpenLibrary work/edition/author metadata where available, and
-it carries `match`, `enrichment` (source, keys, matcher/dump versions) and
-`author_details` objects for provenance. `review.json` groups the uncertain
-books into separate arrays: `probable`, `ambiguous`, `needs_review`,
-`not_found` and `no_data`. Empty categories are written as `[]`; when no book
-needs review, the file is not created.
+it carries `match` (including `content_score`), `enrichment` (source, keys,
+matcher/dump versions) and `author_details` objects for provenance.
+`review.json` groups the uncertain books into separate arrays: `probable`,
+`ambiguous`, `needs_review`, `not_found` and `no_data`. Empty categories are
+written as `[]`; when no book needs review, the file is not created.
 
 `enrich` also runs a local conflict check. Two books with the same normalized
 title and author whose content MinHash Jaccard is below 75% are marked

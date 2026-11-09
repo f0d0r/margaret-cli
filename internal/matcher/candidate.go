@@ -20,6 +20,7 @@ type Candidate struct {
 	EditionKey   string
 	WorkKey      string
 	EditionTitle string
+	WorkTitle    string
 	AuthorKeys   []string
 	AuthorNames  []string
 
@@ -30,7 +31,11 @@ type Candidate struct {
 	TitleScore   float64
 	AuthorScore  float64
 	ContentScore float64
-	Score        float64
+	// ContentTitleHit and ContentAuthorHit are the fractions of the candidate
+	// title and author tokens found in the scanned book's leading text.
+	ContentTitleHit  float64
+	ContentAuthorHit float64
+	Score            float64
 
 	Methods []string
 }

@@ -129,6 +129,7 @@ func (p RtfParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	md.Hash = hex.EncodeToString(rawHash.Sum(nil))
 	md.MinHash = fingerprint.MinHash
 	md.Identifiers = textdoc.TextIdentifiers(head)
+	md.Head = head
 	return md, nil
 }
 

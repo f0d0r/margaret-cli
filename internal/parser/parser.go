@@ -35,6 +35,9 @@ type Metadata struct {
 	SeriesIndex     string
 	Hash            string
 	MinHash         []uint64
+	// Head is the leading plain-text reading-order sample used for content
+	// confirmation. It is not persisted verbatim.
+	Head string
 }
 
 // Parser reads metadata from a single ebook. ebookData provides random access

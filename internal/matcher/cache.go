@@ -27,6 +27,9 @@ type Options struct {
 	Pending        bool
 	MatcherVersion string
 	DumpVersion    string
+	// Content loads the per-file content head fingerprints used to confirm
+	// matches against the scanned text.
+	Content bool
 }
 
 // ISBN is one normalized ISBN of a scanned book with its provenance.
@@ -45,6 +48,7 @@ type Book struct {
 	Authors      []string
 	AuthorTokens [][]string
 	ISBNs        []ISBN
+	HeadBlooms   [][]byte
 }
 
 // Cache holds the in-memory indexes built from the scanned books.
@@ -173,6 +177,18 @@ func Build(ctx context.Context, q *db.Queries, opts Options) (*Cache, error) {
 		}
 		if !updated {
 			book.ISBNs = append(book.ISBNs, ISBN{Value: value, Source: source, Priority: priority})
+		}
+	}
+
+	if opts.Content {
+		blooms, err := q.ListBookFileHeadBlooms(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list content heads: %w", err)
+		}
+		for _, row := range blooms {
+			if book := cache.Books[row.BookID]; book != nil {
+				book.HeadBlooms = append(book.HeadBlooms, row.HeadBloom)
+			}
 		}
 	}
 

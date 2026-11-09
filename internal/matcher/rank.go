@@ -16,6 +16,9 @@ const (
 	defaultMaxRankCandidates = 10
 
 	scoreEpsilon = 1e-9
+
+	defaultContentConfirmScore = 0.60
+	defaultContentTitleConfirm = 0.60
 )
 
 // Status is the final matching classification of one scanned book.
@@ -38,6 +41,12 @@ type RankOptions struct {
 	ConfirmGap     float64
 	AmbiguityDelta float64
 	MaxCandidates  int
+	// ContentConfirmScore is the minimum content confirmation score that can
+	// confirm an ISBN match whose scanned metadata disagrees with OpenLibrary.
+	ContentConfirmScore float64
+	// ContentTitleConfirm is the minimum fraction of the candidate title that
+	// must appear in the scanned head for content confirmation.
+	ContentTitleConfirm float64
 }
 
 func (o RankOptions) withDefaults() RankOptions {
@@ -59,6 +68,12 @@ func (o RankOptions) withDefaults() RankOptions {
 	if o.MaxCandidates <= 0 {
 		o.MaxCandidates = defaultMaxRankCandidates
 	}
+	if o.ContentConfirmScore <= 0 {
+		o.ContentConfirmScore = defaultContentConfirmScore
+	}
+	if o.ContentTitleConfirm <= 0 {
+		o.ContentTitleConfirm = defaultContentTitleConfirm
+	}
 	return o
 }
 
@@ -76,9 +91,12 @@ type BookMatch struct {
 
 	Status     Status
 	Confidence float64
-	Method     string
-	EditionKey string
-	WorkKey    string
+	// ContentScore records how strongly the scanned text confirms the selected
+	// OpenLibrary title and author.
+	ContentScore float64
+	Method       string
+	EditionKey   string
+	WorkKey      string
 
 	ISBN       string
 	ISBNSource identifier.Source
@@ -175,7 +193,11 @@ func rankBook(book *Book, candidates []Candidate, opts RankOptions) BookMatch {
 	match.WorkKey = best.best.WorkKey
 	match.ISBN = best.best.ISBN
 	match.ISBNSource = best.best.ISBNSource
+	match.ContentScore = best.best.ContentScore
 	match.Method = candidateMethod(best.best)
+	if contentConfirms(best.best, opts) {
+		match.Method = "isbn+content"
+	}
 	match.Confidence = best.best.Score
 
 	if second != nil {
@@ -221,6 +243,13 @@ func classify(book *Book, best Candidate, second *Candidate, candidates []Candid
 	}
 	if len(strongWorks) > 1 {
 		return StatusNeedsReview, "conflicting_isbns"
+	}
+
+	// An ISBN match whose scanned title/author disagree with OpenLibrary is
+	// confirmed when the scanned text itself contains the OpenLibrary title
+	// and author: the metadata lied, not the ISBN.
+	if contentConfirms(best, opts) {
+		return StatusConfirmed, ""
 	}
 
 	gap := 1.0
@@ -275,6 +304,13 @@ func classify(book *Book, best Candidate, second *Candidate, candidates []Candid
 		return StatusNeedsReview, "low_confidence"
 	}
 	return StatusNotFound, ""
+}
+
+func contentConfirms(candidate Candidate, opts RankOptions) bool {
+	return candidate.ISBN != "" &&
+		candidate.ISBNPriority <= 2 &&
+		atLeast(candidate.ContentScore, opts.ContentConfirmScore) &&
+		atLeast(candidate.ContentTitleHit, opts.ContentTitleConfirm)
 }
 
 func atLeast(value, threshold float64) bool {

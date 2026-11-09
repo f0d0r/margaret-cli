@@ -103,8 +103,11 @@ func StreamDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cac
 				return nil, err
 			}
 			result.Works = works
+			applyWorkTitles(candidates, works)
 		}
 	}
+	applyContentScores(candidates, cache)
+	candidates.sortAll()
 
 	result.Candidates = candidates.values()
 	result.Stats.Candidates = candidates.total()
@@ -155,10 +158,13 @@ func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, ca
 				return nil, err
 			}
 			result.Works = works
+			applyWorkTitles(candidates, works)
 		}
 	} else {
 		result.Warnings = append(result.Warnings, "works metadata deferred for combined dump")
 	}
+	applyContentScores(candidates, cache)
+	candidates.sortAll()
 
 	result.Candidates = candidates.values()
 	result.Stats.Candidates = candidates.total()

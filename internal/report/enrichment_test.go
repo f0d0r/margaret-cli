@@ -68,6 +68,7 @@ func seedReportMatch(t *testing.T, q *db.Queries, bookID int64, status string) {
 		BookID:         bookID,
 		Status:         status,
 		Confidence:     0.8,
+		ContentScore:   0.7,
 		Method:         "isbn",
 		EditionKey:     "/books/OL1M",
 		WorkKey:        "/works/OL1W",
@@ -142,6 +143,9 @@ func TestWriteEnrichedBooks(t *testing.T) {
 	}
 	if books[0].Title != "Title" || books[0].Match.Status != "confirmed" {
 		t.Fatalf("book = %+v", books[0])
+	}
+	if books[0].Match.ContentScore != 0.7 {
+		t.Fatalf("content score = %f, want 0.7", books[0].Match.ContentScore)
 	}
 	if len(books[0].Files) != 1 {
 		t.Fatalf("files = %+v", books[0].Files)

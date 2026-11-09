@@ -86,6 +86,7 @@ func persistBook(ctx context.Context, q *db.Queries, match BookMatch, meta Persi
 		BookID:         match.BookID,
 		Status:         string(match.Status),
 		Confidence:     match.Confidence,
+		ContentScore:   match.ContentScore,
 		Method:         match.Method,
 		EditionKey:     match.EditionKey,
 		WorkKey:        match.WorkKey,
@@ -114,6 +115,8 @@ func persistBook(ctx context.Context, q *db.Queries, match BookMatch, meta Persi
 		evidence, err := json.Marshal(candidateEvidence{
 			Methods:           candidate.Methods,
 			WorkGroupEditions: candidate.EditionCount,
+			ContentTitleHit:   candidate.ContentTitleHit,
+			ContentAuthorHit:  candidate.ContentAuthorHit,
 		})
 		if err != nil {
 			return fmt.Errorf("encode evidence for book %d: %w", match.BookID, err)
@@ -158,6 +161,8 @@ func persistBook(ctx context.Context, q *db.Queries, match BookMatch, meta Persi
 type candidateEvidence struct {
 	Methods           []string `json:"methods,omitempty"`
 	WorkGroupEditions int      `json:"work_group_editions,omitempty"`
+	ContentTitleHit   float64  `json:"content_title_hit,omitempty"`
+	ContentAuthorHit  float64  `json:"content_author_hit,omitempty"`
 }
 
 func jsonStrings(values []string) (string, error) {

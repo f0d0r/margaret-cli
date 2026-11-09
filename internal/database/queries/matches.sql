@@ -12,6 +12,7 @@ INSERT INTO book_matches (
     book_id,
     status,
     confidence,
+    content_score,
     method,
     edition_key,
     work_key,
@@ -25,10 +26,11 @@ INSERT INTO book_matches (
     dump_version,
     matched_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(book_id) DO UPDATE SET
     status = excluded.status,
     confidence = excluded.confidence,
+    content_score = excluded.content_score,
     method = excluded.method,
     edition_key = excluded.edition_key,
     work_key = excluded.work_key,
