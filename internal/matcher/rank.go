@@ -498,31 +498,28 @@ func authorsCompatible(a, b Candidate) bool {
 			}
 		}
 	}
-	namesA := normalizedAuthorNames(a.AuthorNames)
-	namesB := normalizedAuthorNames(b.AuthorNames)
-	if len(namesA) > 0 && len(namesB) > 0 {
-		return stringSlicesEqual(namesA, namesB)
+	// Duplicate OpenLibrary works often use different author keys for the same
+	// person, so fall back to the primary author's normalized name. Comparing
+	// the full author list would reject works where one record adds aliases,
+	// translators or publishers; comparing only the primary author avoids
+	// merging same-titled works by different people (e.g. a biography).
+	primaryA := primaryAuthorName(a.AuthorNames)
+	primaryB := primaryAuthorName(b.AuthorNames)
+	if primaryA != "" && primaryB != "" {
+		return primaryA == primaryB
 	}
-	// Merge only when neither side has any author information; one-sided
-	// author evidence is not enough to assume the works are the same.
-	return len(a.AuthorNames) == 0 && len(b.AuthorNames) == 0
+	return false
 }
 
-func normalizedAuthorNames(names []string) []string {
-	out := make([]string, 0, len(names))
-	for _, name := range names {
-		tokens := textmatch.AuthorTokens(name)
-		if len(tokens) == 0 {
-			continue
-		}
-		value := strings.Join(tokens, " ")
-		if value == "" {
-			continue
-		}
-		out = append(out, value)
+func primaryAuthorName(names []string) string {
+	if len(names) == 0 {
+		return ""
 	}
-	sort.Strings(out)
-	return out
+	tokens := textmatch.AuthorTokens(names[0])
+	if len(tokens) == 0 {
+		return ""
+	}
+	return strings.Join(tokens, " ")
 }
 
 func stringSet(values []string) map[string]struct{} {
@@ -533,18 +530,6 @@ func stringSet(values []string) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func sortGroups(groups []candidateGroup) {

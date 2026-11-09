@@ -344,3 +344,39 @@ func TestRankDoesNotMergeSameTitleDifferentAuthors(t *testing.T) {
 		t.Fatalf("status = %q reason = %q, want ambiguous/ambiguous_work", match.Status, match.ReviewReason)
 	}
 }
+
+func TestRankMergesDuplicateWorksWithAuthorAliases(t *testing.T) {
+	book := rankTestBook(1, "The Art of Game Design", true, false)
+	first := duplicateCandidate(1, "OL1M", "OL1W", "/authors/OL1A", "Jesse Schell", "The Art of Game Design")
+	first.AuthorNames = []string{"Jesse Schell", "Jesse N Schell"}
+	second := duplicateCandidate(1, "OL2M", "OL2W", "/authors/OL2A", "Jesse Schell", "The Art of Game Design")
+	second.Score = 0.875
+	first.Score = 0.875
+
+	match := rankOne(t, book, []Candidate{first, second}, RankOptions{})
+	if match.WorkCount != 1 {
+		t.Fatalf("work count = %d, want 1", match.WorkCount)
+	}
+	if match.Status != StatusProbable && match.Status != StatusConfirmed {
+		t.Fatalf("status = %q, want confirmed or probable", match.Status)
+	}
+	if len(match.Candidates[0].MergedWorkKeys) != 1 {
+		t.Fatalf("merged work keys = %v", match.Candidates[0].MergedWorkKeys)
+	}
+}
+
+func TestRankDoesNotMergeSameTitleDifferentPrimaryAuthors(t *testing.T) {
+	book := rankTestBook(1, "Dashiell Hammett", true, false)
+	first := duplicateCandidate(1, "OL1M", "OL1W", "/authors/OL1A", "Dashiell Hammett", "Dashiell Hammett")
+	second := duplicateCandidate(1, "OL2M", "OL2W", "/authors/OL2A", "Jo Hammett", "Dashiell Hammett")
+	second.AuthorNames = []string{"Jo Hammett", "Richard Layman"}
+	second.Score = 1
+
+	match := rankOne(t, book, []Candidate{first, second}, RankOptions{})
+	if match.WorkCount != 2 {
+		t.Fatalf("work count = %d, want 2", match.WorkCount)
+	}
+	if match.Status != StatusAmbiguous || match.ReviewReason != "ambiguous_work" {
+		t.Fatalf("status = %q reason = %q, want ambiguous/ambiguous_work", match.Status, match.ReviewReason)
+	}
+}
