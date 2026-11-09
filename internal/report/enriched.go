@@ -51,6 +51,8 @@ type AuthorInfo struct {
 // EnrichedBook is one confirmed book with its OpenLibrary metadata.
 type EnrichedBook struct {
 	BookReport
+	ScannedTitle     string          `json:"scanned_title"`
+	ScannedAuthors   []string        `json:"scanned_authors"`
 	Subtitle         string          `json:"subtitle,omitempty"`
 	FirstPublishDate string          `json:"first_publish_date,omitempty"`
 	AuthorDetails    []AuthorInfo    `json:"author_details,omitempty"`
@@ -170,7 +172,11 @@ func loadEnrichments(ctx context.Context, q *db.Queries) (map[int64]*enrichmentB
 }
 
 func mergeEnrichment(book BookReport, bundle *enrichmentBundle) EnrichedBook {
-	enriched := EnrichedBook{BookReport: book}
+	enriched := EnrichedBook{
+		BookReport:     book,
+		ScannedTitle:   book.Title,
+		ScannedAuthors: book.Authors,
+	}
 	if bundle == nil || bundle.info == nil {
 		return enriched
 	}

@@ -51,6 +51,10 @@ type Book struct {
 	AuthorTokens [][]string
 	ISBNs        []ISBN
 	HeadBlooms   [][]byte
+	// OrigTitleHit and OrigAuthorHit show how strongly the scanned metadata
+	// itself appears in the leading text. They are filled by the content pass.
+	OrigTitleHit  float64
+	OrigAuthorHit float64
 }
 
 // Cache holds the in-memory indexes built from the scanned books.

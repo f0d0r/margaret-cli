@@ -92,6 +92,7 @@ SELECT
     b.match_status AS final_status,
     COALESCE(m.status, '') AS match_status,
     COALESCE(m.confidence, 0) AS confidence,
+    COALESCE(m.content_score, 0) AS content_score,
     COALESCE(m.method, '') AS method,
     COALESCE(m.edition_key, '') AS edition_key,
     COALESCE(m.work_key, '') AS work_key,

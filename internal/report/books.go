@@ -36,7 +36,9 @@ type BookPublication struct {
 
 // BookReport is the JSON representation of one book: the chosen
 // (book-level) metadata plus every file grouped under it.
+// BookReport is the consolidated metadata of one book.
 type BookReport struct {
+	ID           int64             `json:"id"`
 	Authors      []string          `json:"authors"`
 	Title        string            `json:"title"`
 	Description  string            `json:"description"`
@@ -407,6 +409,7 @@ func getBookReport(ctx context.Context, q *db.Queries, id int64) (BookReport, bo
 		}
 	}
 	return BookReport{
+		ID:           id,
 		Authors:      authors,
 		Title:        book.Title,
 		Description:  book.Description,
@@ -719,6 +722,7 @@ func buildBookReports(ctx context.Context, q *db.Queries) (map[int64]BookReport,
 			identifiersByBook[id],
 		)
 		reports[id] = BookReport{
+			ID:           id,
 			Authors:      authors,
 			Title:        title,
 			Description:  metadata.description,

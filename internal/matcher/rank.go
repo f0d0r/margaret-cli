@@ -17,8 +17,9 @@ const (
 
 	scoreEpsilon = 1e-9
 
-	defaultContentConfirmScore = 0.60
-	defaultContentTitleConfirm = 0.60
+	defaultContentConfirmScore  = 0.60
+	defaultContentTitleConfirm  = 0.60
+	defaultContentAuthorConfirm = 0.40
 )
 
 // Status is the final matching classification of one scanned book.
@@ -47,6 +48,9 @@ type RankOptions struct {
 	// ContentTitleConfirm is the minimum fraction of the candidate title that
 	// must appear in the scanned head for content confirmation.
 	ContentTitleConfirm float64
+	// ContentAuthorConfirm is the minimum fraction of the candidate author
+	// that must appear in the scanned head when the metadata author is weak.
+	ContentAuthorConfirm float64
 }
 
 func (o RankOptions) withDefaults() RankOptions {
@@ -73,6 +77,9 @@ func (o RankOptions) withDefaults() RankOptions {
 	}
 	if o.ContentTitleConfirm <= 0 {
 		o.ContentTitleConfirm = defaultContentTitleConfirm
+	}
+	if o.ContentAuthorConfirm <= 0 {
+		o.ContentAuthorConfirm = defaultContentAuthorConfirm
 	}
 	return o
 }
@@ -247,7 +254,12 @@ func classify(book *Book, best Candidate, second *Candidate, candidates []Candid
 
 	// An ISBN match whose scanned title/author disagree with OpenLibrary is
 	// confirmed when the scanned text itself contains the OpenLibrary title
-	// and author: the metadata lied, not the ISBN.
+	// and author: the metadata lied, not the ISBN. If the scanned metadata is
+	// itself present in the text and another candidate is corroborated, the
+	// evidence is contradictory and the book goes to review instead.
+	if contentConflict(book, best, candidates) {
+		return StatusAmbiguous, "content_conflict"
+	}
 	if contentConfirms(best, opts) {
 		return StatusConfirmed, ""
 	}
@@ -307,10 +319,57 @@ func classify(book *Book, best Candidate, second *Candidate, candidates []Candid
 }
 
 func contentConfirms(candidate Candidate, opts RankOptions) bool {
-	return candidate.ISBN != "" &&
-		candidate.ISBNPriority <= 2 &&
-		atLeast(candidate.ContentScore, opts.ContentConfirmScore) &&
-		atLeast(candidate.ContentTitleHit, opts.ContentTitleConfirm)
+	if candidate.ISBN == "" || candidate.ISBNPriority > 2 {
+		return false
+	}
+	if !atLeast(candidate.ContentScore, opts.ContentConfirmScore) {
+		return false
+	}
+	if !atLeast(candidate.ContentTitleHit, opts.ContentTitleConfirm) {
+		return false
+	}
+	if len(candidate.AuthorNames) > 0 && lessThan(candidate.AuthorScore, 0.5) &&
+		lessThan(candidate.TitleScore, 0.5) &&
+		!atLeast(candidate.ContentAuthorHit, opts.ContentAuthorConfirm) {
+		return false
+	}
+	return true
+}
+
+func contentConflict(book *Book, best Candidate, candidates []Candidate) bool {
+	if book == nil || lessThan(book.OrigTitleHit, contentCredibleTitle) {
+		return false
+	}
+	// A weak-title ISBN candidate that contradicts a title+author-confirmed
+	// alternative is a conflict.
+	if best.ISBN != "" && lessThan(best.TitleScore, 0.5) {
+		for _, candidate := range candidates {
+			if candidate.EditionKey == best.EditionKey || candidate.WorkKey == best.WorkKey {
+				continue
+			}
+			if atLeast(candidate.ContentTitleHit, contentTitleConfirmed) &&
+				atLeast(candidate.ContentAuthorHit, contentAuthorConfirmedHit) {
+				return true
+			}
+		}
+	}
+	// A title+author-confirmed title candidate with a conflicting weak-title
+	// ISBN candidate is the ad-ISBN case (e.g. JSF in Action vs Tapestry).
+	if best.ISBN == "" && atLeast(best.ContentAuthorHit, contentAuthorConfirmedHit) &&
+		(lessThan(best.TitleScore, 0.9) || lessThan(best.AuthorScore, 0.5)) {
+		for _, candidate := range candidates {
+			if candidate.ISBN == "" || candidate.EditionKey == best.EditionKey ||
+				candidate.WorkKey == best.WorkKey {
+				continue
+			}
+			if lessThan(candidate.TitleScore, 0.5) &&
+				atLeast(candidate.ContentTitleHit, contentTitleConfirmed) &&
+				lessThan(candidate.ContentAuthorHit, contentAuthorConfirmedHit) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func atLeast(value, threshold float64) bool {

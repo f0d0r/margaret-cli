@@ -141,6 +141,9 @@ func TestWriteEnrichedBooks(t *testing.T) {
 	if len(books) != 1 {
 		t.Fatalf("books = %d, want 1", len(books))
 	}
+	if books[0].ID != bookID || books[0].ScannedTitle != "Title" {
+		t.Fatalf("book identity = %+v", books[0])
+	}
 	if books[0].Title != "Title" || books[0].Match.Status != "confirmed" {
 		t.Fatalf("book = %+v", books[0])
 	}
@@ -195,6 +198,9 @@ func TestWriteReviewCategories(t *testing.T) {
 	}
 	if len(report.Probable[0].Candidates) != 1 {
 		t.Fatalf("candidates = %+v", report.Probable[0].Candidates)
+	}
+	if report.Probable[0].ContentScore != 0.7 {
+		t.Fatalf("content score = %f, want 0.7", report.Probable[0].ContentScore)
 	}
 	candidate := report.Probable[0].Candidates[0]
 	if candidate.EditionKey != "/books/OL1M" || candidate.Selected != true {
@@ -329,6 +335,9 @@ func TestWriteEnrichedBooksMergesOpenLibraryMetadata(t *testing.T) {
 		t.Fatalf("books = %d, want 1", len(books))
 	}
 	book := books[0]
+	if book.ID != bookID || book.ScannedTitle != "Raw Title" {
+		t.Fatalf("book identity = %+v", book)
+	}
 	if book.Title != "OL Title" || book.Subtitle != "OL Subtitle" || book.Description != "OL description" {
 		t.Fatalf("scalar merge failed: %+v", book)
 	}

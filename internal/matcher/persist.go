@@ -117,6 +117,8 @@ func persistBook(ctx context.Context, q *db.Queries, match BookMatch, meta Persi
 			WorkGroupEditions: candidate.EditionCount,
 			ContentTitleHit:   candidate.ContentTitleHit,
 			ContentAuthorHit:  candidate.ContentAuthorHit,
+			OrigTitleHit:      candidate.OrigTitleHit,
+			OrigAuthorHit:     candidate.OrigAuthorHit,
 		})
 		if err != nil {
 			return fmt.Errorf("encode evidence for book %d: %w", match.BookID, err)
@@ -163,6 +165,8 @@ type candidateEvidence struct {
 	WorkGroupEditions int      `json:"work_group_editions,omitempty"`
 	ContentTitleHit   float64  `json:"content_title_hit,omitempty"`
 	ContentAuthorHit  float64  `json:"content_author_hit,omitempty"`
+	OrigTitleHit      float64  `json:"orig_title_hit,omitempty"`
+	OrigAuthorHit     float64  `json:"orig_author_hit,omitempty"`
 }
 
 func jsonStrings(values []string) (string, error) {

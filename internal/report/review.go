@@ -112,6 +112,7 @@ func WriteReview(ctx context.Context, q *db.Queries, path string) error {
 			MatchInfo: MatchInfo{
 				Status:         match.FinalStatus,
 				Confidence:     match.Confidence,
+				ContentScore:   match.ContentScore,
 				Method:         match.Method,
 				EditionKey:     match.EditionKey,
 				WorkKey:        match.WorkKey,
