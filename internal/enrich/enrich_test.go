@@ -389,10 +389,14 @@ func TestEnrichProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	phases := make(map[string]bool)
+	reading := make(map[string]Progress)
 	var last Progress
 	sawRecords := false
 	for _, event := range events {
 		phases[event.Phase] = true
+		if strings.HasPrefix(event.Phase, "reading ") {
+			reading[event.Phase] = event
+		}
 		if strings.HasPrefix(event.Phase, "reading ") && event.Records > 0 {
 			sawRecords = true
 		}
@@ -407,6 +411,11 @@ func TestEnrichProgress(t *testing.T) {
 	}
 	if !sawRecords {
 		t.Fatalf("no reading phase reported record progress: %v", events)
+	}
+	for phase, event := range reading {
+		if event.BytesTotal == 0 || event.BytesRead != event.BytesTotal {
+			t.Fatalf("phase %q bytes = %d/%d, want a completed dump", phase, event.BytesRead, event.BytesTotal)
+		}
 	}
 	if last.Total != 1 || last.Done != 1 {
 		t.Fatalf("book progress = %+v, want 1/1", last)

@@ -52,9 +52,13 @@ func streamEditionsParallel(
 		}(i)
 	}
 
-	emit := func() {
+	totalBytes := openlibrary.DumpSize(file)
+	emit := func(read int64, final bool) {
 		if opts.Progress == nil {
 			return
+		}
+		if final && totalBytes > 0 {
+			read = totalBytes
 		}
 		total := tracker.totalCount()
 		done := tracker.matchedCount()
@@ -66,11 +70,15 @@ func streamEditionsParallel(
 			Total:      total,
 			Done:       done,
 			Current:    tracker.currentLabel(),
+			BytesRead:  read,
+			BytesTotal: totalBytes,
 			Pending:    total - done,
 		})
 	}
 
-	err := readEditionsParallel(ctx, file, jobs, tracker, stats, emit)
+	err := readEditionsParallel(ctx, file, jobs, tracker, stats, func(read int64) {
+		emit(read, false)
+	})
 	close(jobs)
 	wg.Wait()
 	for i := range localStats {
@@ -80,7 +88,9 @@ func streamEditionsParallel(
 		stats.TitleExactMatches += localStats[i].TitleExactMatches
 		stats.TitleFuzzyMatches += localStats[i].TitleFuzzyMatches
 	}
-	emit()
+	if err == nil {
+		emit(totalBytes, true)
+	}
 	return candidates, err
 }
 
@@ -90,9 +100,9 @@ func readEditionsParallel(
 	jobs chan<- editionJob,
 	tracker *editionTracker,
 	stats *StreamStats,
-	emit func(),
+	emit func(int64),
 ) error {
-	reader, err := openlibrary.OpenDump(file)
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
 	if err != nil {
 		return fmt.Errorf("open editions dump: %w", err)
 	}
@@ -107,6 +117,7 @@ func readEditionsParallel(
 		}
 		row, err := openlibrary.ReadRow(scanner)
 		if errors.Is(err, io.EOF) {
+			emit(counter.Load())
 			return nil
 		}
 		if errors.Is(err, openlibrary.ErrMalformedRow) {
@@ -130,7 +141,7 @@ func readEditionsParallel(
 			return nil
 		}
 		if time.Since(lastProgress) >= progressInterval {
-			emit()
+			emit(counter.Load())
 			lastProgress = time.Now()
 		}
 	}

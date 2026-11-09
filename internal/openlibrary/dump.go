@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 )
 
 const maxDumpLineBytes = 64 << 20
@@ -27,24 +28,93 @@ type Row struct {
 	Data []byte
 }
 
-// OpenDump opens a dump file, decompressing it when the file is gzipped.
+// ByteCounter counts bytes read from a dump file. For gzipped dumps it counts
+// the compressed bytes, which is what progress uses to show how far the reader
+// has advanced through the file.
+type ByteCounter struct {
+	n atomic.Int64
+}
+
+// Load returns the bytes counted so far.
+func (c *ByteCounter) Load() int64 {
+	return c.n.Load()
+}
+
+func (c *ByteCounter) add(n int) {
+	if n > 0 {
+		c.n.Add(int64(n))
+	}
+}
+
+type countingReader struct {
+	reader  io.Reader
+	counter *ByteCounter
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	c.counter.add(n)
+	return n, err
+}
+
+type countingReadCloser struct {
+	reader io.Reader
+	closer io.Closer
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func (c *countingReadCloser) Close() error {
+	return c.closer.Close()
+}
+
+// OpenDump opens a dump file, decompressing it when the file is gzipped, and
+// returns a counter for the bytes read from the file.
 func OpenDump(file *File) (io.ReadCloser, error) {
+	reader, _, err := OpenDumpWithCounter(file)
+	return reader, err
+}
+
+// OpenDumpWithCounter is OpenDump with a byte counter attached. The counter
+// tracks the compressed file bytes read, so callers can show dump progress
+// even when the uncompressed length is unknown.
+func OpenDumpWithCounter(file *File) (io.ReadCloser, *ByteCounter, error) {
 	if file == nil {
-		return nil, errors.New("no dump file")
+		return nil, nil, errors.New("no dump file")
 	}
 	raw, err := os.Open(file.Path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	counter := &ByteCounter{}
+	counted := &countingReader{reader: raw, counter: counter}
 	if !file.Compressed {
-		return raw, nil
+		return &countingReadCloser{reader: counted, closer: raw}, counter, nil
 	}
-	reader, err := gzip.NewReader(raw)
+	reader, err := gzip.NewReader(counted)
 	if err != nil {
 		_ = raw.Close()
-		return nil, fmt.Errorf("open gzip dump: %w", err)
+		return nil, nil, fmt.Errorf("open gzip dump: %w", err)
 	}
-	return &gzipReadCloser{reader: reader, raw: raw}, nil
+	return &gzipReadCloser{reader: reader, raw: raw}, counter, nil
+}
+
+// DumpSize returns the on-disk size of a dump file, falling back to stat when
+// the dataset did not record it.
+func DumpSize(file *File) int64 {
+	if file == nil {
+		return 0
+	}
+	if file.Size > 0 {
+		return file.Size
+	}
+	info, err := os.Stat(file.Path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 type gzipReadCloser struct {

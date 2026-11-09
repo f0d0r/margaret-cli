@@ -92,6 +92,10 @@ type StreamProgress struct {
 	Total   int
 	Done    int
 	Current string
+	// BytesRead and BytesTotal describe progress through the dump file. They
+	// are the primary progress metric for editions and combined passes.
+	BytesRead  int64
+	BytesTotal int64
 	// Pending is the number of mappable books without a candidate yet in the
 	// editions and combined passes.
 	Pending int

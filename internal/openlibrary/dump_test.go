@@ -2,6 +2,7 @@ package openlibrary
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,5 +83,51 @@ func TestOpenDumpGzip(t *testing.T) {
 	}
 	if row.Type != "/type/edition" {
 		t.Fatalf("row type = %q", row.Type)
+	}
+}
+
+func TestOpenDumpWithCounter(t *testing.T) {
+	body := "/type/edition\t/books/OL1M\t1\t2024-01-01\t{\"title\":\"Test\"}\n"
+	dir := t.TempDir()
+	gzPath := filepath.Join(dir, "dump.txt.gz")
+	if err := os.WriteFile(gzPath, gzipDumpBytes(t, body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plainPath := filepath.Join(dir, "dump.txt")
+	if err := os.WriteFile(plainPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		path       string
+		compressed bool
+	}{
+		{name: "gzip", path: gzPath, compressed: true},
+		{name: "plain", path: plainPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &File{Path: tc.path, Compressed: tc.compressed}
+			reader, counter, err := OpenDumpWithCounter(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.ReadAll(reader); err != nil {
+				t.Fatal(err)
+			}
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if counter.Load() != info.Size() {
+				t.Fatalf("counter = %d, want %d", counter.Load(), info.Size())
+			}
+			if got := DumpSize(file); got != info.Size() {
+				t.Fatalf("DumpSize = %d, want %d", got, info.Size())
+			}
+		})
 	}
 }

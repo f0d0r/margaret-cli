@@ -29,6 +29,8 @@ type Options struct {
 type Progress struct {
 	Phase         string
 	Records       int64
+	BytesRead     int64
+	BytesTotal    int64
 	Done          int
 	Total         int
 	CurrentAuthor string
@@ -402,18 +404,28 @@ func scanCombined(ctx context.Context, file *openlibrary.File, editionKeys, work
 }
 
 func scanFile(ctx context.Context, file *openlibrary.File, phase string, opts Options, handle func(openlibrary.Row) bool) error {
-	reader, err := openlibrary.OpenDump(file)
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		_ = reader.Close()
 	}()
+	totalBytes := openlibrary.DumpSize(file)
 	scanner := openlibrary.NewDumpScanner(reader)
 	var records int64
 	lastProgress := time.Now()
-	report := func() {
-		reportProgress(opts, Progress{Phase: phase, Records: records})
+	report := func(final bool) {
+		read := counter.Load()
+		if final && totalBytes > 0 {
+			read = totalBytes
+		}
+		reportProgress(opts, Progress{
+			Phase:      phase,
+			Records:    records,
+			BytesRead:  read,
+			BytesTotal: totalBytes,
+		})
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -421,7 +433,7 @@ func scanFile(ctx context.Context, file *openlibrary.File, phase string, opts Op
 		}
 		row, err := openlibrary.ReadRow(scanner)
 		if errors.Is(err, io.EOF) {
-			report()
+			report(true)
 			return nil
 		}
 		if errors.Is(err, openlibrary.ErrMalformedRow) {
@@ -432,11 +444,11 @@ func scanFile(ctx context.Context, file *openlibrary.File, phase string, opts Op
 		}
 		records++
 		if handle(row) {
-			report()
+			report(true)
 			return nil
 		}
 		if time.Since(lastProgress) >= 250*time.Millisecond {
-			report()
+			report(false)
 			lastProgress = time.Now()
 		}
 	}

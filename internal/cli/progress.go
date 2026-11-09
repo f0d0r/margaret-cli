@@ -43,6 +43,7 @@ type progressBar struct {
 	spin      int
 	active    bool
 	canceling bool
+	percent   bool
 	names     []string
 }
 
@@ -67,6 +68,15 @@ func newProgressBar() *progressBar {
 // It is used by the enrich progress reporter, whose phases do not share a
 // single monotonically growing maximum.
 func (b *progressBar) update(desc string, done, total int64, current string, active bool) {
+	b.updateMode(desc, done, total, current, active, false)
+}
+
+// updatePercent is update with a percentage display instead of cur/max.
+func (b *progressBar) updatePercent(desc string, done, total int64, current string, active bool) {
+	b.updateMode(desc, done, total, current, active, true)
+}
+
+func (b *progressBar) updateMode(desc string, done, total int64, current string, active, percent bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.done {
@@ -88,6 +98,7 @@ func (b *progressBar) update(desc string, done, total int64, current string, act
 	b.cur = done
 	b.max = total
 	b.active = active
+	b.percent = percent
 	if current == "" {
 		b.names = b.names[:0]
 	} else {
@@ -203,7 +214,18 @@ func (b *progressBar) render() {
 	}
 	if b.max > 0 {
 		bar := strings.Repeat("█", fill) + strings.Repeat("░", b.width-fill)
-		line += fmt.Sprintf(" [%s] %d/%d", bar, b.cur, b.max)
+		if b.percent {
+			percent := b.cur * 100 / b.max
+			if percent < 0 {
+				percent = 0
+			}
+			if percent > 100 {
+				percent = 100
+			}
+			line += fmt.Sprintf(" [%s] %d%%", bar, percent)
+		} else {
+			line += fmt.Sprintf(" [%s] %d/%d", bar, b.cur, b.max)
+		}
 	}
 	if len(b.names) > 0 {
 		line += "  " + b.names[len(b.names)-1]

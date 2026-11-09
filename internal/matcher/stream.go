@@ -363,18 +363,23 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 	}
 
 	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
-	reader, err := openlibrary.OpenDump(file)
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
 	if err != nil {
 		return nil, fmt.Errorf("open editions dump: %w", err)
 	}
 	defer func() {
 		_ = reader.Close()
 	}()
+	totalBytes := openlibrary.DumpSize(file)
 	scanner := openlibrary.NewDumpScanner(reader)
 	lastProgress := time.Now()
-	emit := func() {
+	emit := func(final bool) {
 		if opts.Progress == nil {
 			return
+		}
+		read := counter.Load()
+		if final && totalBytes > 0 {
+			read = totalBytes
 		}
 		total := tracker.totalCount()
 		done := tracker.matchedCount()
@@ -386,6 +391,8 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 			Total:      total,
 			Done:       done,
 			Current:    tracker.currentLabel(),
+			BytesRead:  read,
+			BytesTotal: totalBytes,
 			Pending:    total - done,
 		})
 	}
@@ -414,11 +421,11 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 			break
 		}
 		if time.Since(lastProgress) >= progressInterval {
-			emit()
+			emit(false)
 			lastProgress = time.Now()
 		}
 	}
-	emit()
+	emit(true)
 	return candidates, nil
 }
 
@@ -443,13 +450,14 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 		_ = os.Remove(sidecar.path)
 	}()
 
-	reader, err := openlibrary.OpenDump(file)
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
 	if err != nil {
 		return nil, "", fmt.Errorf("open combined dump: %w", err)
 	}
 	defer func() {
 		_ = reader.Close()
 	}()
+	totalBytes := openlibrary.DumpSize(file)
 	scanner := openlibrary.NewDumpScanner(reader)
 	lastProgress := time.Now()
 
@@ -509,6 +517,8 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 				Total:      total,
 				Done:       done,
 				Current:    tracker.currentLabel(),
+				BytesRead:  counter.Load(),
+				BytesTotal: totalBytes,
 				Pending:    total - done,
 			})
 			lastProgress = time.Now()
@@ -525,6 +535,8 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 			Total:      total,
 			Done:       done,
 			Current:    tracker.currentLabel(),
+			BytesRead:  totalBytes,
+			BytesTotal: totalBytes,
 			Pending:    total - done,
 		})
 	}

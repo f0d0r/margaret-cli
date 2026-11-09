@@ -503,6 +503,9 @@ func TestStreamProgressReportsCurrentBook(t *testing.T) {
 		if final.Total != 3 || final.Done != 3 {
 			t.Fatalf("workers %d editions progress = %+v, want total 3 done 3", workers, final)
 		}
+		if final.BytesTotal == 0 || final.BytesRead != final.BytesTotal {
+			t.Fatalf("workers %d bytes progress = %d/%d, want a completed dump", workers, final.BytesRead, final.BytesTotal)
+		}
 		if final.Current == "" || !strings.Contains(final.Current, ": ") {
 			t.Fatalf("workers %d current book = %q, want author: title", workers, final.Current)
 		}

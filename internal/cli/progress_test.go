@@ -89,3 +89,18 @@ func TestBookProgressLabel(t *testing.T) {
 		t.Fatalf("untitled label = %q", got)
 	}
 }
+
+func TestProgressBarPercent(t *testing.T) {
+	var buf strings.Builder
+	bar := &progressBar{w: &buf, desc: "matching editions", width: 10, cols: 120}
+	bar.updatePercent("matching editions", 50, 100, "Tolkien: The Hobbit", true)
+	got := buf.String()
+	for _, want := range []string{"matching editions", "50%", "Tolkien: The Hobbit"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("percent output %q does not contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "50/100") {
+		t.Fatalf("percent output still contains counts: %q", got)
+	}
+}

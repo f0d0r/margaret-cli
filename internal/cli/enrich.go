@@ -350,11 +350,19 @@ func (p *enrichProgress) stream(progress matcher.StreamProgress) {
 	if progress.Pass == "authors" || progress.Pass == "works" {
 		current = ""
 	}
+	if (progress.Pass == "editions" || progress.Pass == "combined") && progress.BytesTotal > 0 {
+		p.bar.updatePercent(desc, progress.BytesRead, progress.BytesTotal, current, true)
+		return
+	}
 	p.bar.update(desc, int64(progress.Done), int64(progress.Total), current, true)
 }
 
 func (p *enrichProgress) enrichment(progress enrich.Progress) {
 	if progress.Phase != "" && progress.Phase != "enriching books" {
+		if progress.BytesTotal > 0 {
+			p.bar.updatePercent(progress.Phase, progress.BytesRead, progress.BytesTotal, "", true)
+			return
+		}
 		p.bar.update(progress.Phase, 0, 0, "", true)
 		return
 	}
