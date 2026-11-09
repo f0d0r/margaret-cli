@@ -77,13 +77,19 @@ func seedBook(t *testing.T, q *db.Queries, title, author, hash string, minhash [
 
 func seedMatch(t *testing.T, q *db.Queries, bookID int64, status string) {
 	t.Helper()
+	seedMatchWithContent(t, q, bookID, status, 0)
+}
+
+func seedMatchWithContent(t *testing.T, q *db.Queries, bookID int64, status string, contentScore float64) {
+	t.Helper()
 	ctx := context.Background()
 	if err := q.UpsertBookMatch(ctx, db.UpsertBookMatchParams{
-		BookID:     bookID,
-		Status:     status,
-		Confidence: 1,
-		Method:     "isbn",
-		MatchedAt:  1,
+		BookID:       bookID,
+		Status:       status,
+		Confidence:   1,
+		ContentScore: contentScore,
+		Method:       "isbn",
+		MatchedAt:    1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -230,4 +236,121 @@ func hasConflict(result *Result, bookID, peerID int64) bool {
 		}
 	}
 	return false
+}
+
+func signatureValues(values []uint64) []byte {
+	blob := make([]byte, len(values)*8)
+	for i, value := range values {
+		binary.LittleEndian.PutUint64(blob[i*8:], value)
+	}
+	return blob
+}
+
+// signatureWithMatches builds a 512-value signature that matches the
+// signature(0) reference at the first count positions. tools.Jaccard compares
+// MinHash signatures position by position, so this yields count/512.
+func signatureWithMatches(count int) []byte {
+	reference := make([]uint64, 512)
+	for i := range reference {
+		reference[i] = uint64(i)
+	}
+	for i := count; i < len(reference); i++ {
+		reference[i] = uint64(i + 10000)
+	}
+	return signatureValues(reference)
+}
+
+func hasConflictReason(result *Result, bookID, peerID int64, reason string) bool {
+	for _, peer := range result.Books[bookID] {
+		if peer.PeerBookID == peerID && peer.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDetectPossibleDuplicateDoesNotDegrade(t *testing.T) {
+	conn, q := openConflictDB(t)
+	// 256 of 512 MinHash positions match: Jaccard estimate = 0.5.
+	first := seedBook(t, q, "Possible", "Author", "possible-a", signature(0))
+	second := seedBook(t, q, "Possible", "Author", "possible-b", signatureWithMatches(256))
+	seedMatch(t, q, first, "confirmed")
+	seedMatch(t, q, second, "confirmed")
+
+	result, err := DetectAndPersist(context.Background(), conn, q, Options{Now: time.Unix(1, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stats.Conflicts != 0 || result.Stats.PossibleDuplicates != 1 {
+		t.Fatalf("stats = %+v", result.Stats)
+	}
+	if len(result.Degraded) != 0 {
+		t.Fatalf("degraded = %v", result.Degraded)
+	}
+	if !hasConflictReason(result, first, second, PossibleDuplicateReason) ||
+		!hasConflictReason(result, second, first, PossibleDuplicateReason) {
+		t.Fatalf("possible duplicate peers = %+v", result.Books)
+	}
+	for _, bookID := range []int64{first, second} {
+		var status string
+		if err := conn.QueryRow("SELECT match_status FROM books WHERE id = ?", bookID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "confirmed" {
+			t.Fatalf("book %d final status = %q, want confirmed", bookID, status)
+		}
+	}
+}
+
+func TestDetectAndPersistSelectiveDegradation(t *testing.T) {
+	conn, q := openConflictDB(t)
+	supported := seedBook(t, q, "Mismatch", "Author", "supported-a", signature(0))
+	unsupported := seedBook(t, q, "Mismatch", "Author", "supported-b", signature(10000))
+	seedMatchWithContent(t, q, supported, "confirmed", 1)
+	seedMatchWithContent(t, q, unsupported, "confirmed", 0)
+
+	result, err := DetectAndPersist(context.Background(), conn, q, Options{Now: time.Unix(1, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.Degraded[supported]; ok {
+		t.Fatalf("supported book was degraded: %v", result.Degraded)
+	}
+	if _, ok := result.Degraded[unsupported]; !ok {
+		t.Fatalf("unsupported book was not degraded: %v", result.Degraded)
+	}
+	for bookID, want := range map[int64]string{supported: "confirmed", unsupported: "needs_review"} {
+		var status string
+		if err := conn.QueryRow("SELECT match_status FROM books WHERE id = ?", bookID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != want {
+			t.Fatalf("book %d final status = %q, want %q", bookID, status, want)
+		}
+	}
+}
+
+func TestDetectAndPersistBothSupportedDegradesBoth(t *testing.T) {
+	conn, q := openConflictDB(t)
+	first := seedBook(t, q, "Mismatch", "Author", "both-a", signature(0))
+	second := seedBook(t, q, "Mismatch", "Author", "both-b", signature(10000))
+	seedMatchWithContent(t, q, first, "confirmed", 1)
+	seedMatchWithContent(t, q, second, "confirmed", 1)
+
+	result, err := DetectAndPersist(context.Background(), conn, q, Options{Now: time.Unix(1, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Degraded) != 2 {
+		t.Fatalf("degraded = %v, want both books", result.Degraded)
+	}
+	for _, bookID := range []int64{first, second} {
+		var status string
+		if err := conn.QueryRow("SELECT match_status FROM books WHERE id = ?", bookID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "needs_review" {
+			t.Fatalf("book %d final status = %q, want needs_review", bookID, status)
+		}
+	}
 }

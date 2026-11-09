@@ -142,7 +142,10 @@ SET match_status = COALESCE(
 UPDATE books SET match_status = ? WHERE id = ?;
 
 -- name: ListBooksForConflictDetection :many
-SELECT id, title FROM books ORDER BY id;
+SELECT b.id, b.title, COALESCE(m.content_score, 0) AS content_score
+FROM books b
+LEFT JOIN book_matches m ON m.book_id = b.id
+ORDER BY b.id;
 
 -- name: ListBookAuthorsForConflictDetection :many
 SELECT ba.book_id, a.name
@@ -172,7 +175,9 @@ SELECT c.book_id, c.peer_book_id, c.reason, c.score
 FROM book_conflicts c
 JOIN books b ON b.id = c.book_id
 WHERE b.match_status IN ('probable', 'ambiguous', 'needs_review', 'not_found', 'no_data')
-ORDER BY c.book_id, c.peer_book_id;
+ORDER BY c.book_id,
+    CASE WHEN c.reason = 'metadata_content_mismatch' THEN 0 ELSE 1 END,
+    c.peer_book_id;
 
 -- name: ListBookEnrichmentTargets :many
 SELECT

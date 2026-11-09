@@ -252,8 +252,12 @@ func runConflictDetection(ctx context.Context, conn *sql.DB, q *db.Queries) erro
 		return fmt.Errorf("detect conflicts: %w", err)
 	}
 	if result.Stats.Conflicts > 0 {
-		fmt.Printf("Conflicts: %d pair(s), %d book(s)\n",
-			result.Stats.Conflicts, result.Stats.ConflictBooks)
+		fmt.Printf("Conflicts: %d mismatch pair(s), %d book(s) set to review\n",
+			result.Stats.Conflicts, result.Stats.DegradedBooks)
+	}
+	if result.Stats.PossibleDuplicates > 0 {
+		fmt.Printf("Possible duplicates: %d pair(s), %d book(s)\n",
+			result.Stats.PossibleDuplicates, result.Stats.PossibleDuplicateBooks)
 	}
 	return nil
 }

@@ -18,8 +18,19 @@ import (
 	"github.com/f0d0r/margaret-ebook-library/tools"
 )
 
-// Reason is stored with every detected conflict.
-const Reason = "metadata_content_mismatch"
+const (
+	// Reason marks a pair whose content similarity is low enough to be a real
+	// metadata/content mismatch.
+	Reason = "metadata_content_mismatch"
+	// PossibleDuplicateReason marks a pair in the middle band: likely the same
+	// book in a different edition or extraction, but not a metadata error.
+	PossibleDuplicateReason = "possible_duplicate"
+	// mismatchSimilarity is the upper bound of the real-mismatch band.
+	mismatchSimilarity = 0.20
+	// contentSupportScore is the content score above which a book is treated
+	// as having independent content support for its match.
+	contentSupportScore = 0.60
+)
 
 // Options configures conflict detection.
 type Options struct {
@@ -43,28 +54,42 @@ type Pair struct {
 
 // Stats summarizes a conflict detection run.
 type Stats struct {
-	Books             int
-	TitleGroups       int
-	DuplicateGroups   int
-	PairsCompared     int
-	Conflicts         int
-	ConflictBooks     int
-	SkippedNoMinhash  int
-	SkippedAuthorPair int
+	Books              int
+	TitleGroups        int
+	DuplicateGroups    int
+	PairsCompared      int
+	Conflicts          int
+	PossibleDuplicates int
+	ConflictBooks      int
+	// PossibleDuplicateBooks counts books with at least one possible-duplicate
+	// peer; they keep their matcher status.
+	PossibleDuplicateBooks int
+	DegradedBooks          int
+	SkippedNoMinhash       int
+	SkippedAuthorPair      int
 }
 
 // Result is the output of conflict detection.
 type Result struct {
 	Pairs []Pair
+	// Books lists every book that has at least one conflict or possible
+	// duplicate peer.
 	Books map[int64][]Peer
-	Stats Stats
+	// Degraded lists the books whose final status must become needs_review.
+	Degraded map[int64]struct{}
+	Stats    Stats
 }
 
 type bookInfo struct {
-	id          int64
-	titleKey    string
-	authorKey   string
-	authorNames int
+	id           int64
+	titleKey     string
+	authorKey    string
+	authorNames  int
+	contentScore float64
+}
+
+func (b *bookInfo) contentSupported() bool {
+	return b.contentScore >= contentSupportScore
 }
 
 // DetectAndPersist finds local metadata/content conflicts and writes the
@@ -104,7 +129,7 @@ func DetectAndPersist(ctx context.Context, conn *sql.DB, q *db.Queries, opts Opt
 				return fmt.Errorf("create conflict %d/%d: %w", pair.BookID, pair.PeerBookID, err)
 			}
 		}
-		for bookID := range result.Books {
+		for bookID := range result.Degraded {
 			if err := txq.SetBookMatchStatus(txCtx, db.SetBookMatchStatusParams{
 				MatchStatus: "needs_review",
 				ID:          bookID,
@@ -132,7 +157,11 @@ func Detect(ctx context.Context, q *db.Queries) (*Result, error) {
 		if titleKey == "" {
 			continue
 		}
-		books[row.ID] = &bookInfo{id: row.ID, titleKey: titleKey}
+		books[row.ID] = &bookInfo{
+			id:           row.ID,
+			titleKey:     titleKey,
+			contentScore: row.ContentScore,
+		}
 	}
 
 	authorRows, err := q.ListBookAuthorsForConflictDetection(ctx)
@@ -173,7 +202,10 @@ func Detect(ctx context.Context, q *db.Queries) (*Result, error) {
 		groups[book.titleKey] = append(groups[book.titleKey], book)
 	}
 
-	result := &Result{Books: make(map[int64][]Peer)}
+	result := &Result{
+		Books:    make(map[int64][]Peer),
+		Degraded: make(map[int64]struct{}),
+	}
 	result.Stats.Books = len(books)
 	result.Stats.TitleGroups = len(groups)
 	for _, group := range groups {
@@ -204,13 +236,28 @@ func Detect(ctx context.Context, q *db.Queries) (*Result, error) {
 				if score >= lsh.MinSimilarityThreshold {
 					continue
 				}
-				result.Stats.Conflicts++
-				addConflict(result, left.id, right.id, score)
-				addConflict(result, right.id, left.id, score)
+				reason := PossibleDuplicateReason
+				if score < mismatchSimilarity {
+					reason = Reason
+					result.Stats.Conflicts++
+					degradeMismatch(result, left, right)
+				} else {
+					result.Stats.PossibleDuplicates++
+				}
+				addConflict(result, left.id, right.id, reason, score)
+				addConflict(result, right.id, left.id, reason, score)
 			}
 		}
 	}
 	result.Stats.ConflictBooks = len(result.Books)
+	result.Stats.DegradedBooks = len(result.Degraded)
+	possibleBooks := make(map[int64]struct{})
+	for _, pair := range result.Pairs {
+		if pair.Reason == PossibleDuplicateReason {
+			possibleBooks[pair.BookID] = struct{}{}
+		}
+	}
+	result.Stats.PossibleDuplicateBooks = len(possibleBooks)
 	sort.Slice(result.Pairs, func(i, j int) bool {
 		if result.Pairs[i].BookID != result.Pairs[j].BookID {
 			return result.Pairs[i].BookID < result.Pairs[j].BookID
@@ -260,16 +307,33 @@ func maxSimilarity(a, b [][]uint64) float64 {
 	return max
 }
 
-func addConflict(result *Result, bookID, peerID int64, score float64) {
+// degradeMismatch marks the books whose final status must become needs_review.
+// A book with independent content support keeps its matcher status; if both
+// sides have support (or neither does), both are degraded.
+func degradeMismatch(result *Result, left, right *bookInfo) {
+	leftSupported := left.contentSupported()
+	rightSupported := right.contentSupported()
+	switch {
+	case leftSupported && !rightSupported:
+		result.Degraded[right.id] = struct{}{}
+	case !leftSupported && rightSupported:
+		result.Degraded[left.id] = struct{}{}
+	default:
+		result.Degraded[left.id] = struct{}{}
+		result.Degraded[right.id] = struct{}{}
+	}
+}
+
+func addConflict(result *Result, bookID, peerID int64, reason string, score float64) {
 	result.Pairs = append(result.Pairs, Pair{
 		BookID:     bookID,
 		PeerBookID: peerID,
-		Reason:     Reason,
+		Reason:     reason,
 		Score:      score,
 	})
 	result.Books[bookID] = append(result.Books[bookID], Peer{
 		PeerBookID: peerID,
-		Reason:     Reason,
+		Reason:     reason,
 		Score:      score,
 	})
 }
