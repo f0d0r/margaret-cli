@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/f0d0r/margaret-cli/internal/conflict"
 	"github.com/f0d0r/margaret-cli/internal/database"
@@ -117,6 +118,11 @@ func runEnrich(ctx context.Context) error {
 	}
 	warnMissingContentHeads(ctx, q)
 
+	progress := newEnrichProgress()
+	defer progress.finish()
+	stopProgress := startEnrichProgress(ctx, progress)
+	defer stopProgress()
+
 	matcherVersion := matcher.Version
 	dumpVersion := matcher.DatasetVersion(dataset)
 	cache, err := matcher.Build(ctx, q, matcher.Options{
@@ -130,12 +136,14 @@ func runEnrich(ctx context.Context) error {
 	}
 	if cache.Stats.Books == 0 {
 		fmt.Println("No books need matching.")
+		progress.phase("detecting conflicts")
 		if err := runConflictDetection(ctx, conn, q); err != nil {
 			return err
 		}
-		if err := runEnrichment(ctx, dataset, conn, q, matcherVersion, dumpVersion); err != nil {
+		if err := runEnrichment(ctx, dataset, conn, q, matcherVersion, dumpVersion, progress); err != nil {
 			return err
 		}
+		progress.finish()
 		if err := writeEnrichmentReports(ctx, q); err != nil {
 			return err
 		}
@@ -144,31 +152,36 @@ func runEnrich(ctx context.Context) error {
 
 	fmt.Printf("Matching %d book(s)...\n", cache.Stats.Books)
 	stream, err := matcher.StreamDataset(ctx, dataset, cache, matcher.StreamOptions{
-		Progress: printStreamProgress,
+		Progress: progress.stream,
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr)
-	for _, warning := range stream.Warnings {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
-	}
+	warnings := stream.Warnings
 
+	progress.phase("ranking matches")
 	ranked, err := matcher.Rank(stream, cache, matcher.RankOptions{})
 	if err != nil {
 		return err
 	}
+	progress.phase("saving matches")
 	if err := matcher.Persist(ctx, conn, q, ranked, matcher.PersistMeta{
 		MatcherVersion: matcherVersion,
 		DumpVersion:    dumpVersion,
 	}, matcher.PersistOptions{}); err != nil {
 		return err
 	}
+	progress.phase("detecting conflicts")
 	if err := runConflictDetection(ctx, conn, q); err != nil {
 		return err
 	}
-	if err := runEnrichment(ctx, dataset, conn, q, matcherVersion, dumpVersion); err != nil {
+	if err := runEnrichment(ctx, dataset, conn, q, matcherVersion, dumpVersion, progress); err != nil {
 		return err
+	}
+	progress.finish()
+
+	for _, warning := range warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 	}
 	if err := writeEnrichmentReports(ctx, q); err != nil {
 		return err
@@ -176,11 +189,40 @@ func runEnrich(ctx context.Context) error {
 	return printMatchStatusCounts(ctx, q)
 }
 
-func runEnrichment(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *db.Queries, matcherVersion, dumpVersion string) error {
+func startEnrichProgress(ctx context.Context, progress *enrichProgress) func() {
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				progress.tick()
+			}
+		}
+	}()
+	return func() {
+		close(stopCh)
+		<-doneCh
+	}
+}
+
+func runEnrichment(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *db.Queries, matcherVersion, dumpVersion string, progress *enrichProgress) error {
+	var onProgress func(enrich.Progress)
+	if progress != nil {
+		onProgress = progress.enrichment
+	}
 	result, err := enrich.Enrich(ctx, dataset, conn, q, enrich.Options{
 		MatcherVersion: matcherVersion,
 		DumpVersion:    dumpVersion,
 		Force:          enrichForceFlag || enrichRefreshFlag,
+		Progress:       onProgress,
 	})
 	if err != nil {
 		return fmt.Errorf("enrich metadata: %w", err)
@@ -279,13 +321,58 @@ func databaseReady(path string) (bool, error) {
 	}
 }
 
-func printStreamProgress(progress matcher.StreamProgress) {
-	line := fmt.Sprintf("%s: lines=%d records=%d candidates=%d",
-		progress.Pass, progress.Lines, progress.Records, progress.Candidates)
-	if progress.Pending > 0 {
-		line += fmt.Sprintf(" pending=%d", progress.Pending)
+type enrichProgress struct {
+	bar *progressBar
+}
+
+func newEnrichProgress() *enrichProgress {
+	bar := newProgressBar()
+	bar.desc = "matching books"
+	return &enrichProgress{bar: bar}
+}
+
+func (p *enrichProgress) stream(progress matcher.StreamProgress) {
+	desc := "matching " + progress.Pass
+	current := progress.Current
+	if progress.Pass == "authors" || progress.Pass == "works" {
+		current = ""
 	}
-	fmt.Fprintf(os.Stderr, "\r%s", line)
+	p.bar.update(desc, int64(progress.Done), int64(progress.Total), current, true)
+}
+
+func (p *enrichProgress) enrichment(progress enrich.Progress) {
+	if progress.Phase != "" && progress.Phase != "enriching books" {
+		p.bar.update(progress.Phase, 0, 0, "", true)
+		return
+	}
+	p.bar.update("enriching books", int64(progress.Done), int64(progress.Total),
+		bookProgressLabel(progress.CurrentAuthor, progress.CurrentTitle), true)
+}
+
+func (p *enrichProgress) phase(desc string) {
+	p.bar.update(desc, 0, 0, "", true)
+}
+
+func (p *enrichProgress) tick() {
+	p.bar.renderNow()
+}
+
+func (p *enrichProgress) finish() {
+	p.bar.finish()
+}
+
+func bookProgressLabel(author, title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "(untitled)"
+	}
+	if author = strings.TrimSpace(author); author != "" {
+		if comma := strings.IndexByte(author, ','); comma > 0 {
+			author = strings.TrimSpace(author[:comma])
+		}
+		return author + ": " + title
+	}
+	return title
 }
 
 func warnMissingContentHeads(ctx context.Context, q *db.Queries) {

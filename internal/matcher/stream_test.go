@@ -469,3 +469,46 @@ func TestStreamWorkAuthorsFillMissingEditionAuthors(t *testing.T) {
 		t.Fatalf("status = %q, want confirmed", got)
 	}
 }
+
+func TestStreamProgressReportsCurrentBook(t *testing.T) {
+	cache, _, _, _, dataset := streamDataset(t)
+	var events []StreamProgress
+	_, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{
+		Progress: func(progress StreamProgress) {
+			events = append(events, progress)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var editions, authors, works []StreamProgress
+	for _, event := range events {
+		switch event.Pass {
+		case "editions":
+			editions = append(editions, event)
+		case "authors":
+			authors = append(authors, event)
+		case "works":
+			works = append(works, event)
+		}
+	}
+	if len(editions) == 0 {
+		t.Fatal("no editions progress events")
+	}
+	final := editions[len(editions)-1]
+	if final.Total != 3 || final.Done != 3 {
+		t.Fatalf("editions progress = %+v, want total 3 done 3", final)
+	}
+	if final.Current == "" || !strings.Contains(final.Current, ": ") {
+		t.Fatalf("current book = %q, want author: title", final.Current)
+	}
+	if len(authors) == 0 || authors[len(authors)-1].Total == 0 ||
+		authors[len(authors)-1].Done != authors[len(authors)-1].Total {
+		t.Fatalf("authors progress = %+v", authors)
+	}
+	if len(works) == 0 || works[len(works)-1].Total == 0 ||
+		works[len(works)-1].Done != works[len(works)-1].Total {
+		t.Fatalf("works progress = %+v", works)
+	}
+}

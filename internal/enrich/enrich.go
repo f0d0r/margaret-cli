@@ -21,6 +21,23 @@ type Options struct {
 	Force          bool
 	Now            time.Time
 	BatchSize      int
+	Progress       func(Progress)
+}
+
+// Progress reports the current enrichment phase and, while books are being
+// enriched, the per-book progress and the current book.
+type Progress struct {
+	Phase         string
+	Done          int
+	Total         int
+	CurrentAuthor string
+	CurrentTitle  string
+}
+
+func reportProgress(opts Options, progress Progress) {
+	if opts.Progress != nil {
+		opts.Progress(progress)
+	}
 }
 
 // Result summarizes an enrichment run.
@@ -77,6 +94,7 @@ func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *
 	var authors map[string]*authorRecord
 
 	if dataset.EditionsFromCombined() {
+		reportProgress(opts, Progress{Phase: "reading editions"})
 		editions, works, authors, err = scanCombined(ctx, dataset.Editions, editionKeys, workKeys, authorKeys)
 		if err != nil {
 			return nil, err
@@ -86,6 +104,7 @@ func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *
 			extra[key] = struct{}{}
 		}
 		if len(extra) > 0 {
+			reportProgress(opts, Progress{Phase: "reading authors"})
 			more, err := scanAuthors(ctx, dataset.Editions, extra)
 			if err != nil {
 				return nil, err
@@ -95,11 +114,13 @@ func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *
 			}
 		}
 	} else {
+		reportProgress(opts, Progress{Phase: "reading editions"})
 		editions, err = scanEditions(ctx, dataset.Editions, editionKeys)
 		if err != nil {
 			return nil, err
 		}
 		if dataset.Works != nil {
+			reportProgress(opts, Progress{Phase: "reading works"})
 			works, err = scanWorks(ctx, dataset.Works, workKeys)
 			if err != nil {
 				return nil, err
@@ -113,6 +134,7 @@ func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *
 			allAuthors[key] = struct{}{}
 		}
 		if dataset.Authors != nil && len(allAuthors) > 0 {
+			reportProgress(opts, Progress{Phase: "reading authors"})
 			authors, err = scanAuthors(ctx, dataset.Authors, allAuthors)
 			if err != nil {
 				return nil, err
@@ -133,24 +155,32 @@ func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *
 	}
 
 	enrichments := make([]*bookEnrichment, 0, len(targets))
-	for _, target := range targets {
+	reportProgress(opts, Progress{Phase: "enriching books", Total: len(targets)})
+	for processed, target := range targets {
 		edition := editions[target.EditionKey]
 		if edition == nil {
 			result.MissingEditions++
-			continue
+		} else {
+			work := works[target.WorkKey]
+			if work == nil {
+				result.MissingWorks++
+			}
+			enrichment := buildEnrichment(
+				target.BookID, edition, work, authors,
+				opts.MatcherVersion, opts.DumpVersion, opts.Now.Unix(),
+			)
+			if enrichment.WorkKey == "" {
+				enrichment.WorkKey = target.WorkKey
+			}
+			enrichments = append(enrichments, enrichment)
 		}
-		work := works[target.WorkKey]
-		if work == nil {
-			result.MissingWorks++
-		}
-		enrichment := buildEnrichment(
-			target.BookID, edition, work, authors,
-			opts.MatcherVersion, opts.DumpVersion, opts.Now.Unix(),
-		)
-		if enrichment.WorkKey == "" {
-			enrichment.WorkKey = target.WorkKey
-		}
-		enrichments = append(enrichments, enrichment)
+		reportProgress(opts, Progress{
+			Phase:         "enriching books",
+			Done:          processed + 1,
+			Total:         len(targets),
+			CurrentAuthor: target.Author,
+			CurrentTitle:  target.Title,
+		})
 	}
 	if err := persist(ctx, conn, q, enrichments, opts.BatchSize); err != nil {
 		return nil, err

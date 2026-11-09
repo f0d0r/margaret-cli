@@ -78,7 +78,15 @@ type StreamProgress struct {
 	Lines      int64
 	Records    int64
 	Candidates int64
-	Pending    int
+	// Total and Done describe the units of the current pass. For editions the
+	// unit is a scanned book that can be matched; for authors and works it is
+	// a requested key.
+	Total   int
+	Done    int
+	Current string
+	// Pending is the number of mappable books without a candidate yet in the
+	// editions and combined passes.
+	Pending int
 }
 
 // StreamStats summarizes a streaming run.

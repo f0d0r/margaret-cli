@@ -176,6 +176,15 @@ ORDER BY c.book_id, c.peer_book_id;
 -- name: ListBookEnrichmentTargets :many
 SELECT
     b.id AS book_id,
+    b.title,
+    CAST(COALESCE((
+        SELECT a.name
+        FROM book_authors ba
+        JOIN authors a ON a.id = ba.author_id
+        WHERE ba.book_id = b.id
+        ORDER BY a.name
+        LIMIT 1
+    ), '') AS TEXT) AS author,
     m.edition_key,
     m.work_key,
     COALESCE(c.author_keys, '[]') AS author_keys

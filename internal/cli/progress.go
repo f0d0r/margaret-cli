@@ -63,6 +63,39 @@ func newProgressBar() *progressBar {
 	}
 }
 
+// update sets the phase description, counters and current item in one call.
+// It is used by the enrich progress reporter, whose phases do not share a
+// single monotonically growing maximum.
+func (b *progressBar) update(desc string, done, total int64, current string, active bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.done {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if done < 0 {
+		done = 0
+	}
+	if total > 0 && done > total {
+		done = total
+	}
+	if total == 0 {
+		done = 0
+	}
+	b.desc = desc
+	b.cur = done
+	b.max = total
+	b.active = active
+	if current == "" {
+		b.names = b.names[:0]
+	} else {
+		b.names = append(b.names[:0], current)
+	}
+	b.draw()
+}
+
 // setMax updates the bar's maximum. It never shrinks, and it never drops below
 // the current value, so the ratio can never show more work done than the total
 // (which can otherwise happen while parsing outpaces an ongoing scan).
@@ -164,9 +197,14 @@ func (b *progressBar) render() {
 		cursor = rune(spinnerFrames[b.spin%len(spinnerFrames)])
 		b.spin++
 	}
-	bar := strings.Repeat("█", fill) + strings.Repeat("░", b.width-fill)
-
-	line := fmt.Sprintf("%s %c [%s] %d/%d", b.desc, cursor, bar, b.cur, b.max)
+	line := b.desc
+	if b.active || b.max > 0 {
+		line += " " + string(cursor)
+	}
+	if b.max > 0 {
+		bar := strings.Repeat("█", fill) + strings.Repeat("░", b.width-fill)
+		line += fmt.Sprintf(" [%s] %d/%d", bar, b.cur, b.max)
+	}
 	if len(b.names) > 0 {
 		line += "  " + b.names[len(b.names)-1]
 	}

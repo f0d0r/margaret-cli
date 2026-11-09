@@ -202,6 +202,8 @@ type editionProcessor struct {
 	stats      *StreamStats
 	candidates *candidateSet
 	remaining  map[int64]struct{}
+	total      int
+	current    string
 }
 
 func newEditionProcessor(cache *Cache, opts StreamOptions, stats *StreamStats) *editionProcessor {
@@ -217,7 +219,13 @@ func newEditionProcessor(cache *Cache, opts StreamOptions, stats *StreamStats) *
 			processor.remaining[id] = struct{}{}
 		}
 	}
+	processor.total = len(processor.remaining)
 	return processor
+}
+
+func (p *editionProcessor) addCandidate(candidate Candidate) {
+	p.candidates.add(candidate, p.opts.MaxCandidatesPerBook)
+	p.current = bookLabel(p.cache.Books[candidate.BookID])
 }
 
 func (p *editionProcessor) process(row openlibrary.Row) {
@@ -273,7 +281,7 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 			if len(titleTokens) > 0 && len(book.TitleTokens) > 0 {
 				titleScore = textmatch.Jaccard(titleTokens, book.TitleTokens)
 			}
-			p.candidates.add(Candidate{
+			p.addCandidate(Candidate{
 				BookID:       bookID,
 				EditionKey:   key,
 				WorkKey:      workKey,
@@ -284,7 +292,7 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 				ISBNPriority: priority,
 				TitleScore:   titleScore,
 				Methods:      []string{"isbn"},
-			}, p.opts.MaxCandidatesPerBook)
+			})
 			p.stats.ISBNMatches++
 			if priority <= 1 && (len(book.TitleTokens) == 0 || titleScore >= p.opts.ISBNTitleConfirm) {
 				delete(p.remaining, bookID)
@@ -305,7 +313,7 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 				continue
 			}
 			matchedExact = true
-			p.candidates.add(Candidate{
+			p.addCandidate(Candidate{
 				BookID:       bookID,
 				EditionKey:   key,
 				WorkKey:      workKey,
@@ -313,7 +321,7 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 				AuthorKeys:   authorKeys,
 				TitleScore:   1,
 				Methods:      []string{"title_exact"},
-			}, p.opts.MaxCandidatesPerBook)
+			})
 			p.stats.TitleExactMatches++
 		}
 		if !matchedExact && len(titleTokens) > 0 {
@@ -329,7 +337,7 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 				if titleScore < p.opts.MinTitleScore {
 					continue
 				}
-				p.candidates.add(Candidate{
+				p.addCandidate(Candidate{
 					BookID:       bookID,
 					EditionKey:   key,
 					WorkKey:      workKey,
@@ -337,7 +345,7 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 					AuthorKeys:   authorKeys,
 					TitleScore:   titleScore,
 					Methods:      []string{"title_fuzzy"},
-				}, p.opts.MaxCandidatesPerBook)
+				})
 				p.stats.TitleFuzzyMatches++
 			}
 		}
@@ -389,7 +397,10 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 				Lines:      stats.Lines,
 				Records:    stats.Editions,
 				Candidates: processor.candidates.total(),
-				Pending:    len(processor.remaining),
+				Total:      processor.total,
+				Done:       int(processor.candidates.bookCount()),
+				Current:    processor.current,
+				Pending:    processor.total - int(processor.candidates.bookCount()),
 			})
 			lastProgress = time.Now()
 		}
@@ -400,7 +411,10 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 			Lines:      stats.Lines,
 			Records:    stats.Editions,
 			Candidates: processor.candidates.total(),
-			Pending:    len(processor.remaining),
+			Total:      processor.total,
+			Done:       int(processor.candidates.bookCount()),
+			Current:    processor.current,
+			Pending:    processor.total - int(processor.candidates.bookCount()),
 		})
 	}
 	return processor.candidates, nil
@@ -486,7 +500,10 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 				Lines:      stats.Lines,
 				Records:    stats.Editions,
 				Candidates: processor.candidates.total(),
-				Pending:    len(processor.remaining),
+				Total:      processor.total,
+				Done:       int(processor.candidates.bookCount()),
+				Current:    processor.current,
+				Pending:    processor.total - int(processor.candidates.bookCount()),
 			})
 			lastProgress = time.Now()
 		}
@@ -497,7 +514,10 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 			Lines:      stats.Lines,
 			Records:    stats.Editions,
 			Candidates: processor.candidates.total(),
-			Pending:    len(processor.remaining),
+			Total:      processor.total,
+			Done:       int(processor.candidates.bookCount()),
+			Current:    processor.current,
+			Pending:    processor.total - int(processor.candidates.bookCount()),
 		})
 	}
 	if err := sidecar.close(); err != nil {
@@ -612,9 +632,20 @@ func streamAuthorSidecar(ctx context.Context, path string, keys map[string]struc
 				Pass:    "authors",
 				Lines:   lines,
 				Records: int64(len(found)),
+				Total:   len(keys),
+				Done:    len(found),
 			})
 			lastProgress = time.Now()
 		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(StreamProgress{
+			Pass:    "authors",
+			Lines:   lines,
+			Records: int64(len(found)),
+			Total:   len(keys),
+			Done:    len(found),
+		})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read author sidecar: %w", err)
@@ -697,9 +728,20 @@ func streamAuthors(ctx context.Context, file *openlibrary.File, keys map[string]
 				Pass:    "authors",
 				Lines:   stats.Lines,
 				Records: stats.Authors,
+				Total:   len(keys),
+				Done:    len(found),
 			})
 			lastProgress = time.Now()
 		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(StreamProgress{
+			Pass:    "authors",
+			Lines:   stats.Lines,
+			Records: stats.Authors,
+			Total:   len(keys),
+			Done:    len(found),
+		})
 	}
 	return found, nil
 }
@@ -768,9 +810,20 @@ func streamWorks(ctx context.Context, file *openlibrary.File, keys map[string]st
 				Pass:    "works",
 				Lines:   stats.Lines,
 				Records: stats.Works,
+				Total:   len(keys),
+				Done:    len(found),
 			})
 			lastProgress = time.Now()
 		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(StreamProgress{
+			Pass:    "works",
+			Lines:   stats.Lines,
+			Records: stats.Works,
+			Total:   len(keys),
+			Done:    len(found),
+		})
 	}
 	return found, nil
 }

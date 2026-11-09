@@ -372,3 +372,38 @@ func TestEnrichWorkAuthors(t *testing.T) {
 		t.Fatalf("work authors = %+v", rows)
 	}
 }
+
+func TestEnrichProgress(t *testing.T) {
+	conn, q := openEnrichDB(t)
+	seedEnrichBook(t, q, "hash-progress", "/books/OL1M", "/works/OL1W", `["/authors/OL1A"]`)
+	var events []Progress
+	_, err := Enrich(context.Background(), testDataset(t), conn, q, Options{
+		MatcherVersion: "1",
+		DumpVersion:    "dump",
+		Progress: func(progress Progress) {
+			events = append(events, progress)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases := make(map[string]bool)
+	var last Progress
+	for _, event := range events {
+		phases[event.Phase] = true
+		if event.Phase == "enriching books" {
+			last = event
+		}
+	}
+	for _, want := range []string{"reading editions", "reading works", "reading authors", "enriching books"} {
+		if !phases[want] {
+			t.Fatalf("missing phase %q in %v", want, events)
+		}
+	}
+	if last.Total != 1 || last.Done != 1 {
+		t.Fatalf("book progress = %+v, want 1/1", last)
+	}
+	if last.CurrentTitle != "Raw Title" {
+		t.Fatalf("current title = %q, want Raw Title", last.CurrentTitle)
+	}
+}
