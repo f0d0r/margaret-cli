@@ -346,12 +346,6 @@ func newEnrichProgress() *enrichProgress {
 
 func (p *enrichProgress) stream(progress matcher.StreamProgress) {
 	desc := "matching " + progress.Pass
-	if progress.Records > 0 {
-		desc += "  " + formatCount(progress.Records) + " records"
-	}
-	if (progress.Pass == "editions" || progress.Pass == "combined") && progress.Pending > 0 {
-		desc += fmt.Sprintf(", %d unmatched", progress.Pending)
-	}
 	current := progress.Current
 	if progress.Pass == "authors" || progress.Pass == "works" {
 		current = ""
@@ -359,26 +353,9 @@ func (p *enrichProgress) stream(progress matcher.StreamProgress) {
 	p.bar.update(desc, int64(progress.Done), int64(progress.Total), current, true)
 }
 
-func formatCount(value int64) string {
-	switch {
-	case value >= 1_000_000_000:
-		return fmt.Sprintf("%.1fB", float64(value)/1_000_000_000)
-	case value >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(value)/1_000_000)
-	case value >= 1_000:
-		return fmt.Sprintf("%.1fK", float64(value)/1_000)
-	default:
-		return fmt.Sprintf("%d", value)
-	}
-}
-
 func (p *enrichProgress) enrichment(progress enrich.Progress) {
 	if progress.Phase != "" && progress.Phase != "enriching books" {
-		desc := progress.Phase
-		if progress.Records > 0 {
-			desc += "  " + formatCount(progress.Records) + " records"
-		}
-		p.bar.update(desc, 0, 0, "", true)
+		p.bar.update(progress.Phase, 0, 0, "", true)
 		return
 	}
 	p.bar.update("enriching books", int64(progress.Done), int64(progress.Total),
