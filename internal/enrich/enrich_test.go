@@ -239,18 +239,75 @@ func TestEnrichCombined(t *testing.T) {
 	}
 }
 
+func TestNormalizeDate(t *testing.T) {
+	cases := map[string]string{
+		"1937":              "1937",
+		"1937-05":           "1937-05",
+		"1937-05-02":        "1937-05-02",
+		"February 27, 1997": "1997-02-27",
+		"January 1999":      "1999-01",
+		"2 January 2006":    "2006-01-02",
+		"Feb 5, 1999":       "1999-02-05",
+		"c1937":             "",
+		"198u":              "",
+	}
+	for input, want := range cases {
+		if got := normalizeDate(input); got != want {
+			t.Fatalf("normalizeDate(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestMappingHelpers(t *testing.T) {
-	if got := normalizeDate("1937"); got != "1937" {
-		t.Fatalf("normalizeDate = %q", got)
+	for input, want := range map[string]string{
+		"/languages/eng":     "en",
+		"/languages/cmn":     "zh",
+		"/languages/grc":     "grc",
+		"/languages/unknown": "",
+	} {
+		if got := languageTag(input); got != want {
+			t.Fatalf("languageTag(%q) = %q, want %q", input, got, want)
+		}
 	}
-	if got := normalizeDate("c1937"); got != "" {
-		t.Fatalf("normalizeDate invalid = %q", got)
+
+	seriesCases := []struct {
+		values []string
+		name   string
+		index  string
+	}{
+		{[]string{"Fringe series ;", "v. 5"}, "Fringe series", "5"},
+		{[]string{"Monographs and textbooks in pure and applied mathematics ;", "206"},
+			"Monographs and textbooks in pure and applied mathematics", "206"},
+		{[]string{"Fundamental issues in archaeology", "The language of science"},
+			"Fundamental issues in archaeology", ""},
+		{[]string{"Winners"}, "Winners", ""},
 	}
-	if got := languageTag("/languages/eng"); got != "en" {
-		t.Fatalf("languageTag = %q", got)
+	for _, tc := range seriesCases {
+		name, index := seriesFor(tc.values)
+		if name != tc.name || index != tc.index {
+			t.Fatalf("seriesFor(%v) = (%q, %q), want (%q, %q)",
+				tc.values, name, index, tc.name, tc.index)
+		}
 	}
-	if got := languageTag("/languages/unknown"); got != "" {
-		t.Fatalf("languageTag unknown = %q", got)
+
+	edition := &editionRecord{
+		OCLC:        []string{"123"},
+		OCLCNumber:  []string{"456"},
+		OCAID:       "ocaid1",
+		Identifiers: map[string][]string{"goodreads": {"789"}, "amazon": {""}},
+	}
+	identifiers := identifiersFor(edition)
+	got := make(map[string]string, len(identifiers))
+	for _, item := range identifiers {
+		got[item.Scheme+"\x1f"+item.Value] = item.Source
+	}
+	for _, key := range []string{"OCLC\x1f123", "OCLC\x1f456", "GOODREADS\x1f789", "OCAID\x1focaid1"} {
+		if got[key] != "OPENLIBRARY" {
+			t.Fatalf("identifier %q = %q, want OPENLIBRARY (all %v)", key, got[key], identifiers)
+		}
+	}
+	if _, ok := got["AMAZON\x1f"]; ok {
+		t.Fatalf("empty identifier was added: %v", identifiers)
 	}
 }
 

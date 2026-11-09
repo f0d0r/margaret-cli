@@ -2,6 +2,8 @@ package enrich
 
 import (
 	"encoding/json"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,24 +32,26 @@ func (a authorRef) authorKey() string {
 }
 
 type editionRecord struct {
-	Key         string          `json:"key"`
-	Title       string          `json:"title"`
-	Subtitle    string          `json:"subtitle"`
-	Publishers  []string        `json:"publishers"`
-	PublishDate string          `json:"publish_date"`
-	Series      []string        `json:"series"`
-	Languages   []linkedKey     `json:"languages"`
-	ISBN10      []string        `json:"isbn_10"`
-	ISBN13      []string        `json:"isbn_13"`
-	OCLC        []string        `json:"oclc_numbers"`
-	LCCN        []string        `json:"lccn"`
-	Dewey       []string        `json:"dewey_decimal_class"`
-	LC          []string        `json:"lc_classifications"`
-	OCAID       string          `json:"ocaid"`
-	Authors     []authorRef     `json:"authors"`
-	Works       []linkedKey     `json:"works"`
-	Subjects    []string        `json:"subjects"`
-	Description json.RawMessage `json:"description"`
+	Key         string              `json:"key"`
+	Title       string              `json:"title"`
+	Subtitle    string              `json:"subtitle"`
+	Publishers  []string            `json:"publishers"`
+	PublishDate string              `json:"publish_date"`
+	Series      []string            `json:"series"`
+	Languages   []linkedKey         `json:"languages"`
+	ISBN10      []string            `json:"isbn_10"`
+	ISBN13      []string            `json:"isbn_13"`
+	OCLC        []string            `json:"oclc_numbers"`
+	OCLCNumber  []string            `json:"oclc_number"`
+	LCCN        []string            `json:"lccn"`
+	Dewey       []string            `json:"dewey_decimal_class"`
+	LC          []string            `json:"lc_classifications"`
+	OCAID       string              `json:"ocaid"`
+	Identifiers map[string][]string `json:"identifiers"`
+	Authors     []authorRef         `json:"authors"`
+	Works       []linkedKey         `json:"works"`
+	Subjects    []string            `json:"subjects"`
+	Description json.RawMessage     `json:"description"`
 }
 
 type workRecord struct {
@@ -139,12 +143,7 @@ func buildEnrichment(bookID int64, edition *editionRecord, work *workRecord, aut
 	if enrichment.Description == "" {
 		enrichment.Description = textValue(edition.Description)
 	}
-	for _, series := range edition.Series {
-		if series = strings.TrimSpace(series); series != "" {
-			enrichment.Series = series
-			break
-		}
-	}
+	enrichment.Series, enrichment.SeriesIndex = seriesFor(edition.Series)
 	enrichment.Languages = mapLanguages(edition.Languages)
 	enrichment.Publications = publicationsFor(edition)
 	enrichment.Identifiers = identifiersFor(edition)
@@ -182,6 +181,29 @@ func publicationsFor(edition *editionRecord) []publication {
 	return out
 }
 
+var seriesIndexPattern = regexp.MustCompile(`(?i)^(?:v\.?|vol\.?|volume|no\.?|number|pt\.?|part|bd\.?|band)?\s*(\d+(?:\s*[-–]\s*\d+)?)$`)
+
+func seriesFor(values []string) (string, string) {
+	name := ""
+	index := ""
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if name == "" {
+			name = strings.TrimSpace(strings.TrimRight(value, " ;:,"))
+			continue
+		}
+		if index == "" {
+			if match := seriesIndexPattern.FindStringSubmatch(value); match != nil {
+				index = strings.ReplaceAll(match[1], " ", "")
+			}
+		}
+	}
+	return name, index
+}
+
 func identifiersFor(edition *editionRecord) []identifierValue {
 	var out []identifierValue
 	add := func(scheme, value string) {
@@ -208,6 +230,9 @@ func identifiersFor(edition *editionRecord) []identifierValue {
 	for _, value := range edition.OCLC {
 		add("OCLC", value)
 	}
+	for _, value := range edition.OCLCNumber {
+		add("OCLC", value)
+	}
 	for _, value := range edition.LCCN {
 		add("LCCN", value)
 	}
@@ -218,6 +243,20 @@ func identifiersFor(edition *editionRecord) []identifierValue {
 		add("LC", value)
 	}
 	add("OCAID", edition.OCAID)
+	schemes := make([]string, 0, len(edition.Identifiers))
+	for scheme := range edition.Identifiers {
+		schemes = append(schemes, scheme)
+	}
+	sort.Strings(schemes)
+	for _, scheme := range schemes {
+		normalized := strings.ToUpper(strings.TrimSpace(scheme))
+		if normalized == "" {
+			continue
+		}
+		for _, value := range edition.Identifiers[scheme] {
+			add(normalized, value)
+		}
+	}
 	return dedupeIdentifiers(out)
 }
 
@@ -293,18 +332,37 @@ func textValue(raw json.RawMessage) string {
 	return ""
 }
 
+var dateLayouts = []struct {
+	layout string
+	output string
+}{
+	{"2006-01-02", "2006-01-02"},
+	{"2006-01", "2006-01"},
+	{"2006", "2006"},
+	{"January 2, 2006", "2006-01-02"},
+	{"Jan 2, 2006", "2006-01-02"},
+	{"January 2006", "2006-01"},
+	{"Jan 2006", "2006-01"},
+	{"2 January 2006", "2006-01-02"},
+	{"2 Jan 2006", "2006-01-02"},
+	{"2 January, 2006", "2006-01-02"},
+	{"2 Jan, 2006", "2006-01-02"},
+}
+
 func normalizeDate(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
 	}
-	for _, layout := range []string{"2006-01-02", "2006-01", "2006"} {
-		if parsed, err := time.Parse(layout, value); err == nil {
-			if parsed.Year() < 1000 || parsed.Year() > time.Now().Year()+1 {
-				return ""
-			}
-			return parsed.Format(layout)
+	for _, candidate := range dateLayouts {
+		parsed, err := time.Parse(candidate.layout, value)
+		if err != nil {
+			continue
 		}
+		if parsed.Year() < 1000 || parsed.Year() > time.Now().Year()+1 {
+			return ""
+		}
+		return parsed.Format(candidate.output)
 	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
 		if parsed, err := time.Parse(layout, value); err == nil {
@@ -376,4 +434,12 @@ var marcLanguages = map[string]string{
 	"spa": "es", "srp": "sr", "swa": "sw", "swe": "sv", "tam": "ta",
 	"tel": "te", "tha": "th", "tur": "tr", "ukr": "uk", "urd": "ur",
 	"uzb": "uz", "vie": "vi", "wel": "cy", "yid": "yi", "zul": "zu",
+	"cmn": "zh", "grc": "grc", "mon": "mn", "mac": "mk", "bel": "be",
+	"bur": "my", "tib": "bo", "gla": "gd", "ori": "or", "asm": "as",
+	"snd": "sd", "uig": "ug", "tat": "tt", "tgl": "tl", "baq": "eu",
+	"pli": "pi", "pus": "ps", "kur": "ku", "lad": "lad", "egy": "egy",
+	"myn": "myn", "ssw": "ss", "nah": "nah", "sco": "sco", "mai": "mai",
+	"chu": "cu", "orm": "om", "yor": "yo", "oci": "oc", "roa": "roa",
+	"inc": "inc", "ota": "ota", "enm": "enm", "gmh": "gmh", "frm": "frm",
+	"raj": "raj", "nic": "nic", "wen": "wen",
 }
