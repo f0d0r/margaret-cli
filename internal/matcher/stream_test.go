@@ -13,6 +13,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/db"
 	"github.com/f0d0r/margaret-cli/internal/openlibrary"
+	"github.com/f0d0r/margaret-cli/internal/textmatch"
 )
 
 func writeStreamDump(t *testing.T, dir, name, body string, kind openlibrary.Kind) *openlibrary.File {
@@ -472,43 +473,89 @@ func TestStreamWorkAuthorsFillMissingEditionAuthors(t *testing.T) {
 
 func TestStreamProgressReportsCurrentBook(t *testing.T) {
 	cache, _, _, _, dataset := streamDataset(t)
-	var events []StreamProgress
-	_, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{
-		Progress: func(progress StreamProgress) {
-			events = append(events, progress)
-		},
-	})
+	for _, workers := range []int{1, 4} {
+		var events []StreamProgress
+		_, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{
+			Workers: workers,
+			Progress: func(progress StreamProgress) {
+				events = append(events, progress)
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var editions, authors, works []StreamProgress
+		for _, event := range events {
+			switch event.Pass {
+			case "editions":
+				editions = append(editions, event)
+			case "authors":
+				authors = append(authors, event)
+			case "works":
+				works = append(works, event)
+			}
+		}
+		if len(editions) == 0 {
+			t.Fatal("no editions progress events")
+		}
+		final := editions[len(editions)-1]
+		if final.Total != 3 || final.Done != 3 {
+			t.Fatalf("workers %d editions progress = %+v, want total 3 done 3", workers, final)
+		}
+		if final.Current == "" || !strings.Contains(final.Current, ": ") {
+			t.Fatalf("workers %d current book = %q, want author: title", workers, final.Current)
+		}
+		if len(authors) == 0 || authors[len(authors)-1].Total == 0 ||
+			authors[len(authors)-1].Done != authors[len(authors)-1].Total {
+			t.Fatalf("workers %d authors progress = %+v", workers, authors)
+		}
+		if len(works) == 0 || works[len(works)-1].Total == 0 ||
+			works[len(works)-1].Done != works[len(works)-1].Total {
+			t.Fatalf("workers %d works progress = %+v", workers, works)
+		}
+	}
+}
+
+func TestStreamDatasetParallelMatchesSingleWorker(t *testing.T) {
+	cache, _, _, _, dataset := streamDataset(t)
+	// Keep one book permanently pending so both passes scan the whole dump;
+	// the early-exit boundary otherwise makes the candidate set depend on the
+	// order in which editions happen to be processed.
+	title := "An Unmatched Book"
+	key := textmatch.TitleKey(title)
+	tokens := textmatch.TokensFromKey(key)
+	unmatchedID := int64(9999)
+	cache.Books[unmatchedID] = &Book{
+		ID:          unmatchedID,
+		Index:       len(cache.Books),
+		Title:       title,
+		TitleKey:    key,
+		TitleTokens: tokens,
+		TitleHashes: textmatch.HashTokens(tokens),
+	}
+
+	single, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{Workers: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var editions, authors, works []StreamProgress
-	for _, event := range events {
-		switch event.Pass {
-		case "editions":
-			editions = append(editions, event)
-		case "authors":
-			authors = append(authors, event)
-		case "works":
-			works = append(works, event)
+	parallel, err := StreamDataset(context.Background(), dataset, cache, StreamOptions{Workers: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleRank, err := Rank(single, cache, RankOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parallelRank, err := Rank(parallel, cache, RankOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for bookID, want := range singleRank.Books {
+		got := parallelRank.Books[bookID]
+		if got.Status != want.Status || got.WorkKey != want.WorkKey {
+			t.Fatalf("book %d parallel = %s/%s, want %s/%s",
+				bookID, got.Status, got.WorkKey, want.Status, want.WorkKey)
 		}
-	}
-	if len(editions) == 0 {
-		t.Fatal("no editions progress events")
-	}
-	final := editions[len(editions)-1]
-	if final.Total != 3 || final.Done != 3 {
-		t.Fatalf("editions progress = %+v, want total 3 done 3", final)
-	}
-	if final.Current == "" || !strings.Contains(final.Current, ": ") {
-		t.Fatalf("current book = %q, want author: title", final.Current)
-	}
-	if len(authors) == 0 || authors[len(authors)-1].Total == 0 ||
-		authors[len(authors)-1].Done != authors[len(authors)-1].Total {
-		t.Fatalf("authors progress = %+v", authors)
-	}
-	if len(works) == 0 || works[len(works)-1].Total == 0 ||
-		works[len(works)-1].Done != works[len(works)-1].Total {
-		t.Fatalf("works progress = %+v", works)
 	}
 }

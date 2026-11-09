@@ -80,3 +80,39 @@ func TestJaccard(t *testing.T) {
 		}
 	}
 }
+
+func TestASCIINormalization(t *testing.T) {
+	if got := TitleKey("  The   Hobbit!  "); got != "the hobbit" {
+		t.Fatalf("TitleKey = %q", got)
+	}
+	if got := TitleKey("Café"); got != "cafe" {
+		t.Fatalf("TitleKey unicode = %q", got)
+	}
+	if got := TokensFromKey(TitleKey("A B")); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("TokensFromKey = %v", got)
+	}
+	if got := AuthorTokens("J.R.R. Tolkien"); len(got) != 1 || got[0] != "tolkien" {
+		t.Fatalf("AuthorTokens = %v", got)
+	}
+	if got := AuthorTokens("van der Waals"); len(got) != 1 || got[0] != "waals" {
+		t.Fatalf("AuthorTokens particles = %v", got)
+	}
+}
+
+func TestJaccardHashedMatchesStrings(t *testing.T) {
+	cases := []struct {
+		a, b []string
+	}{
+		{[]string{"a", "b"}, []string{"a", "b"}},
+		{[]string{"a", "b"}, []string{"c"}},
+		{[]string{"a", "b", "c"}, []string{"b", "c", "d"}},
+		{nil, []string{"a"}},
+	}
+	for _, test := range cases {
+		want := Jaccard(test.a, test.b)
+		got := JaccardHashed(HashTokens(test.a), HashTokens(test.b))
+		if got != want {
+			t.Fatalf("JaccardHashed(%v, %v) = %f, want %f", test.a, test.b, got, want)
+		}
+	}
+}

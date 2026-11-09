@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 )
@@ -49,7 +50,11 @@ type StreamOptions struct {
 	ISBNTitleConfirm          float64
 	// TempDir overrides the directory used for the temporary author sidecar
 	// in combined-dump mode. An empty value uses the operating system default.
-	TempDir  string
+	TempDir string
+	// Workers is the number of editions-pass workers. Values <= 1 run the
+	// pass in the calling goroutine. The combined-dump extraction pass remains
+	// single-threaded because it also writes the author sidecar.
+	Workers  int
 	Progress func(StreamProgress)
 }
 
@@ -68,6 +73,9 @@ func (o StreamOptions) withDefaults() StreamOptions {
 	}
 	if o.ISBNTitleConfirm <= 0 {
 		o.ISBNTitleConfirm = defaultISBNTitleConfirm
+	}
+	if o.Workers <= 0 {
+		o.Workers = 1
 	}
 	return o
 }
@@ -131,6 +139,7 @@ type StreamResult struct {
 }
 
 type candidateSet struct {
+	mu     sync.Mutex
 	byBook map[int64][]*Candidate
 }
 
@@ -139,6 +148,8 @@ func newCandidateSet() *candidateSet {
 }
 
 func (s *candidateSet) add(candidate Candidate, max int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	list := s.byBook[candidate.BookID]
 	for _, existing := range list {
 		if existing.EditionKey == candidate.EditionKey {
@@ -154,12 +165,12 @@ func (s *candidateSet) add(candidate Candidate, max int) {
 	}
 
 	worst := 0
-	for i, existing := range list {
-		if existing.Score < list[worst].Score {
+	for i := 1; i < len(list); i++ {
+		if candidateWorse(*list[i], *list[worst]) {
 			worst = i
 		}
 	}
-	if candidate.Score <= list[worst].Score {
+	if !betterCandidate(candidate, *list[worst]) {
 		return
 	}
 	list[worst] = &candidate
@@ -204,6 +215,8 @@ func isbnStrength(priority int) float64 {
 }
 
 func (s *candidateSet) authorKeys() map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	keys := make(map[string]struct{})
 	for _, list := range s.byBook {
 		for _, candidate := range list {
@@ -216,6 +229,8 @@ func (s *candidateSet) authorKeys() map[string]struct{} {
 }
 
 func (s *candidateSet) workKeys(max int) map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	keys := make(map[string]struct{})
 	for _, list := range s.byBook {
 		for i, candidate := range list {
@@ -231,6 +246,8 @@ func (s *candidateSet) workKeys(max int) map[string]struct{} {
 }
 
 func (s *candidateSet) sortAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, list := range s.byBook {
 		sort.SliceStable(list, func(i, j int) bool {
 			if list[i].Score != list[j].Score {
@@ -248,6 +265,8 @@ func (s *candidateSet) sortAll() {
 }
 
 func (s *candidateSet) total() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var total int64
 	for _, list := range s.byBook {
 		total += int64(len(list))
@@ -256,10 +275,14 @@ func (s *candidateSet) total() int64 {
 }
 
 func (s *candidateSet) bookCount() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return int64(len(s.byBook))
 }
 
 func (s *candidateSet) values() map[int64][]Candidate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := make(map[int64][]Candidate, len(s.byBook))
 	for bookID, list := range s.byBook {
 		items := make([]Candidate, len(list))

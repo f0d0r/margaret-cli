@@ -197,48 +197,48 @@ func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, ca
 }
 
 type editionProcessor struct {
-	cache      *Cache
-	opts       StreamOptions
-	stats      *StreamStats
-	candidates *candidateSet
-	remaining  map[int64]struct{}
-	total      int
-	current    string
+	cache         *Cache
+	opts          StreamOptions
+	stats         *StreamStats
+	candidates    *candidateSet
+	tracker       *editionTracker
+	maxCandidates int
 }
 
-func newEditionProcessor(cache *Cache, opts StreamOptions, stats *StreamStats) *editionProcessor {
-	processor := &editionProcessor{
-		cache:      cache,
-		opts:       opts,
-		stats:      stats,
-		candidates: newCandidateSet(),
-		remaining:  make(map[int64]struct{}, len(cache.Books)),
+func newEditionProcessor(cache *Cache, opts StreamOptions, stats *StreamStats, tracker *editionTracker, candidates *candidateSet) *editionProcessor {
+	return &editionProcessor{
+		cache:         cache,
+		opts:          opts,
+		stats:         stats,
+		candidates:    candidates,
+		tracker:       tracker,
+		maxCandidates: opts.MaxCandidatesPerBook,
 	}
-	for id, book := range cache.Books {
-		if book.TitleKey != "" || len(book.ISBNs) > 0 {
-			processor.remaining[id] = struct{}{}
-		}
-	}
-	processor.total = len(processor.remaining)
-	return processor
 }
 
 func (p *editionProcessor) addCandidate(candidate Candidate) {
-	p.candidates.add(candidate, p.opts.MaxCandidatesPerBook)
-	p.current = bookLabel(p.cache.Books[candidate.BookID])
+	book := p.cache.Books[candidate.BookID]
+	p.tracker.addIfPending(book, func() {
+		p.candidates.add(candidate, p.maxCandidates)
+	})
+	p.tracker.mark(book, bookLabel(book))
 }
 
 func (p *editionProcessor) process(row openlibrary.Row) {
+	p.processRecord(row.Key, row.Data)
+}
+
+func (p *editionProcessor) processRecord(rowKey string, data []byte) {
 	p.stats.Editions++
 
 	var record editionRecord
-	if err := json.Unmarshal(row.Data, &record); err != nil {
+	if err := json.Unmarshal(data, &record); err != nil {
 		p.stats.Malformed++
 		return
 	}
 	key := record.Key
 	if key == "" {
-		key = row.Key
+		key = rowKey
 	}
 	if key == "" {
 		p.stats.Malformed++
@@ -250,9 +250,11 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 	}
 	titleKey := ""
 	var titleTokens []string
+	var titleHashes []uint64
 	if title != "" {
 		titleKey = textmatch.TitleKey(title)
-		titleTokens = textmatch.TitleTokens(title)
+		titleTokens = textmatch.TokensFromKey(titleKey)
+		titleHashes = textmatch.HashTokens(titleTokens)
 	}
 	workKey := ""
 	if len(record.Works) > 0 {
@@ -266,11 +268,8 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 			return
 		}
 		for _, bookID := range p.cache.ByISBN[isbn13] {
-			if _, ok := p.remaining[bookID]; !ok {
-				continue
-			}
 			book := p.cache.Books[bookID]
-			if book == nil {
+			if book == nil || !p.tracker.has(book) {
 				continue
 			}
 			source, priority, ok := findBookISBN(book, isbn13)
@@ -278,8 +277,8 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 				continue
 			}
 			titleScore := 0.0
-			if len(titleTokens) > 0 && len(book.TitleTokens) > 0 {
-				titleScore = textmatch.Jaccard(titleTokens, book.TitleTokens)
+			if len(titleHashes) > 0 && len(book.TitleHashes) > 0 {
+				titleScore = textmatch.JaccardHashed(titleHashes, book.TitleHashes)
 			}
 			p.addCandidate(Candidate{
 				BookID:       bookID,
@@ -294,8 +293,8 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 				Methods:      []string{"isbn"},
 			})
 			p.stats.ISBNMatches++
-			if priority <= 1 && (len(book.TitleTokens) == 0 || titleScore >= p.opts.ISBNTitleConfirm) {
-				delete(p.remaining, bookID)
+			if priority <= 1 && (len(book.TitleHashes) == 0 || titleScore >= p.opts.ISBNTitleConfirm) {
+				p.tracker.remove(book)
 			}
 		}
 	}
@@ -306,10 +305,11 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 		handleISBN(raw)
 	}
 
-	if len(p.remaining) > 0 && titleKey != "" {
+	if p.tracker.remainingCount() > 0 && titleKey != "" {
 		matchedExact := false
 		for _, bookID := range p.cache.ByTitle[titleKey] {
-			if _, ok := p.remaining[bookID]; !ok {
+			book := p.cache.Books[bookID]
+			if book == nil || !p.tracker.has(book) {
 				continue
 			}
 			matchedExact = true
@@ -324,16 +324,16 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 			})
 			p.stats.TitleExactMatches++
 		}
-		if !matchedExact && len(titleTokens) > 0 {
-			for _, bookID := range p.cache.RareTokenCandidates(titleTokens, p.opts.MaxPosting) {
-				if _, ok := p.remaining[bookID]; !ok {
-					continue
-				}
+		if !matchedExact && len(titleHashes) > 0 {
+			for _, bookID := range p.cache.RareTokenCandidatesByHash(titleHashes, p.opts.MaxPosting) {
 				book := p.cache.Books[bookID]
-				if book == nil {
+				if book == nil || !p.tracker.has(book) {
 					continue
 				}
-				titleScore := textmatch.Jaccard(titleTokens, book.TitleTokens)
+				if jaccardBound(len(titleHashes), len(book.TitleHashes)) < p.opts.MinTitleScore {
+					continue
+				}
+				titleScore := textmatch.JaccardHashed(titleHashes, book.TitleHashes)
 				if titleScore < p.opts.MinTitleScore {
 					continue
 				}
@@ -353,11 +353,16 @@ func (p *editionProcessor) process(row openlibrary.Row) {
 }
 
 func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats) (*candidateSet, error) {
-	processor := newEditionProcessor(cache, opts, stats)
-	if len(processor.remaining) == 0 {
-		return processor.candidates, nil
+	tracker := newEditionTracker(cache)
+	candidates := newCandidateSet()
+	if tracker.totalCount() == 0 {
+		return candidates, nil
+	}
+	if opts.Workers > 1 {
+		return streamEditionsParallel(ctx, file, cache, opts, stats, tracker, candidates)
 	}
 
+	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
 	reader, err := openlibrary.OpenDump(file)
 	if err != nil {
 		return nil, fmt.Errorf("open editions dump: %w", err)
@@ -367,6 +372,23 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 	}()
 	scanner := openlibrary.NewDumpScanner(reader)
 	lastProgress := time.Now()
+	emit := func() {
+		if opts.Progress == nil {
+			return
+		}
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "editions",
+			Lines:      stats.Lines,
+			Records:    stats.Editions,
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			Pending:    total - done,
+		})
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -388,43 +410,25 @@ func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, o
 			continue
 		}
 		processor.process(row)
-		if len(processor.remaining) == 0 {
+		if tracker.remainingCount() == 0 {
 			break
 		}
-		if opts.Progress != nil && time.Since(lastProgress) >= progressInterval {
-			opts.Progress(StreamProgress{
-				Pass:       "editions",
-				Lines:      stats.Lines,
-				Records:    stats.Editions,
-				Candidates: processor.candidates.total(),
-				Total:      processor.total,
-				Done:       int(processor.candidates.bookCount()),
-				Current:    processor.current,
-				Pending:    processor.total - int(processor.candidates.bookCount()),
-			})
+		if time.Since(lastProgress) >= progressInterval {
+			emit()
 			lastProgress = time.Now()
 		}
 	}
-	if opts.Progress != nil {
-		opts.Progress(StreamProgress{
-			Pass:       "editions",
-			Lines:      stats.Lines,
-			Records:    stats.Editions,
-			Candidates: processor.candidates.total(),
-			Total:      processor.total,
-			Done:       int(processor.candidates.bookCount()),
-			Current:    processor.current,
-			Pending:    processor.total - int(processor.candidates.bookCount()),
-		})
-	}
-	return processor.candidates, nil
+	emit()
+	return candidates, nil
 }
 
 func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats) (*candidateSet, string, error) {
-	processor := newEditionProcessor(cache, opts, stats)
-	if len(processor.remaining) == 0 {
-		return processor.candidates, "", nil
+	tracker := newEditionTracker(cache)
+	candidates := newCandidateSet()
+	if tracker.totalCount() == 0 {
+		return candidates, "", nil
 	}
+	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
 
 	sidecar, err := newAuthorSidecar(opts.TempDir)
 	if err != nil {
@@ -468,7 +472,7 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 
 		switch row.Type {
 		case "/type/edition":
-			if len(processor.remaining) > 0 {
+			if tracker.remainingCount() > 0 {
 				processor.process(row)
 			}
 		case "/type/author":
@@ -491,40 +495,44 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 			stats.Authors++
 		}
 
-		if len(processor.remaining) == 0 && processor.candidates.total() == 0 {
+		if tracker.remainingCount() == 0 && candidates.total() == 0 {
 			break
 		}
 		if opts.Progress != nil && time.Since(lastProgress) >= progressInterval {
+			total := tracker.totalCount()
+			done := tracker.matchedCount()
 			opts.Progress(StreamProgress{
 				Pass:       "combined",
 				Lines:      stats.Lines,
 				Records:    stats.Editions,
-				Candidates: processor.candidates.total(),
-				Total:      processor.total,
-				Done:       int(processor.candidates.bookCount()),
-				Current:    processor.current,
-				Pending:    processor.total - int(processor.candidates.bookCount()),
+				Candidates: candidates.total(),
+				Total:      total,
+				Done:       done,
+				Current:    tracker.currentLabel(),
+				Pending:    total - done,
 			})
 			lastProgress = time.Now()
 		}
 	}
 	if opts.Progress != nil {
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
 		opts.Progress(StreamProgress{
 			Pass:       "combined",
 			Lines:      stats.Lines,
 			Records:    stats.Editions,
-			Candidates: processor.candidates.total(),
-			Total:      processor.total,
-			Done:       int(processor.candidates.bookCount()),
-			Current:    processor.current,
-			Pending:    processor.total - int(processor.candidates.bookCount()),
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			Pending:    total - done,
 		})
 	}
 	if err := sidecar.close(); err != nil {
 		return nil, "", fmt.Errorf("close author sidecar: %w", err)
 	}
 	success = true
-	return processor.candidates, sidecar.path, nil
+	return candidates, sidecar.path, nil
 }
 
 type authorSidecar struct {
@@ -706,18 +714,21 @@ func streamAuthors(ctx context.Context, file *openlibrary.File, keys map[string]
 			continue
 		}
 		stats.Authors++
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			continue
+		}
 
 		var record authorRecord
 		if err := json.Unmarshal(row.Data, &record); err != nil {
 			stats.Malformed++
 			continue
 		}
-		key := record.Key
-		if key == "" {
-			key = row.Key
-		}
-		if _, ok := keys[key]; !ok {
-			continue
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				continue
+			}
+			key = record.Key
 		}
 		found[key] = AuthorRecord{Key: key, Names: authorNames(record)}
 		if len(found) == len(keys) {
@@ -781,18 +792,21 @@ func streamWorks(ctx context.Context, file *openlibrary.File, keys map[string]st
 			continue
 		}
 		stats.Works++
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			continue
+		}
 
 		var record workRecord
 		if err := json.Unmarshal(row.Data, &record); err != nil {
 			stats.Malformed++
 			continue
 		}
-		key := record.Key
-		if key == "" {
-			key = row.Key
-		}
-		if _, ok := keys[key]; !ok {
-			continue
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				continue
+			}
+			key = record.Key
 		}
 		found[key] = WorkRecord{
 			Key:              key,
@@ -881,6 +895,16 @@ func findBookISBN(book *Book, value string) (identifier.Source, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+func jaccardBound(a, b int) float64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > b {
+		a, b = b, a
+	}
+	return float64(a) / float64(b)
 }
 
 func uniqueKeys(keys []authorRef) []string {

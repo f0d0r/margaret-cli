@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -389,8 +390,12 @@ func TestEnrichProgress(t *testing.T) {
 	}
 	phases := make(map[string]bool)
 	var last Progress
+	sawRecords := false
 	for _, event := range events {
 		phases[event.Phase] = true
+		if strings.HasPrefix(event.Phase, "reading ") && event.Records > 0 {
+			sawRecords = true
+		}
 		if event.Phase == "enriching books" {
 			last = event
 		}
@@ -399,6 +404,9 @@ func TestEnrichProgress(t *testing.T) {
 		if !phases[want] {
 			t.Fatalf("missing phase %q in %v", want, events)
 		}
+	}
+	if !sawRecords {
+		t.Fatalf("no reading phase reported record progress: %v", events)
 	}
 	if last.Total != 1 || last.Done != 1 {
 		t.Fatalf("book progress = %+v, want 1/1", last)

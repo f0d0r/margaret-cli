@@ -42,9 +42,11 @@ type ISBN struct {
 // Book is the matching view of one consolidated scanned book.
 type Book struct {
 	ID           int64
+	Index        int
 	Title        string
 	TitleKey     string
 	TitleTokens  []string
+	TitleHashes  []uint64
 	Authors      []string
 	AuthorTokens [][]string
 	ISBNs        []ISBN
@@ -57,6 +59,9 @@ type Cache struct {
 	ByISBN  map[string][]int64
 	ByTitle map[string][]int64
 	ByToken map[string][]int64
+	// ByTokenHash indexes books by hashed title tokens; the editions pass uses
+	// it to avoid string comparisons in the fuzzy candidate loop.
+	ByTokenHash map[uint64][]int64
 
 	Stats Stats
 }
@@ -111,10 +116,11 @@ func Build(ctx context.Context, q *db.Queries, opts Options) (*Cache, error) {
 	}
 
 	cache := &Cache{
-		Books:   make(map[int64]*Book, len(rows)),
-		ByISBN:  make(map[string][]int64),
-		ByTitle: make(map[string][]int64),
-		ByToken: make(map[string][]int64),
+		Books:       make(map[int64]*Book, len(rows)),
+		ByISBN:      make(map[string][]int64),
+		ByTitle:     make(map[string][]int64),
+		ByToken:     make(map[string][]int64),
+		ByTokenHash: make(map[uint64][]int64),
 	}
 	order := make([]int64, 0, len(rows))
 	for _, row := range rows {
@@ -123,7 +129,7 @@ func Build(ctx context.Context, q *db.Queries, opts Options) (*Cache, error) {
 				continue
 			}
 		}
-		cache.Books[row.ID] = &Book{ID: row.ID, Title: row.Title}
+		cache.Books[row.ID] = &Book{ID: row.ID, Index: len(order), Title: row.Title}
 		order = append(order, row.ID)
 	}
 	if len(order) == 0 {
@@ -202,7 +208,8 @@ func Build(ctx context.Context, q *db.Queries, opts Options) (*Cache, error) {
 		})
 
 		book.TitleKey = textmatch.TitleKey(book.Title)
-		book.TitleTokens = textmatch.TitleTokens(book.Title)
+		book.TitleTokens = textmatch.TokensFromKey(book.TitleKey)
+		book.TitleHashes = textmatch.HashTokens(book.TitleTokens)
 		for _, author := range book.Authors {
 			tokens := textmatch.AuthorTokens(author)
 			if len(tokens) == 0 {
@@ -217,6 +224,9 @@ func Build(ctx context.Context, q *db.Queries, opts Options) (*Cache, error) {
 		}
 		for _, token := range book.TitleTokens {
 			cache.ByToken[token] = append(cache.ByToken[token], id)
+		}
+		for _, hash := range book.TitleHashes {
+			cache.ByTokenHash[hash] = append(cache.ByTokenHash[hash], id)
 		}
 		for _, isbn := range book.ISBNs {
 			cache.ByISBN[isbn.Value] = append(cache.ByISBN[isbn.Value], id)
@@ -276,6 +286,50 @@ func (c *Cache) RareTokenCandidates(tokens []string, maxPosting int) []int64 {
 	var candidates []int64
 	for _, stat := range stats {
 		for _, id := range c.ByToken[stat.token] {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			candidates = append(candidates, id)
+		}
+	}
+	return candidates
+}
+
+func (c *Cache) RareTokenCandidatesByHash(tokens []uint64, maxPosting int) []int64 {
+	if len(tokens) == 0 || maxPosting <= 0 {
+		return nil
+	}
+
+	type tokenCount struct {
+		token uint64
+		count int
+	}
+	stats := make([]tokenCount, 0, len(tokens))
+	for _, token := range tokens {
+		count := len(c.ByTokenHash[token])
+		if count == 0 || count > maxPosting {
+			continue
+		}
+		stats = append(stats, tokenCount{token: token, count: count})
+	}
+	if len(stats) == 0 {
+		return nil
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count != stats[j].count {
+			return stats[i].count < stats[j].count
+		}
+		return stats[i].token < stats[j].token
+	})
+	if len(stats) > maxBlockingTokens {
+		stats = stats[:maxBlockingTokens]
+	}
+
+	seen := make(map[int64]struct{})
+	var candidates []int64
+	for _, stat := range stats {
+		for _, id := range c.ByTokenHash[stat.token] {
 			if _, ok := seen[id]; ok {
 				continue
 			}
