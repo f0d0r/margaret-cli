@@ -200,3 +200,33 @@ func TestContentConflictDoesNotOverrideStrongMetadata(t *testing.T) {
 		t.Fatalf("edition = %q, want OL1M", match.EditionKey)
 	}
 }
+
+// TestRegressionTapestry3865 pins the exact candidate evidence recorded for
+// the Tapestry/JavaServer Faces case. The JSF candidate has a content author
+// hit, so contentConflict case B must flag the TEXT ISBN as contradictory.
+func TestRegressionTapestry3865(t *testing.T) {
+	book := rankTestBook(3865, "JavaServer Faces JSF in Action Manning", true, false)
+	book.OrigTitleHit = 1
+
+	jsf := rankCandidate(3865, "/books/OL3433949M", "/works/OL5855482W", "", 0,
+		0.666666666666667, 0, 1, "title_fuzzy")
+	jsf.EditionTitle = "JavaServer faces in action"
+	jsf.ContentTitleHit = 1
+	jsf.ContentAuthorHit = 1
+	jsf.Score = 0.6
+
+	tapestry := rankCandidate(3865, "/books/OL3321753M", "/works/OL5750471W", "9781932394115", 2,
+		0.285714285714286, 0, 0.75, "isbn")
+	tapestry.EditionTitle = "Tapestry in action"
+	tapestry.ContentTitleHit = 1
+	tapestry.ContentAuthorHit = 0
+	tapestry.Score = 0.491785714285714
+
+	match := rankOne(t, book, []Candidate{jsf, tapestry}, RankOptions{})
+	if match.Status != StatusAmbiguous || match.ReviewReason != "content_conflict" {
+		t.Fatalf("status = %q reason = %q, want ambiguous/content_conflict", match.Status, match.ReviewReason)
+	}
+	if match.EditionKey != "/books/OL3433949M" {
+		t.Fatalf("selected edition = %q, want /books/OL3433949M", match.EditionKey)
+	}
+}

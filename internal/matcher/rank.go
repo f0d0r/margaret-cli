@@ -3,8 +3,10 @@ package matcher
 import (
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
+	"github.com/f0d0r/margaret-cli/internal/textmatch"
 )
 
 const (
@@ -184,6 +186,7 @@ func rankBook(book *Book, candidates []Candidate, opts RankOptions) BookMatch {
 	}
 
 	groups := groupCandidates(candidates)
+	groups, canonical := mergeDuplicateGroups(groups)
 	sortGroups(groups)
 	match.WorkCount = len(groups)
 
@@ -193,7 +196,7 @@ func rankBook(book *Book, candidates []Candidate, opts RankOptions) BookMatch {
 		second = &groups[1].best
 	}
 
-	status, reason := classify(book, best.best, second, candidates, opts)
+	status, reason := classify(book, best.best, second, candidates, canonical, opts)
 	match.Status = status
 	match.ReviewReason = reason
 	match.EditionKey = best.best.EditionKey
@@ -241,11 +244,11 @@ func rankBook(book *Book, candidates []Candidate, opts RankOptions) BookMatch {
 	return match
 }
 
-func classify(book *Book, best Candidate, second *Candidate, candidates []Candidate, opts RankOptions) (Status, string) {
+func classify(book *Book, best Candidate, second *Candidate, candidates []Candidate, canonical map[string]string, opts RankOptions) (Status, string) {
 	strongWorks := make(map[string]struct{})
 	for _, candidate := range candidates {
 		if candidate.ISBN != "" && candidate.ISBNPriority <= 1 {
-			strongWorks[groupKey(candidate)] = struct{}{}
+			strongWorks[candidateGroupKey(candidate, canonical)] = struct{}{}
 		}
 	}
 	if len(strongWorks) > 1 {
@@ -257,7 +260,7 @@ func classify(book *Book, best Candidate, second *Candidate, candidates []Candid
 	// and author: the metadata lied, not the ISBN. If the scanned metadata is
 	// itself present in the text and another candidate is corroborated, the
 	// evidence is contradictory and the book goes to review instead.
-	if contentConflict(book, best, candidates) {
+	if contentConflict(book, best, candidates, canonical) {
 		return StatusAmbiguous, "content_conflict"
 	}
 	if contentConfirms(best, opts) {
@@ -336,15 +339,16 @@ func contentConfirms(candidate Candidate, opts RankOptions) bool {
 	return true
 }
 
-func contentConflict(book *Book, best Candidate, candidates []Candidate) bool {
+func contentConflict(book *Book, best Candidate, candidates []Candidate, canonical map[string]string) bool {
 	if book == nil || lessThan(book.OrigTitleHit, contentCredibleTitle) {
 		return false
 	}
+	bestGroup := candidateGroupKey(best, canonical)
 	// A weak-title ISBN candidate that contradicts a title+author-confirmed
 	// alternative is a conflict.
 	if best.ISBN != "" && lessThan(best.TitleScore, 0.5) {
 		for _, candidate := range candidates {
-			if candidate.EditionKey == best.EditionKey || candidate.WorkKey == best.WorkKey {
+			if candidate.EditionKey == best.EditionKey || candidateGroupKey(candidate, canonical) == bestGroup {
 				continue
 			}
 			if atLeast(candidate.ContentTitleHit, contentTitleConfirmed) &&
@@ -359,7 +363,7 @@ func contentConflict(book *Book, best Candidate, candidates []Candidate) bool {
 		(lessThan(best.TitleScore, 0.9) || lessThan(best.AuthorScore, 0.5)) {
 		for _, candidate := range candidates {
 			if candidate.ISBN == "" || candidate.EditionKey == best.EditionKey ||
-				candidate.WorkKey == best.WorkKey {
+				candidateGroupKey(candidate, canonical) == bestGroup {
 				continue
 			}
 			if lessThan(candidate.TitleScore, 0.5) &&
@@ -384,7 +388,8 @@ func groupCandidates(candidates []Candidate) []candidateGroup {
 	index := make(map[string]int, len(candidates))
 	groups := make([]candidateGroup, 0, len(candidates))
 	for _, candidate := range candidates {
-		key := groupKey(candidate)
+		key := baseGroupKey(candidate)
+		candidate.GroupKey = key
 		position, ok := index[key]
 		if !ok {
 			index[key] = len(groups)
@@ -403,6 +408,145 @@ func groupCandidates(candidates []Candidate) []candidateGroup {
 	return groups
 }
 
+// mergeDuplicateGroups folds groups that describe the same work but carry
+// different OpenLibrary work keys. OpenLibrary contains many duplicate work
+// records; without this step their near-identical scores produce false
+// ambiguous_work results.
+func mergeDuplicateGroups(groups []candidateGroup) ([]candidateGroup, map[string]string) {
+	canonical := make(map[string]string, len(groups))
+	used := make([]bool, len(groups))
+	merged := make([]candidateGroup, 0, len(groups))
+
+	for i := range groups {
+		if used[i] {
+			continue
+		}
+		cluster := []int{i}
+		used[i] = true
+		for j := i + 1; j < len(groups); j++ {
+			if used[j] || !sameWorkIdentity(groups[i].best, groups[j].best) {
+				continue
+			}
+			cluster = append(cluster, j)
+			used[j] = true
+		}
+
+		canonicalIdx := cluster[0]
+		for _, idx := range cluster[1:] {
+			if len(groups[idx].editions) > len(groups[canonicalIdx].editions) ||
+				(len(groups[idx].editions) == len(groups[canonicalIdx].editions) &&
+					betterCandidate(groups[idx].best, groups[canonicalIdx].best)) {
+				canonicalIdx = idx
+			}
+		}
+		canonicalKey := groups[canonicalIdx].key
+
+		mergedGroup := candidateGroup{key: canonicalKey}
+		mergedKeys := make([]string, 0, len(cluster)-1)
+		for _, idx := range cluster {
+			mergedGroup.editions = append(mergedGroup.editions, groups[idx].editions...)
+			if mergedGroup.best.EditionKey == "" || betterCandidate(groups[idx].best, mergedGroup.best) {
+				mergedGroup.best = groups[idx].best
+			}
+			if groups[idx].key != canonicalKey {
+				mergedKeys = append(mergedKeys, groups[idx].key)
+			}
+			canonical[groups[idx].key] = canonicalKey
+		}
+		mergedGroup.best.GroupKey = canonicalKey
+		mergedGroup.best.MergedWorkKeys = uniqueStrings(mergedKeys)
+		merged = append(merged, mergedGroup)
+	}
+	return merged, canonical
+}
+
+func sameWorkIdentity(a, b Candidate) bool {
+	return sameWorkTitle(a, b) && authorsCompatible(a, b)
+}
+
+func sameWorkTitle(a, b Candidate) bool {
+	titlesA := candidateTitleKeys(a)
+	titlesB := candidateTitleKeys(b)
+	for _, titleA := range titlesA {
+		for _, titleB := range titlesB {
+			if titleA != "" && titleA == titleB {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func candidateTitleKeys(candidate Candidate) []string {
+	values := make([]string, 0, 2)
+	if candidate.EditionTitle != "" {
+		values = append(values, textmatch.TitleKey(candidate.EditionTitle))
+	}
+	if candidate.WorkTitle != "" {
+		values = append(values, textmatch.TitleKey(candidate.WorkTitle))
+	}
+	return values
+}
+
+func authorsCompatible(a, b Candidate) bool {
+	keysA := stringSet(a.AuthorKeys)
+	keysB := stringSet(b.AuthorKeys)
+	if len(keysA) > 0 && len(keysB) > 0 {
+		for key := range keysA {
+			if _, ok := keysB[key]; ok {
+				return true
+			}
+		}
+	}
+	namesA := normalizedAuthorNames(a.AuthorNames)
+	namesB := normalizedAuthorNames(b.AuthorNames)
+	if len(namesA) > 0 && len(namesB) > 0 {
+		return stringSlicesEqual(namesA, namesB)
+	}
+	// Merge only when neither side has any author information; one-sided
+	// author evidence is not enough to assume the works are the same.
+	return len(a.AuthorNames) == 0 && len(b.AuthorNames) == 0
+}
+
+func normalizedAuthorNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		tokens := textmatch.AuthorTokens(name)
+		if len(tokens) == 0 {
+			continue
+		}
+		value := strings.Join(tokens, " ")
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func stringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func sortGroups(groups []candidateGroup) {
 	sort.SliceStable(groups, func(i, j int) bool {
 		if betterCandidate(groups[i].best, groups[j].best) {
@@ -415,11 +559,25 @@ func sortGroups(groups []candidateGroup) {
 	})
 }
 
-func groupKey(candidate Candidate) string {
+func baseGroupKey(candidate Candidate) string {
 	if candidate.WorkKey != "" {
 		return candidate.WorkKey
 	}
 	return "edition:" + candidate.EditionKey
+}
+
+// candidateGroupKey returns the canonical ranking group for a candidate.
+// Candidates produced by groupCandidates already carry their base key; the
+// canonical map folds duplicate work keys into one group.
+func candidateGroupKey(candidate Candidate, canonical map[string]string) string {
+	key := candidate.GroupKey
+	if key == "" {
+		key = baseGroupKey(candidate)
+	}
+	if merged, ok := canonical[key]; ok {
+		return merged
+	}
+	return key
 }
 
 func betterCandidate(a, b Candidate) bool {

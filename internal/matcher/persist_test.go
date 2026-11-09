@@ -38,8 +38,11 @@ func testMatch(bookID int64) BookMatch {
 		ISBNPriority: 0,
 		TitleScore:   1,
 		AuthorScore:  1,
-		Score:        1,
-		Methods:      []string{"isbn"},
+		MergedWorkKeys: []string{
+			"/works/OL2W",
+		},
+		Score:   1,
+		Methods: []string{"isbn"},
 	}
 	return BookMatch{
 		BookID:         bookID,
@@ -121,6 +124,10 @@ func TestPersistAndLoad(t *testing.T) {
 	}
 	if evidence["work_group_editions"] != float64(1) {
 		t.Fatalf("evidence = %v", evidence)
+	}
+	merged, ok := evidence["merged_work_keys"].([]any)
+	if !ok || len(merged) != 1 || merged[0] != "/works/OL2W" {
+		t.Fatalf("merged work evidence = %v", evidence)
 	}
 
 	// Persisting again must replace, not duplicate, the candidate.

@@ -40,7 +40,14 @@ type Candidate struct {
 	// itself appears in the content. They are persisted as evidence.
 	OrigTitleHit  float64
 	OrigAuthorHit float64
-	Score         float64
+	// GroupKey is the canonical ranking group of the candidate. Duplicate
+	// OpenLibrary works with the same title and authors are folded into one
+	// group.
+	GroupKey string
+	// MergedWorkKeys lists the duplicate work keys folded into this group.
+	// It is persisted as evidence.
+	MergedWorkKeys []string
+	Score          float64
 
 	Methods []string
 }

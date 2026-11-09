@@ -1,6 +1,7 @@
 package matcher
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
@@ -282,5 +283,64 @@ func TestRankStats(t *testing.T) {
 	}
 	if result.Stats.Confirmed != 1 || result.Stats.NotFound != 1 || result.Stats.NoData != 1 {
 		t.Fatalf("stats = %+v", result.Stats)
+	}
+}
+
+func duplicateCandidate(bookID int64, edition, work, authorKey, authorName, title string) Candidate {
+	candidate := rankCandidate(bookID, edition, work, "", 0, 1, 1, 1, "title_exact")
+	candidate.EditionTitle = title
+	candidate.AuthorKeys = []string{authorKey}
+	candidate.AuthorNames = []string{authorName}
+	candidate.ContentTitleHit = 1
+	candidate.ContentAuthorHit = 1
+	candidate.Score = 1
+	return candidate
+}
+
+func TestRankMergesDuplicateWorks(t *testing.T) {
+	book := rankTestBook(52, "Level Up! The Guide to Great Video Game Design", true, false)
+	const title = "Level up! the Guide to Great Video Game Design"
+	candidates := []Candidate{
+		duplicateCandidate(52, "/books/OL29228914M", "/works/OL21547168W", "/authors/OL1A", "Test Author", title),
+		duplicateCandidate(52, "/books/OL53267304M", "/works/OL39131835W", "/authors/OL1A", "Test Author", title),
+		duplicateCandidate(52, "/books/OL53328422M", "/works/OL39174303W", "/authors/OL1A", "Test Author", title),
+	}
+	other := rankCandidate(52, "/books/OL26040246M", "/works/OL17455507W", "", 0, 1, 0, 0.75, "title_exact")
+	other.EditionTitle = "Level Up The Guide To Great Video Game Design"
+	other.Score = 0.675
+	candidates = append(candidates, other)
+
+	match := rankOne(t, book, candidates, RankOptions{})
+	if match.Status != StatusConfirmed {
+		t.Fatalf("status = %q, want confirmed (reason %q)", match.Status, match.ReviewReason)
+	}
+	if match.WorkCount != 2 {
+		t.Fatalf("work count = %d, want 2", match.WorkCount)
+	}
+	if len(match.Candidates) != 2 || match.Candidates[0].EditionCount != 3 {
+		t.Fatalf("candidates = %+v", match.Candidates)
+	}
+	if match.EditionKey != "/books/OL29228914M" {
+		t.Fatalf("edition = %q, want /books/OL29228914M", match.EditionKey)
+	}
+	merged := match.Candidates[0].MergedWorkKeys
+	if len(merged) != 2 || !slices.Contains(merged, "/works/OL39131835W") ||
+		!slices.Contains(merged, "/works/OL39174303W") {
+		t.Fatalf("merged work keys = %v", merged)
+	}
+}
+
+func TestRankDoesNotMergeSameTitleDifferentAuthors(t *testing.T) {
+	book := rankTestBook(1, "Collected Works", true, false)
+	first := duplicateCandidate(1, "OL1M", "OL1W", "/authors/OL1A", "Alice Smith", "Collected Works")
+	second := duplicateCandidate(1, "OL2M", "OL2W", "/authors/OL2A", "Bob Jones", "Collected Works")
+	second.Score = 0.99
+
+	match := rankOne(t, book, []Candidate{first, second}, RankOptions{})
+	if match.WorkCount != 2 {
+		t.Fatalf("work count = %d, want 2", match.WorkCount)
+	}
+	if match.Status != StatusAmbiguous || match.ReviewReason != "ambiguous_work" {
+		t.Fatalf("status = %q reason = %q, want ambiguous/ambiguous_work", match.Status, match.ReviewReason)
 	}
 }

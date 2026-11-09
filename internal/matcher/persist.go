@@ -119,6 +119,7 @@ func persistBook(ctx context.Context, q *db.Queries, match BookMatch, meta Persi
 			ContentAuthorHit:  candidate.ContentAuthorHit,
 			OrigTitleHit:      candidate.OrigTitleHit,
 			OrigAuthorHit:     candidate.OrigAuthorHit,
+			MergedWorkKeys:    candidate.MergedWorkKeys,
 		})
 		if err != nil {
 			return fmt.Errorf("encode evidence for book %d: %w", match.BookID, err)
@@ -167,6 +168,7 @@ type candidateEvidence struct {
 	ContentAuthorHit  float64  `json:"content_author_hit,omitempty"`
 	OrigTitleHit      float64  `json:"orig_title_hit,omitempty"`
 	OrigAuthorHit     float64  `json:"orig_author_hit,omitempty"`
+	MergedWorkKeys    []string `json:"merged_work_keys,omitempty"`
 }
 
 func jsonStrings(values []string) (string, error) {
