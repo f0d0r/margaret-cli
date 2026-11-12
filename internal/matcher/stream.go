@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/f0d0r/margaret-cli/internal/identifier"
@@ -67,6 +69,11 @@ type workRecord struct {
 	Authors          []authorRef     `json:"authors"`
 }
 
+// forceLegacyScanOrder makes StreamDataset use the legacy
+// authors-before-works order. Tests use it to prove the fast path returns
+// identical results when the works cap does not bind.
+var forceLegacyScanOrder bool
+
 // StreamDataset runs the editions, authors and works passes over a dataset and
 // returns the collected candidates.
 func StreamDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cache, opts StreamOptions) (*StreamResult, error) {
@@ -93,6 +100,32 @@ func StreamDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cac
 		return nil, err
 	}
 	if candidates.total() == 0 {
+		return result, nil
+	}
+
+	// When no book exceeds the per-book works cap, the capped work-key
+	// selection is order independent, so the works pass can run before the
+	// authors pass and the authors dump is scanned exactly once. Otherwise
+	// the legacy order is kept so the capped selection sees author scores.
+	if !forceLegacyScanOrder && !candidates.exceedsWorksCap(opts.MaxWorksCandidatesPerBook) {
+		if dataset.Authors == nil {
+			result.Warnings = append(result.Warnings, "authors dump missing; author scores are unavailable")
+		}
+		if dataset.Works == nil {
+			result.Warnings = append(result.Warnings, "works dump missing; work metadata is unavailable")
+		}
+		if err := streamWorksPass(ctx, dataset, candidates, result, opts); err != nil {
+			return nil, err
+		}
+		if err := streamAuthorsPass(ctx, dataset, candidates, result, cache, opts); err != nil {
+			return nil, err
+		}
+		applyContentScores(candidates, cache)
+		candidates.sortAll()
+
+		result.Candidates = candidates.values()
+		result.Stats.Candidates = candidates.total()
+		result.Stats.BooksWithCandidates = candidates.bookCount()
 		return result, nil
 	}
 
@@ -134,6 +167,41 @@ func StreamDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cac
 	result.Stats.Candidates = candidates.total()
 	result.Stats.BooksWithCandidates = candidates.bookCount()
 	return result, nil
+}
+
+func streamWorksPass(ctx context.Context, dataset *openlibrary.Dataset, candidates *candidateSet, result *StreamResult, opts StreamOptions) error {
+	if dataset.Works == nil {
+		return nil
+	}
+	workKeys := candidates.workKeys(opts.MaxWorksCandidatesPerBook)
+	if len(workKeys) == 0 {
+		return nil
+	}
+	works, err := streamWorks(ctx, dataset.Works, workKeys, opts, &result.Stats)
+	if err != nil {
+		return err
+	}
+	result.Works = works
+	applyWorkTitles(candidates, works)
+	applyWorkAuthors(candidates, works)
+	return nil
+}
+
+func streamAuthorsPass(ctx context.Context, dataset *openlibrary.Dataset, candidates *candidateSet, result *StreamResult, cache *Cache, opts StreamOptions) error {
+	if dataset.Authors == nil {
+		return nil
+	}
+	authorKeys := candidates.authorKeys()
+	if len(authorKeys) == 0 {
+		return nil
+	}
+	authors, err := streamAuthors(ctx, dataset.Authors, authorKeys, opts, &result.Stats)
+	if err != nil {
+		return err
+	}
+	result.Authors = authors
+	applyAuthorScores(candidates, authors, cache)
+	return nil
 }
 
 func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cache, opts StreamOptions) (*StreamResult, error) {
@@ -180,7 +248,7 @@ func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, ca
 			}
 			result.Works = works
 			applyWorkTitles(candidates, works)
-			if err := applyMissingWorkAuthors(ctx, dataset, candidates, result, cache, opts); err != nil {
+			if err := applyMissingWorkAuthorsCombined(ctx, dataset, candidates, result, authorSidecar, cache, opts); err != nil {
 				return nil, err
 			}
 		}
@@ -248,13 +316,27 @@ func (p *editionProcessor) processRecord(rowKey string, data []byte) {
 	if title == "" {
 		title = record.Subtitle
 	}
-	titleKey := ""
-	var titleTokens []string
+	var titleKey string
+	titleKeyReady := false
 	var titleHashes []uint64
-	if title != "" {
-		titleKey = textmatch.TitleKey(title)
-		titleTokens = textmatch.TokensFromKey(titleKey)
-		titleHashes = textmatch.HashTokens(titleTokens)
+	titleHashesReady := false
+	cachedKey := func() string {
+		if !titleKeyReady {
+			if title != "" {
+				titleKey = textmatch.TitleKey(title)
+			}
+			titleKeyReady = true
+		}
+		return titleKey
+	}
+	cachedHashes := func() []uint64 {
+		if !titleHashesReady {
+			if key := cachedKey(); key != "" {
+				titleHashes = textmatch.HashTokens(textmatch.TokensFromKey(key))
+			}
+			titleHashesReady = true
+		}
+		return titleHashes
 	}
 	workKey := ""
 	if len(record.Works) > 0 {
@@ -277,8 +359,8 @@ func (p *editionProcessor) processRecord(rowKey string, data []byte) {
 				continue
 			}
 			titleScore := 0.0
-			if len(titleHashes) > 0 && len(book.TitleHashes) > 0 {
-				titleScore = textmatch.JaccardHashed(titleHashes, book.TitleHashes)
+			if hashes := cachedHashes(); len(hashes) > 0 && len(book.TitleHashes) > 0 {
+				titleScore = textmatch.JaccardHashed(hashes, book.TitleHashes)
 			}
 			p.addCandidate(Candidate{
 				BookID:       bookID,
@@ -305,48 +387,52 @@ func (p *editionProcessor) processRecord(rowKey string, data []byte) {
 		handleISBN(raw)
 	}
 
-	if p.tracker.remainingCount() > 0 && titleKey != "" {
-		matchedExact := false
-		for _, bookID := range p.cache.ByTitle[titleKey] {
-			book := p.cache.Books[bookID]
-			if book == nil || !p.tracker.has(book) {
-				continue
-			}
-			matchedExact = true
-			p.addCandidate(Candidate{
-				BookID:       bookID,
-				EditionKey:   key,
-				WorkKey:      workKey,
-				EditionTitle: title,
-				AuthorKeys:   authorKeys,
-				TitleScore:   1,
-				Methods:      []string{"title_exact"},
-			})
-			p.stats.TitleExactMatches++
-		}
-		if !matchedExact && len(titleHashes) > 0 {
-			for _, bookID := range p.cache.RareTokenCandidatesByHash(titleHashes, p.opts.MaxPosting) {
+	if p.tracker.remainingCount() > 0 {
+		if titleKey := cachedKey(); titleKey != "" {
+			matchedExact := false
+			for _, bookID := range p.cache.ByTitle[titleKey] {
 				book := p.cache.Books[bookID]
 				if book == nil || !p.tracker.has(book) {
 					continue
 				}
-				if jaccardBound(len(titleHashes), len(book.TitleHashes)) < p.opts.MinTitleScore {
-					continue
-				}
-				titleScore := textmatch.JaccardHashed(titleHashes, book.TitleHashes)
-				if titleScore < p.opts.MinTitleScore {
-					continue
-				}
+				matchedExact = true
 				p.addCandidate(Candidate{
 					BookID:       bookID,
 					EditionKey:   key,
 					WorkKey:      workKey,
 					EditionTitle: title,
 					AuthorKeys:   authorKeys,
-					TitleScore:   titleScore,
-					Methods:      []string{"title_fuzzy"},
+					TitleScore:   1,
+					Methods:      []string{"title_exact"},
 				})
-				p.stats.TitleFuzzyMatches++
+				p.stats.TitleExactMatches++
+			}
+			if !matchedExact {
+				if hashes := cachedHashes(); len(hashes) > 0 {
+					for _, bookID := range p.cache.RareTokenCandidatesByHash(hashes, p.opts.MaxPosting) {
+						book := p.cache.Books[bookID]
+						if book == nil || !p.tracker.has(book) {
+							continue
+						}
+						if jaccardBound(len(hashes), len(book.TitleHashes)) < p.opts.MinTitleScore {
+							continue
+						}
+						titleScore := textmatch.JaccardHashed(hashes, book.TitleHashes)
+						if titleScore < p.opts.MinTitleScore {
+							continue
+						}
+						p.addCandidate(Candidate{
+							BookID:       bookID,
+							EditionKey:   key,
+							WorkKey:      workKey,
+							EditionTitle: title,
+							AuthorKeys:   authorKeys,
+							TitleScore:   titleScore,
+							Methods:      []string{"title_fuzzy"},
+						})
+						p.stats.TitleFuzzyMatches++
+					}
+				}
 			}
 		}
 	}
@@ -434,6 +520,9 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 	candidates := newCandidateSet()
 	if tracker.totalCount() == 0 {
 		return candidates, nil, nil
+	}
+	if opts.Workers > 1 {
+		return streamCombinedExtractionParallel(ctx, file, cache, opts, stats, tracker, candidates)
 	}
 	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
 
@@ -543,6 +632,181 @@ func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache
 	}
 	success = true
 	return candidates, authors, nil
+}
+
+// streamCombinedExtractionParallel runs the combined-dump extraction pass
+// with worker goroutines for edition records. Author sidecar writes stay on
+// the reading goroutine, so the sidecar keeps file order.
+func streamCombinedExtractionParallel(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats, tracker *editionTracker, candidates *candidateSet) (*candidateSet, *authorSidecar, error) {
+	workers := opts.Workers
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan editionJob, workers*64)
+	localStats := make([]StreamStats, workers)
+	var sent, processed atomic.Int64
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			processor := newEditionProcessor(cache, opts, &localStats[index], tracker, candidates)
+			for job := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				processor.processRecord(job.key, job.data)
+				processed.Add(1)
+			}
+		}(i)
+	}
+
+	authors, err := newAuthorSidecar()
+	if err != nil {
+		close(jobs)
+		wg.Wait()
+		return nil, nil, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = authors.close()
+		}
+	}()
+
+	emit := func(read int64, final bool) {
+		if opts.Progress == nil {
+			return
+		}
+		totalBytes := openlibrary.DumpSize(file)
+		if final && totalBytes > 0 {
+			read = totalBytes
+		}
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "combined",
+			Lines:      stats.Lines,
+			Records:    processed.Load(),
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			BytesRead:  read,
+			BytesTotal: totalBytes,
+			Pending:    total - done,
+		})
+	}
+
+	readErr := readCombinedParallel(ctx, file, jobs, tracker, candidates, authors, stats, &sent, &processed, func(read int64) {
+		emit(read, false)
+	})
+	close(jobs)
+	wg.Wait()
+	for i := range localStats {
+		stats.Editions += localStats[i].Editions
+		stats.Malformed += localStats[i].Malformed
+		stats.ISBNMatches += localStats[i].ISBNMatches
+		stats.TitleExactMatches += localStats[i].TitleExactMatches
+		stats.TitleFuzzyMatches += localStats[i].TitleFuzzyMatches
+	}
+	if readErr != nil {
+		return nil, nil, readErr
+	}
+	if opts.Progress != nil {
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "combined",
+			Lines:      stats.Lines,
+			Records:    processed.Load(),
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			BytesRead:  openlibrary.DumpSize(file),
+			BytesTotal: openlibrary.DumpSize(file),
+			Pending:    total - done,
+		})
+	}
+	if err := authors.finish(); err != nil {
+		return nil, nil, fmt.Errorf("close author sidecar: %w", err)
+	}
+	success = true
+	return candidates, authors, nil
+}
+
+func readCombinedParallel(ctx context.Context, file *openlibrary.File, jobs chan<- editionJob, tracker *editionTracker, candidates *candidateSet, authors *authorSidecar, stats *StreamStats, sent, processed *atomic.Int64, emit func(int64)) error {
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
+	if err != nil {
+		return fmt.Errorf("open combined dump: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	scanner := openlibrary.NewDumpScanner(reader)
+	lastProgress := time.Now()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			emit(counter.Load())
+			return nil
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			stats.Malformed++
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		stats.Lines++
+
+		switch row.Type {
+		case "/type/edition":
+			if tracker.remainingCount() > 0 {
+				data := append([]byte(nil), row.Data...)
+				select {
+				case jobs <- editionJob{key: row.Key, data: data}:
+					sent.Add(1)
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		case "/type/author":
+			var record authorRecord
+			if err := json.Unmarshal(row.Data, &record); err != nil {
+				stats.Malformed++
+				continue
+			}
+			key := record.Key
+			if key == "" {
+				key = row.Key
+			}
+			if key == "" {
+				stats.Malformed++
+				continue
+			}
+			if err := authors.write(key, authorNames(record)); err != nil {
+				return fmt.Errorf("write author sidecar: %w", err)
+			}
+			stats.Authors++
+		}
+
+		// Stop only when every sent job finished without producing a
+		// candidate; the single-threaded pass observes the same state
+		// synchronously.
+		if tracker.remainingCount() == 0 && sent.Load() == processed.Load() && candidates.total() == 0 {
+			emit(counter.Load())
+			return nil
+		}
+		if time.Since(lastProgress) >= progressInterval {
+			emit(counter.Load())
+			lastProgress = time.Now()
+		}
+	}
 }
 
 type authorSidecar struct {

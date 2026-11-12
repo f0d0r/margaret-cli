@@ -31,6 +31,57 @@ func applyWorkAuthors(candidates *candidateSet, works map[string]WorkRecord) map
 	return added
 }
 
+// applyMissingWorkAuthorsCombined resolves work-level authors in combined
+// mode. Authors already extracted to the sidecar are read back from it so the
+// combined dump is not scanned again; a separate authors file keeps the file
+// scan path.
+func applyMissingWorkAuthorsCombined(
+	ctx context.Context,
+	dataset *openlibrary.Dataset,
+	candidates *candidateSet,
+	result *StreamResult,
+	sidecar *authorSidecar,
+	cache *Cache,
+	opts StreamOptions,
+) error {
+	added := applyWorkAuthors(candidates, result.Works)
+	if len(added) == 0 {
+		return nil
+	}
+	for key := range added {
+		if _, ok := result.Authors[key]; ok {
+			delete(added, key)
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	if sidecar != nil && dataset.Combined != nil &&
+		(dataset.Authors == nil || dataset.Authors.Path == dataset.Combined.Path) {
+		authors, err := streamAuthorSidecar(ctx, sidecar, added, opts)
+		if err != nil {
+			return err
+		}
+		for key, record := range authors {
+			result.Authors[key] = record
+		}
+		applyAuthorScores(candidates, result.Authors, cache)
+		return nil
+	}
+	if dataset.Authors == nil {
+		return nil
+	}
+	authors, err := streamAuthors(ctx, dataset.Authors, added, opts, &result.Stats)
+	if err != nil {
+		return err
+	}
+	for key, record := range authors {
+		result.Authors[key] = record
+	}
+	applyAuthorScores(candidates, result.Authors, cache)
+	return nil
+}
+
 // applyMissingWorkAuthors fetches work-level authors referenced by candidates
 // whose editions had no authors, then re-scores the candidates.
 func applyMissingWorkAuthors(

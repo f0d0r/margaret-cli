@@ -98,22 +98,22 @@ func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *
 
 	if dataset.EditionsFromCombined() {
 		reportProgress(opts, Progress{Phase: "reading editions"})
-		editions, works, authors, err = scanCombined(ctx, dataset.Editions, editionKeys, workKeys, authorKeys, opts)
+		editions, works, err = scanCombinedEditionsWorks(ctx, dataset.Editions, editionKeys, workKeys, opts)
 		if err != nil {
 			return nil, err
 		}
-		extra := authorKeysFromEditions(editions, authorKeys)
-		for key := range authorKeysFromWorks(works, authorKeys) {
-			extra[key] = struct{}{}
+		fullAuthors := copySet(authorKeys)
+		for key := range authorKeysFromEditions(editions, fullAuthors) {
+			fullAuthors[key] = struct{}{}
 		}
-		if len(extra) > 0 {
+		for key := range authorKeysFromWorks(works, fullAuthors) {
+			fullAuthors[key] = struct{}{}
+		}
+		if len(fullAuthors) > 0 {
 			reportProgress(opts, Progress{Phase: "reading authors"})
-			more, err := scanAuthors(ctx, dataset.Editions, extra, opts)
+			authors, err = scanCombinedAuthors(ctx, dataset.Editions, fullAuthors, opts)
 			if err != nil {
 				return nil, err
-			}
-			for key, record := range more {
-				authors[key] = record
 			}
 		}
 	} else {
@@ -335,10 +335,9 @@ func scanAuthors(ctx context.Context, file *openlibrary.File, keys map[string]st
 	return out, nil
 }
 
-func scanCombined(ctx context.Context, file *openlibrary.File, editionKeys, workKeys, authorKeys map[string]struct{}, opts Options) (map[string]*editionRecord, map[string]*workRecord, map[string]*authorRecord, error) {
+func scanCombinedEditionsWorks(ctx context.Context, file *openlibrary.File, editionKeys, workKeys map[string]struct{}, opts Options) (map[string]*editionRecord, map[string]*workRecord, error) {
 	editions := make(map[string]*editionRecord, len(editionKeys))
 	works := make(map[string]*workRecord, len(workKeys))
-	authors := make(map[string]*authorRecord, len(authorKeys))
 	err := scanFile(ctx, file, "reading editions", opts, func(row openlibrary.Row) bool {
 		switch row.Type {
 		case "/type/edition":
@@ -375,32 +374,43 @@ func scanCombined(ctx context.Context, file *openlibrary.File, editionKeys, work
 			}
 			record.Key = key
 			works[key] = &record
-		case "/type/author":
-			key := row.Key
-			if _, ok := authorKeys[key]; !ok {
-				break
-			}
-			var record authorRecord
-			if json.Unmarshal(row.Data, &record) != nil {
-				return false
-			}
-			if record.Key != "" {
-				if _, ok := authorKeys[record.Key]; !ok {
-					return false
-				}
-				key = record.Key
-			}
-			record.Key = key
-			authors[key] = &record
 		}
-		return len(editions) == len(editionKeys) &&
-			len(works) == len(workKeys) &&
-			len(authors) == len(authorKeys)
+		return len(editions) == len(editionKeys) && len(works) == len(workKeys)
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("scan combined dump: %w", err)
+		return nil, nil, fmt.Errorf("scan combined dump: %w", err)
 	}
-	return editions, works, authors, nil
+	return editions, works, nil
+}
+
+func scanCombinedAuthors(ctx context.Context, file *openlibrary.File, authorKeys map[string]struct{}, opts Options) (map[string]*authorRecord, error) {
+	authors := make(map[string]*authorRecord, len(authorKeys))
+	err := scanFile(ctx, file, "reading authors", opts, func(row openlibrary.Row) bool {
+		if row.Type != "/type/author" {
+			return false
+		}
+		key := row.Key
+		if _, ok := authorKeys[key]; !ok {
+			return false
+		}
+		var record authorRecord
+		if json.Unmarshal(row.Data, &record) != nil {
+			return false
+		}
+		if record.Key != "" {
+			if _, ok := authorKeys[record.Key]; !ok {
+				return false
+			}
+			key = record.Key
+		}
+		record.Key = key
+		authors[key] = &record
+		return len(authors) == len(authorKeys)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan authors: %w", err)
+	}
+	return authors, nil
 }
 
 func scanFile(ctx context.Context, file *openlibrary.File, phase string, opts Options, handle func(openlibrary.Row) bool) error {

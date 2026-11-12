@@ -60,8 +60,9 @@ type StreamOptions struct {
 	MinTitleScore             float64
 	ISBNTitleConfirm          float64
 	// Workers is the number of editions-pass workers. Values <= 1 run the
-	// pass in the calling goroutine. The combined-dump extraction pass remains
-	// single-threaded because it also writes the author sidecar.
+	// pass in the calling goroutine. The combined-dump extraction pass runs
+	// edition matching on workers while author sidecar writes stay on the
+	// reading goroutine.
 	Workers  int
 	Progress func(StreamProgress)
 }
@@ -255,6 +256,20 @@ func (s *candidateSet) workKeys(max int) map[string]struct{} {
 		}
 	}
 	return keys
+}
+
+// exceedsWorksCap reports whether any book holds more candidates than the
+// per-book works cap. Below the cap the capped work-key selection keeps every
+// key regardless of list order.
+func (s *candidateSet) exceedsWorksCap(max int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, list := range s.byBook {
+		if len(list) > max {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *candidateSet) sortAll() {

@@ -13,10 +13,6 @@ import (
 	"github.com/f0d0r/margaret-ebook-library/tools"
 )
 
-// maxBlockingTokens bounds how many rare title tokens are used to generate
-// candidate books for one OpenLibrary edition.
-const maxBlockingTokens = 2
-
 // Options configures Build.
 type Options struct {
 	// BookIDs limits the cache to the given books. A nil slice includes all
@@ -261,43 +257,17 @@ func (c *Cache) RareTokenCandidates(tokens []string, maxPosting int) []int64 {
 		return nil
 	}
 
-	type tokenCount struct {
-		token string
-		count int
-	}
-	stats := make([]tokenCount, 0, len(tokens))
-	for _, token := range tokens {
-		count := len(c.ByToken[token])
-		if count == 0 || count > maxPosting {
-			continue
-		}
-		stats = append(stats, tokenCount{token: token, count: count})
-	}
-	if len(stats) == 0 {
+	first, second := rarestTokens(tokens, func(token string) int {
+		return len(c.ByToken[token])
+	}, maxPosting)
+	if first < 0 {
 		return nil
 	}
-	sort.Slice(stats, func(i, j int) bool {
-		if stats[i].count != stats[j].count {
-			return stats[i].count < stats[j].count
-		}
-		return stats[i].token < stats[j].token
-	})
-	if len(stats) > maxBlockingTokens {
-		stats = stats[:maxBlockingTokens]
+	postings := c.ByToken
+	if second >= 0 {
+		return unionPostings(postings[tokens[first]], postings[tokens[second]])
 	}
-
-	seen := make(map[int64]struct{})
-	var candidates []int64
-	for _, stat := range stats {
-		for _, id := range c.ByToken[stat.token] {
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			candidates = append(candidates, id)
-		}
-	}
-	return candidates
+	return unionPostings(postings[tokens[first]])
 }
 
 func (c *Cache) RareTokenCandidatesByHash(tokens []uint64, maxPosting int) []int64 {
@@ -305,43 +275,78 @@ func (c *Cache) RareTokenCandidatesByHash(tokens []uint64, maxPosting int) []int
 		return nil
 	}
 
-	type tokenCount struct {
-		token uint64
-		count int
-	}
-	stats := make([]tokenCount, 0, len(tokens))
-	for _, token := range tokens {
-		count := len(c.ByTokenHash[token])
-		if count == 0 || count > maxPosting {
-			continue
-		}
-		stats = append(stats, tokenCount{token: token, count: count})
-	}
-	if len(stats) == 0 {
+	first, second := rarestTokens(tokens, func(token uint64) int {
+		return len(c.ByTokenHash[token])
+	}, maxPosting)
+	if first < 0 {
 		return nil
 	}
-	sort.Slice(stats, func(i, j int) bool {
-		if stats[i].count != stats[j].count {
-			return stats[i].count < stats[j].count
-		}
-		return stats[i].token < stats[j].token
-	})
-	if len(stats) > maxBlockingTokens {
-		stats = stats[:maxBlockingTokens]
+	if second >= 0 {
+		return unionPostings(c.ByTokenHash[tokens[first]], c.ByTokenHash[tokens[second]])
 	}
+	return unionPostings(c.ByTokenHash[tokens[first]])
+}
 
-	seen := make(map[int64]struct{})
-	var candidates []int64
-	for _, stat := range stats {
-		for _, id := range c.ByTokenHash[stat.token] {
+// rarestTokens returns the indexes of the two rarest eligible tokens in scan
+// order. A token is eligible when its postings count is in (0, maxPosting].
+// Order matches sorting by (count, token): the first index is the smallest,
+// the second the next smallest. A -1 index means no token qualified.
+func rarestTokens[T comparable](tokens []T, count func(T) int, maxPosting int) (int, int) {
+	first, second := -1, -1
+	firstCount, secondCount := 0, 0
+	for i, token := range tokens {
+		n := count(token)
+		if n == 0 || n > maxPosting {
+			continue
+		}
+		if first < 0 || n < firstCount || (n == firstCount && tokenLess(token, tokens[first])) {
+			second, secondCount = first, firstCount
+			first, firstCount = i, n
+			continue
+		}
+		if second < 0 || n < secondCount || (n == secondCount && tokenLess(token, tokens[second])) {
+			second, secondCount = i, n
+		}
+	}
+	return first, second
+}
+
+// tokenLess orders tokens the way the former sort.Slice comparators did.
+func tokenLess[T comparable](a, b T) bool {
+	switch av := any(a).(type) {
+	case string:
+		bv, _ := any(b).(string)
+		return av < bv
+	case uint64:
+		bv, _ := any(b).(uint64)
+		return av < bv
+	default:
+		return false
+	}
+}
+
+// unionPostings merges one or two postings lists in order, dropping
+// duplicates. It returns nil when every list is empty.
+func unionPostings(lists ...[]int64) []int64 {
+	total := 0
+	for _, list := range lists {
+		total += len(list)
+	}
+	if total == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, total)
+	out := make([]int64, 0, total)
+	for _, list := range lists {
+		for _, id := range list {
 			if _, ok := seen[id]; ok {
 				continue
 			}
 			seen[id] = struct{}{}
-			candidates = append(candidates, id)
+			out = append(out, id)
 		}
 	}
-	return candidates
+	return out
 }
 
 func isbnPriority(source identifier.Source) int {

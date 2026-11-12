@@ -131,6 +131,12 @@ func readEditionsParallel(
 		if row.Type != "/type/edition" {
 			continue
 		}
+		if tracker.remainingCount() == 0 {
+			return nil
+		}
+		// Copy the row: Row.Data aliases the scanner buffer and is only
+		// valid until the next Scan call, so handing it to a worker
+		// without copying would race with the next read.
 		data := append([]byte(nil), row.Data...)
 		select {
 		case jobs <- editionJob{key: row.Key, data: data}:
