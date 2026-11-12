@@ -562,6 +562,14 @@ its own metadata:
 
 When no books were found the file is not created.
 
+File entries also carry the claim provenance: `legacy` (the pre-claim title
+and author list), `title_status`/`author_status`, `title_set`/`author_set`
+and the full `claims` object with source, trust, witness, junk, attested and
+attestation fields. Book entries carry the synthesized
+`title_status`/`author_status`, `title_candidates`/`author_candidates`,
+`grouping_suspect` and the runtime-only `legacy_book` object used for the
+transition diff.
+
 ---
 
 ## How books are grouped and described
@@ -678,6 +686,26 @@ comparisons below use normalized keys:
   `english`, and the meaningless bases `und`, `mul`, `zxx` and `mis` are
   dropped. The result is the union of the remaining tags in first-seen
   order.
+- **Title and author claims.** Each file stores every title and author
+  statement extracted from metadata, leading text and its file name in
+  `book_file_claims`, together with the source, the extraction hypothesis
+  (`set`), junk/attestation flags and the text-support score. The resolved
+  `book_files.title` and `book_file_authors` come from these claims; the
+  pre-claim values remain in `legacy_title` and `book_file_legacy_authors`
+  for comparison and rollback. A metadata title that appears as a
+  title-page-like phrase in the first 8 KiB of text is `attested`; a
+  filename-only title or author is `weak` and stays out of the stored
+  title/author fields, so the book-level filename fallback still applies.
+- **Book-level claim synthesis.** The book title and author list are resolved
+  from all file claims, not by voting the already-resolved file values. A
+  metadata agreement across independent content witnesses is `cross_file`;
+  a metadata claim attested in a title-page window is `corroborated`. Weak
+  filename or title-page evidence is accepted at book level with `weak`
+  status (the matcher treats it as neutral), and alternative hypotheses are
+  kept in `book_claim_candidates`. Conflicting metadata can set
+  `grouping_suspect` without splitting the book automatically. The old
+  `pickTitle`/`pickAuthors` result is still computed for the `legacy_book`
+  diff and used as a fallback when a book has no claims.
 - **Identifiers and source.** Every identifier carries a `source`:
   `METADATA`, `TEXT` or `METADATA_AND_TEXT`. Book-level identifiers store
   only ISBNs; file-level identifiers keep other schemes as well. Values are

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,7 +13,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/f0d0r/margaret-cli/internal/claim"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/filemeta"
 	"github.com/f0d0r/margaret-cli/internal/headprint"
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/lsh"
@@ -387,6 +390,25 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		return
 	}
 
+	claimSets := append([]claim.Set{}, md.Claims...)
+	// Legacy parsers do not populate claims at all. Treat their existing
+	// title/author result as a metadata hypothesis; parsers that do populate
+	// claims must mark their own metadata source explicitly.
+	if len(claimSets) == 0 && (md.Title != "" || len(md.Authors) > 0) {
+		claimSets = append(claimSets, claim.Set{
+			Key:     "metadata",
+			Source:  claim.SourceMetadata,
+			Origin:  "parser",
+			Title:   md.Title,
+			Authors: md.Authors,
+			Trust:   claim.TrustStrong,
+			Witness: claim.WitnessIndependent,
+		})
+	}
+	titleWindow := encodeStringList(claim.WindowLines(md.Head))
+	claims := claim.Build(append(claimSets, filenameClaims(displayPath)...), md.Head, displayPath)
+	resolution := claim.Resolve(claims, displayPath)
+
 	err = tx.WithTx(ctx, p.db, p.q, func(txCtx context.Context) error {
 		q := tx.QueryFrom(txCtx, p.q)
 
@@ -395,49 +417,66 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		}
 
 		headBloom := headprint.Build(md.Head)
-		// A recorded path without a content fingerprint is backfilled on the
-		// next scan; the rest of its metadata is already stored.
+		// A recorded path is backfilled when its content fingerprint or claim
+		// state is missing; a changed file keeps its old row until a fresh run.
 		if existing, err := q.GetBookFileByPath(txCtx, displayPath); err == nil {
-			if existing.Hash == md.Hash && len(existing.HeadBloom) == 0 {
+			if existing.Hash != md.Hash {
+				return nil
+			}
+			needsHead := len(existing.HeadBloom) == 0
+			needsWindow := existing.TitleWindow == "" && titleWindow != ""
+			needsClaims := existing.ClaimVersion < claim.ClaimVersion ||
+				existing.ResolveVersion < claim.ResolveVersion
+			if needsHead {
 				if err := q.UpdateBookFileHeadBloom(txCtx, db.UpdateBookFileHeadBloomParams{
 					HeadBloom: headBloom,
 					ID:        existing.ID,
 				}); err != nil {
 					return fmt.Errorf("update content head: %w", err)
 				}
-				return nil
 			}
+			if needsWindow {
+				if err := q.UpdateBookFileTitleWindow(txCtx, db.UpdateBookFileTitleWindowParams{
+					TitleWindow: titleWindow,
+					ID:          existing.ID,
+				}); err != nil {
+					return fmt.Errorf("update title window: %w", err)
+				}
+			}
+			if needsClaims {
+				if err := updateBookFileClaims(txCtx, q, existing.ID, md, resolution, claims, titleWindow); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 
 		// Resume already skipped every recorded path, so this path is new:
-		// insert it directly. A changed file keeps its old row until the
-		// owner reruns with a fresh database.
-		authorIDs := make([]int64, 0, len(md.Authors))
-		for _, authorName := range md.Authors {
-			author, err := q.GetAuthorByName(txCtx, authorName)
-			if errors.Is(err, sql.ErrNoRows) {
-				if err := q.CreateAuthor(txCtx, authorName); err != nil {
-					return fmt.Errorf("create author: %w", err)
-				}
-				author, err = q.GetAuthorByName(txCtx, authorName)
-			}
-			if err != nil {
-				return fmt.Errorf("get author %q: %w", authorName, err)
-			}
-			authorIDs = append(authorIDs, author.ID)
+		// insert it directly.
+		authorIDs, err := ensureAuthorIDs(txCtx, q, resolution.Authors)
+		if err != nil {
+			return err
 		}
 
 		bookFileID, err := q.CreateBookFile(txCtx, db.CreateBookFileParams{
 			Hash:            md.Hash,
 			Path:            displayPath,
-			Title:           md.Title,
+			Title:           resolution.Title,
 			Minhash:         encodeMinHash(md.MinHash),
 			HeadBloom:       headBloom,
+			TitleWindow:     titleWindow,
 			Description:     md.Description,
 			Publisher:       md.Publisher,
 			PublicationDate: md.PublicationDate,
 			Series:          md.Series,
 			SeriesIndex:     md.SeriesIndex,
+			LegacyTitle:     md.Title,
+			TitleStatus:     string(resolution.TitleStatus),
+			AuthorStatus:    string(resolution.AuthorStatus),
+			TitleSet:        resolution.TitleSet,
+			AuthorSet:       resolution.AuthorSet,
+			ClaimVersion:    claim.ClaimVersion,
+			ResolveVersion:  claim.ResolveVersion,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := q.CreateBookFileDuplicate(txCtx, db.CreateBookFileDuplicateParams{
@@ -453,6 +492,12 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		}
 
 		if err := storeBookFileMetadata(txCtx, q, bookFileID, md); err != nil {
+			return err
+		}
+		if err := storeBookFileClaims(txCtx, q, bookFileID, claims); err != nil {
+			return err
+		}
+		if err := storeLegacyAuthors(txCtx, q, bookFileID, md.Authors); err != nil {
 			return err
 		}
 
@@ -507,7 +552,11 @@ func (p *ScanProcessor) parseEbook(ctx context.Context, displayPath, format stri
 		}
 
 		if bookID == 0 {
-			newBookID, err := q.CreateBook(txCtx, md.Title)
+			title := resolution.Title
+			if title == "" {
+				title = md.Title
+			}
+			newBookID, err := q.CreateBook(txCtx, title)
 			if err != nil {
 				return fmt.Errorf("create book: %w", err)
 			}
@@ -602,6 +651,293 @@ func storeBookFileMetadata(ctx context.Context, q *db.Queries, bookFileID int64,
 		}
 	}
 	return nil
+}
+
+// filenameClaims turns the display path into low-trust filename hypotheses.
+func filenameClaims(path string) []claim.Set {
+	repaired := filemeta.RepairDisplayPath(path)
+	origin := func(name string) string {
+		if repaired != path {
+			return name + ":repaired"
+		}
+		return name
+	}
+	var sets []claim.Set
+	add := func(key, origin, title string, authors []string) {
+		if title == "" && len(authors) == 0 {
+			return
+		}
+		sets = append(sets, claim.Set{
+			Key:     key,
+			Source:  claim.SourceFilename,
+			Origin:  origin,
+			Path:    path,
+			Title:   title,
+			Authors: authors,
+			Trust:   claim.TrustWeak,
+			Witness: claim.WitnessSupporting,
+		})
+	}
+	if title, author, ok := filemeta.ParseNaturalFilename(repaired); ok {
+		add("filename:natural", origin("filename:natural"), title, []string{author})
+	}
+	if title, author, ok := filemeta.ParseCalibreFilename(repaired); ok {
+		add("filename:calibre", origin("filename:calibre"), title, []string{author})
+	}
+	if author, ok := filemeta.ParseCalibreAuthorOnly(repaired); ok {
+		add("filename:calibre-author", origin("filename:calibre-author"), "", []string{author})
+	}
+	if title := filemeta.TitleFromPath(repaired); title != "" {
+		add("filename:stem", origin("filename:stem"), title, nil)
+	}
+	for i, segment := range filemeta.ArchiveNames(repaired) {
+		if title, author, ok := filemeta.ParseArchiveFilename(segment); ok {
+			key := "filename:archive"
+			if i > 0 {
+				key = fmt.Sprintf("filename:archive:%d", i)
+			}
+			add(key, origin("filename:archive"), title, []string{author})
+		}
+	}
+	if author, ok := filemeta.ParentAuthor(repaired); ok {
+		add("filename:path-author", origin("filename:path-author"), "", []string{author})
+	}
+	return sets
+}
+
+func ensureAuthorIDs(ctx context.Context, q *db.Queries, names []string) ([]int64, error) {
+	ids := make([]int64, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		author, err := q.GetAuthorByName(ctx, name)
+		if errors.Is(err, sql.ErrNoRows) {
+			if err := q.CreateAuthor(ctx, name); err != nil {
+				return nil, fmt.Errorf("create author: %w", err)
+			}
+			author, err = q.GetAuthorByName(ctx, name)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get author %q: %w", name, err)
+		}
+		ids = append(ids, author.ID)
+	}
+	return ids, nil
+}
+
+func storeBookFileClaims(ctx context.Context, q *db.Queries, bookFileID int64, claims []claim.Claim) error {
+	for _, c := range claims {
+		if err := q.CreateBookFileClaim(ctx, db.CreateBookFileClaimParams{
+			BookFileID:          bookFileID,
+			Path:                c.Path,
+			SetKey:              c.Set,
+			Source:              string(c.Source),
+			Origin:              c.Origin,
+			Field:               string(c.Field),
+			Value:               c.Value,
+			Ordinal:             int64(c.Ordinal),
+			Junk:                boolInt(c.Junk),
+			Trust:               string(c.Trust),
+			Witness:             string(c.Witness),
+			Attested:            boolInt(c.Attested),
+			Attestation:         c.Attestation,
+			AttestationMethod:   c.AttestationMethod,
+			AttestationLevel:    string(c.AttestationLevel),
+			AttestationResidual: encodeStringList(c.AttestationResidual),
+			SuspiciousSignals:   c.SuspiciousSignals,
+		}); err != nil {
+			return fmt.Errorf("store claim %s %q: %w", c.Field, c.Value, err)
+		}
+	}
+	return nil
+}
+
+func storeLegacyAuthors(ctx context.Context, q *db.Queries, bookFileID int64, names []string) error {
+	for i, name := range names {
+		if name == "" {
+			continue
+		}
+		if err := q.CreateBookFileLegacyAuthor(ctx, db.CreateBookFileLegacyAuthorParams{
+			BookFileID: bookFileID,
+			Name:       name,
+			Ordinal:    int64(i),
+		}); err != nil {
+			return fmt.Errorf("store legacy author %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func updateBookFileClaims(ctx context.Context, q *db.Queries, bookFileID int64, md parser.Metadata, res claim.Resolution, claims []claim.Claim, titleWindow string) error {
+	if err := q.UpdateBookFileTitleWindow(ctx, db.UpdateBookFileTitleWindowParams{
+		TitleWindow: titleWindow,
+		ID:          bookFileID,
+	}); err != nil {
+		return fmt.Errorf("update title window: %w", err)
+	}
+	if err := q.UpdateBookFileLegacyTitle(ctx, db.UpdateBookFileLegacyTitleParams{
+		LegacyTitle: md.Title,
+		ID:          bookFileID,
+	}); err != nil {
+		return fmt.Errorf("update legacy title: %w", err)
+	}
+	if err := q.UpdateBookFileResolution(ctx, db.UpdateBookFileResolutionParams{
+		Title:          res.Title,
+		TitleStatus:    string(res.TitleStatus),
+		AuthorStatus:   string(res.AuthorStatus),
+		TitleSet:       res.TitleSet,
+		AuthorSet:      res.AuthorSet,
+		ClaimVersion:   claim.ClaimVersion,
+		ResolveVersion: claim.ResolveVersion,
+		ID:             bookFileID,
+	}); err != nil {
+		return fmt.Errorf("update claims resolution: %w", err)
+	}
+	if err := q.DeleteBookFileClaimsByBookFileID(ctx, bookFileID); err != nil {
+		return fmt.Errorf("delete claims: %w", err)
+	}
+	if err := storeBookFileClaims(ctx, q, bookFileID, claims); err != nil {
+		return err
+	}
+	if err := q.DeleteBookFileLegacyAuthorsByBookFileID(ctx, bookFileID); err != nil {
+		return fmt.Errorf("delete legacy authors: %w", err)
+	}
+	if err := storeLegacyAuthors(ctx, q, bookFileID, md.Authors); err != nil {
+		return err
+	}
+	authorIDs, err := ensureAuthorIDs(ctx, q, res.Authors)
+	if err != nil {
+		return err
+	}
+	if err := q.DeleteBookFileAuthorsByBookFileID(ctx, bookFileID); err != nil {
+		return fmt.Errorf("delete file authors: %w", err)
+	}
+	for _, authorID := range authorIDs {
+		if err := q.CreateBookFileAuthor(ctx, db.CreateBookFileAuthorParams{
+			BookFileID: bookFileID,
+			AuthorID:   authorID,
+		}); err != nil {
+			return fmt.Errorf("link author: %w", err)
+		}
+	}
+	return nil
+}
+
+// ResolveStaleClaims re-runs the resolution step for files whose claims are
+// current but whose resolve_version is stale. It needs no file access, so
+// threshold and conflict-rule tuning does not require a reparse.
+func ResolveStaleClaims(ctx context.Context, conn *sql.DB, q *db.Queries) error {
+	rows, err := q.ListBookFilesNeedingResolution(ctx, db.ListBookFilesNeedingResolutionParams{
+		ClaimVersion:   claim.ClaimVersion,
+		ResolveVersion: claim.ResolveVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("list files needing claim resolution: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return tx.WithTx(ctx, conn, q, func(txCtx context.Context) error {
+		txq := tx.QueryFrom(txCtx, q)
+		for _, row := range rows {
+			stored, err := txq.ListBookFileClaimsByBookFileID(txCtx, row.ID)
+			if err != nil {
+				return fmt.Errorf("list claims of file %d: %w", row.ID, err)
+			}
+			if len(stored) == 0 {
+				continue
+			}
+			res := claim.Resolve(dbClaims(stored), row.Path)
+			if err := txq.UpdateBookFileResolution(txCtx, db.UpdateBookFileResolutionParams{
+				Title:          res.Title,
+				TitleStatus:    string(res.TitleStatus),
+				AuthorStatus:   string(res.AuthorStatus),
+				TitleSet:       res.TitleSet,
+				AuthorSet:      res.AuthorSet,
+				ClaimVersion:   claim.ClaimVersion,
+				ResolveVersion: claim.ResolveVersion,
+				ID:             row.ID,
+			}); err != nil {
+				return fmt.Errorf("update resolution of file %d: %w", row.ID, err)
+			}
+			authorIDs, err := ensureAuthorIDs(txCtx, txq, res.Authors)
+			if err != nil {
+				return err
+			}
+			if err := txq.DeleteBookFileAuthorsByBookFileID(txCtx, row.ID); err != nil {
+				return fmt.Errorf("delete file authors: %w", err)
+			}
+			for _, authorID := range authorIDs {
+				if err := txq.CreateBookFileAuthor(txCtx, db.CreateBookFileAuthorParams{
+					BookFileID: row.ID,
+					AuthorID:   authorID,
+				}); err != nil {
+					return fmt.Errorf("link author: %w", err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func dbClaims(stored []db.BookFileClaim) []claim.Claim {
+	out := make([]claim.Claim, 0, len(stored))
+	for _, c := range stored {
+		out = append(out, claim.Claim{
+			Field:               claim.Field(c.Field),
+			Value:               c.Value,
+			Source:              claim.Source(c.Source),
+			Set:                 c.SetKey,
+			Origin:              c.Origin,
+			Path:                c.Path,
+			Ordinal:             int(c.Ordinal),
+			Junk:                c.Junk != 0,
+			Trust:               claim.Trust(c.Trust),
+			Witness:             claim.Witness(c.Witness),
+			Attested:            c.Attested != 0,
+			Attestation:         c.Attestation,
+			AttestationMethod:   c.AttestationMethod,
+			AttestationLevel:    claim.AttestLevel(c.AttestationLevel),
+			AttestationResidual: decodeStringList(c.AttestationResidual),
+			SuspiciousSignals:   c.SuspiciousSignals,
+		})
+	}
+	return out
+}
+
+func boolInt(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func encodeStringList(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func decodeStringList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil
+	}
+	return values
 }
 
 // encodeMinHash encodes a MinHash signature ([]uint64) as a BLOB (little-endian).

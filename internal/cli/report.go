@@ -6,6 +6,7 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/processor"
 	"github.com/f0d0r/margaret-cli/internal/report"
 	"github.com/spf13/cobra"
 )
@@ -56,6 +57,12 @@ func runReport(ctx context.Context) error {
 	q := db.New(conn)
 	if err := requireScannedData(ctx, q, dbPath); err != nil {
 		return err
+	}
+	if err := processor.ResolveStaleClaims(ctx, conn, q); err != nil {
+		return err
+	}
+	if err := report.Consolidate(ctx, conn, q); err != nil {
+		return fmt.Errorf("consolidate books metadata: %w", err)
 	}
 	if err := report.WriteDuplicates(ctx, q, duplicatesOut); err != nil {
 		return err

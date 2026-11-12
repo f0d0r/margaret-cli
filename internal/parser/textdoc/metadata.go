@@ -1,13 +1,21 @@
 package textdoc
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
 
+	"github.com/f0d0r/margaret-cli/internal/claim"
 	"github.com/f0d0r/margaret-cli/internal/metaheur"
-	"github.com/f0d0r/margaret-cli/internal/parser"
 )
+
+// Metadata is the legacy text-derived title and author pair. It is separate
+// from parser.Metadata so this package does not depend on its parent.
+type Metadata struct {
+	Title   string
+	Authors []string
+}
 
 const (
 	// metadataLines bounds how many leading lines are inspected for headers.
@@ -42,12 +50,12 @@ var authorKeys = map[string]struct{}{
 // ExtractMetadata derives a title and authors from the text head. Labeled
 // headers win over the Gutenberg marker, which wins over Calibre's title-page
 // pattern. Field by field, the first source that yields a value wins.
-func ExtractMetadata(head string) parser.Metadata {
+func ExtractMetadata(head string) Metadata {
 	head = strings.TrimPrefix(head, "\ufeff")
 	lines := strings.Split(newlineReplacer.Replace(head), "\n")
 	lines = stripNNCLHeader(lines)
 
-	var md parser.Metadata
+	var md Metadata
 	for _, region := range headerRegions(lines) {
 		title, authors := parseLabels(region)
 		if md.Title == "" {
@@ -82,6 +90,54 @@ func ExtractMetadata(head string) parser.Metadata {
 	}
 	md.Authors = FilterMetadataAuthors(md.Authors, md.Title)
 	return md
+}
+
+// ExtractClaims returns every title and author hypothesis the text head
+// supports. Unlike ExtractMetadata it does not stop at the first source; the
+// claim resolver decides later which one wins.
+func ExtractClaims(head string) []claim.Set {
+	head = strings.TrimPrefix(head, "\ufeff")
+	lines := strings.Split(newlineReplacer.Replace(head), "\n")
+	lines = stripNNCLHeader(lines)
+
+	var sets []claim.Set
+	add := func(key, origin, title string, authors []string, trust claim.Trust, witness claim.Witness) {
+		title = CleanValue(title)
+		authors = FilterMetadataAuthors(authors, title)
+		if title == "" && len(authors) == 0 {
+			return
+		}
+		sets = append(sets, claim.Set{
+			Key:     key,
+			Source:  claim.SourceText,
+			Origin:  origin,
+			Title:   title,
+			Authors: authors,
+			Trust:   trust,
+			Witness: witness,
+		})
+	}
+
+	for i, region := range headerRegions(lines) {
+		title, authors := parseLabels(region)
+		add(fmt.Sprintf("text:label:%d", i), "text:label", title, authors,
+			claim.TrustStrong, claim.WitnessIndependent)
+	}
+	if title := gutenbergTitle(lines); title != "" {
+		add("text:gutenberg", "text:gutenberg", title, nil,
+			claim.TrustStrong, claim.WitnessIndependent)
+	}
+	if title, author, ok := calibreTitleAuthor(lines); ok {
+		add("text:calibre", "text:calibre", title, SplitAuthors(author),
+			claim.TrustStrong, claim.WitnessIndependent)
+	}
+	if !hasYAMLFrontMatter(lines) && startMarkerIndex(lines) < 0 {
+		if title, authors, ok := titlePagePair(lines); ok {
+			add("text:titlepage", "text:titlepage", title, authors,
+				claim.TrustWeak, claim.WitnessSupporting)
+		}
+	}
+	return sets
 }
 
 // stripNNCLHeader removes the NNCL distribution header from the first few
@@ -122,7 +178,7 @@ func hasYAMLFrontMatter(lines []string) bool {
 // mergeTitlePageMetadata fills only empty fields. When the other field is
 // already known, the title-page pair must agree with it, so a title from one
 // source is never combined with an author from another book.
-func mergeTitlePageMetadata(md parser.Metadata, title string, authors []string) parser.Metadata {
+func mergeTitlePageMetadata(md Metadata, title string, authors []string) Metadata {
 	if md.Title == "" && title != "" {
 		if len(md.Authors) == 0 || len(authors) == 0 || authorsAgree(md.Authors, authors) {
 			md.Title = title

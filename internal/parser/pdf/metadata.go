@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/f0d0r/margaret-cli/internal/claim"
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-cli/internal/metaheur"
 	"github.com/f0d0r/margaret-cli/internal/parser"
@@ -54,7 +55,7 @@ func parseInfo(raw string) infoFields {
 		if key == "" {
 			continue
 		}
-		fields[key] = strings.TrimSpace(value)
+		fields[key] = decodePDFText(strings.TrimSpace(value))
 	}
 	return fields
 }
@@ -84,7 +85,7 @@ func (f infoFields) values() []string {
 func metadataFromInfo(info infoFields) metadata {
 	return metadata{
 		title:       cleanTitle(info.get("Title")),
-		authors:     cleanAuthors(textdoc.SplitAuthors(info.get("Author"))),
+		authors:     cleanAuthors([]string{info.get("Author")}),
 		description: cleanOptional(info.get("Subject")),
 		subjects:    splitSubjects(info.get("Keywords")),
 		modDate:     parsePDFDate(info.get("ModDate")),
@@ -200,6 +201,23 @@ func applyMetadata(md *parser.Metadata, meta metadata) {
 	if len(meta.identifiers) > 0 {
 		md.Identifiers = mergeIdentifierLists(md.Identifiers, meta.identifiers)
 	}
+}
+
+// metadataClaims turns the raw PDF Info/XMP metadata into a claim set. The
+// text fallback and applyMetadata precedence intentionally stay out of it.
+func metadataClaims(meta metadata) []claim.Set {
+	if meta.title == "" && len(meta.authors) == 0 {
+		return nil
+	}
+	return []claim.Set{{
+		Key:     "metadata",
+		Source:  claim.SourceMetadata,
+		Origin:  "pdf",
+		Title:   meta.title,
+		Authors: meta.authors,
+		Trust:   claim.TrustStrong,
+		Witness: claim.WitnessIndependent,
+	}}
 }
 
 // xmpNode is one element of the XMP XML tree.
@@ -407,7 +425,7 @@ func xmpIdentifiers(root *xmpNode) []identifier.Identifier {
 	for _, node := range allNodes(root) {
 		switch strings.ToLower(node.name.Local) {
 		case "identifier", "isbn", "doi":
-			values = append(values, node.content())
+			values = append(values, decodePDFText(node.content()))
 		}
 	}
 	return identifiersFromTexts(values)
@@ -497,7 +515,7 @@ func cleanTitle(value string) string {
 }
 
 func cleanValue(value string) string {
-	return textdoc.CleanValue(value)
+	return textdoc.CleanValue(decodePDFText(value))
 }
 
 // cleanOptional applies the placeholder and junk filters to a non-title
@@ -513,12 +531,13 @@ func cleanOptional(value string) string {
 func cleanAuthors(authors []string) []string {
 	var out []string
 	for _, author := range authors {
-		out = append(out, textdoc.SplitAuthors(author)...)
+		out = append(out, textdoc.SplitAuthors(decodePDFText(author))...)
 	}
 	return textdoc.FilterMetadataAuthors(out, "")
 }
 
 func splitSubjects(raw string) []string {
+	raw = decodePDFText(raw)
 	var out []string
 	seen := make(map[string]struct{})
 	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {

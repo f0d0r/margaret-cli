@@ -88,6 +88,77 @@ func TestTitlePageConventions(t *testing.T) {
 	}
 }
 
+func TestTitlePageMultiAuthorAndSubtitle(t *testing.T) {
+	cases := []struct {
+		name    string
+		head    string
+		title   string
+		authors []string
+	}{
+		{
+			name: "subtitle and author list",
+			head: "Better Builds with Maven\n" +
+				"The How-to Guide for Maven 2.0\n" +
+				"John Casey\nVincent Massol\nBrett Porter\nCarlos Sanchez\nJason van Zyl\n" +
+				"Better Builds with Maven. The How-to Guide for Maven 2.0\n" +
+				"© 2007 DevZuz\n",
+			title:   "Better Builds with Maven: The How-to Guide for Maven 2.0",
+			authors: []string{"John Casey", "Vincent Massol", "Brett Porter", "Carlos Sanchez", "Jason van Zyl"},
+		},
+		{
+			name:    "subtitle and one author",
+			head:    "The Great Novel\nThe Complete Story\nJane Doe\n\nBody text begins here.\n",
+			title:   "The Great Novel: The Complete Story",
+			authors: []string{"Jane Doe"},
+		},
+		{
+			name:    "two authors without subtitle",
+			head:    "The Great Novel\nJane Doe\nJohn Smith\n\nBody text begins here.\n",
+			title:   "The Great Novel",
+			authors: []string{"Jane Doe", "John Smith"},
+		},
+		{
+			name:    "edition line is not part of the title",
+			head:    "The Great Novel\nSecond Edition\nJane Doe\n\nBody text begins here.\n",
+			title:   "The Great Novel",
+			authors: []string{"Jane Doe"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			md := ExtractMetadata(c.head)
+			if md.Title != c.title {
+				t.Errorf("title = %q, want %q", md.Title, c.title)
+			}
+			if !slices.Equal(md.Authors, c.authors) {
+				t.Errorf("authors = %v, want %v", md.Authors, c.authors)
+			}
+		})
+	}
+}
+
+func TestExtractClaimsMultiAuthorTitlePage(t *testing.T) {
+	head := "Better Builds with Maven\n" +
+		"The How-to Guide for Maven 2.0\n" +
+		"John Casey\nVincent Massol\nBrett Porter\nCarlos Sanchez\nJason van Zyl\n" +
+		"© 2007 DevZuz\n"
+	sets := ExtractClaims(head)
+	for _, set := range sets {
+		if set.Key != "text:titlepage" {
+			continue
+		}
+		if set.Title != "Better Builds with Maven: The How-to Guide for Maven 2.0" {
+			t.Fatalf("title = %q", set.Title)
+		}
+		want := []string{"John Casey", "Vincent Massol", "Brett Porter", "Carlos Sanchez", "Jason van Zyl"}
+		if !slices.Equal(set.Authors, want) {
+			t.Fatalf("authors = %v, want %v", set.Authors, want)
+		}
+		return
+	}
+	t.Fatal("missing text:titlepage claim")
+}
+
 // TestTitlePageFallbackRespectsOtherSources pins that the fallback never
 // overrides YAML front matter or a Project Gutenberg preamble.
 func TestTitlePageFallbackRespectsOtherSources(t *testing.T) {

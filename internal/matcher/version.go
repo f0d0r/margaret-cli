@@ -8,7 +8,7 @@ import (
 
 // Version identifies the matching and scoring rules. Bump it whenever a
 // change can alter match results, so stored matches are reprocessed.
-const Version = "1"
+const Version = "7"
 
 // DatasetVersion returns the dump version string used to decide whether a
 // stored match is still current.

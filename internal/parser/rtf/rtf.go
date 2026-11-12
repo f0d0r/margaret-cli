@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/f0d0r/margaret-cli/internal/claim"
 	"github.com/f0d0r/margaret-cli/internal/langid"
 	"github.com/f0d0r/margaret-cli/internal/metaheur"
 	"github.com/f0d0r/margaret-cli/internal/parser"
@@ -122,8 +123,14 @@ func (p RtfParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	}
 
 	head := gate.Head()
-	md := textdoc.ExtractMetadata(head)
-	applyInfo(&md, decoder.infoValues())
+	textMD := textdoc.ExtractMetadata(head)
+	info := decoder.infoValues()
+	md := parser.Metadata{
+		Title:   textMD.Title,
+		Authors: textMD.Authors,
+		Claims:  append(infoClaims(info), textdoc.ExtractClaims(head)...),
+	}
+	applyInfo(&md, info)
 	detected, detectedOK := langid.DetectProse(head)
 	md.Languages = parser.ApplyDetectedLanguage(md.Languages, detected, detectedOK)
 	md.Hash = hex.EncodeToString(rawHash.Sum(nil))
@@ -162,6 +169,25 @@ func hasRTFHeader(b book.Blob, size int64) (bool, error) {
 // applyInfo overlays the RTF \info block on the text-derived metadata. The
 // field mapping follows Calibre: \subject is the description, \category the
 // subjects and \manager the publisher.
+// infoClaims turns the raw RTF \info title and author into a metadata claim
+// set, before applyInfo's text fallback can blur the provenance.
+func infoClaims(info map[string]string) []claim.Set {
+	title := infoValue(info["title"])
+	authors := infoAuthors(info["author"])
+	if title == "" && len(authors) == 0 {
+		return nil
+	}
+	return []claim.Set{{
+		Key:     "metadata",
+		Source:  claim.SourceMetadata,
+		Origin:  "rtf",
+		Title:   title,
+		Authors: authors,
+		Trust:   claim.TrustStrong,
+		Witness: claim.WitnessIndependent,
+	}}
+}
+
 func applyInfo(md *parser.Metadata, info map[string]string) {
 	if title := infoValue(info["title"]); title != "" {
 		md.Title = title
