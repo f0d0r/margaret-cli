@@ -123,11 +123,17 @@ func (p TxtParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	}
 
 	head := gate.Head()
-	md := textdoc.ExtractMetadata(head)
+	textMD := textdoc.ExtractMetadata(head)
+	md := parser.Metadata{
+		Title:   textMD.Title,
+		Authors: textMD.Authors,
+		Claims:  textdoc.ExtractClaims(head),
+	}
 	detected, detectedOK := langid.DetectProse(head)
 	md.Languages = parser.ApplyDetectedLanguage(md.Languages, detected, detectedOK)
 	md.Hash = hex.EncodeToString(rawHash.Sum(nil))
 	md.MinHash = fingerprint.MinHash
 	md.Identifiers = textdoc.TextIdentifiers(head)
+	md.Head = head
 	return md, nil
 }

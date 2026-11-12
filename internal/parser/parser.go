@@ -4,6 +4,7 @@ package parser
 import (
 	"context"
 
+	"github.com/f0d0r/margaret-cli/internal/claim"
 	"github.com/f0d0r/margaret-cli/internal/identifier"
 	"github.com/f0d0r/margaret-ebook-library/book"
 )
@@ -20,8 +21,12 @@ const (
 
 // Metadata holds the metadata extracted from an ebook file.
 type Metadata struct {
+	// Authors and Title are the legacy parser result. They are preserved
+	// verbatim as the legacy_* snapshot while the claim-based fields below are
+	// used for the resolved file metadata.
 	Authors     []string
 	Title       string
+	Claims      []claim.Set
 	Description string
 	Subjects    []string
 	Languages   []string
@@ -35,6 +40,9 @@ type Metadata struct {
 	SeriesIndex     string
 	Hash            string
 	MinHash         []uint64
+	// Head is the leading plain-text reading-order sample used for content
+	// confirmation. It is not persisted verbatim.
+	Head string
 }
 
 // Parser reads metadata from a single ebook. ebookData provides random access

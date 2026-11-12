@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/f0d0r/margaret-cli/internal/db"
 )
@@ -47,7 +46,7 @@ func WriteDuplicates(ctx context.Context, q *db.Queries, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := writeFile(path, data); err != nil {
 		return fmt.Errorf("write duplicate report: %w", err)
 	}
 	return nil

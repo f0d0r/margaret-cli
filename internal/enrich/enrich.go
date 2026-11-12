@@ -1,0 +1,647 @@
+package enrich
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/openlibrary"
+	"github.com/f0d0r/margaret-cli/internal/tx"
+)
+
+// Options configures the enrichment pass.
+type Options struct {
+	MatcherVersion string
+	DumpVersion    string
+	Force          bool
+	Now            time.Time
+	BatchSize      int
+	Progress       func(Progress)
+}
+
+// Progress reports the current enrichment phase and, while books are being
+// enriched, the per-book progress and the current book.
+type Progress struct {
+	Phase         string
+	Records       int64
+	BytesRead     int64
+	BytesTotal    int64
+	Done          int
+	Total         int
+	CurrentAuthor string
+	CurrentTitle  string
+}
+
+func reportProgress(opts Options, progress Progress) {
+	if opts.Progress != nil {
+		opts.Progress(progress)
+	}
+}
+
+// Result summarizes an enrichment run.
+type Result struct {
+	Targets         int
+	Enriched        int
+	MissingEditions int
+	MissingWorks    int
+	MissingAuthors  int
+}
+
+// Enrich applies OpenLibrary metadata to confirmed books. Raw scan metadata
+// is left untouched; enriched values go to the book_enrichment tables.
+func Enrich(ctx context.Context, dataset *openlibrary.Dataset, conn *sql.DB, q *db.Queries, opts Options) (*Result, error) {
+	if dataset == nil || !dataset.Usable() {
+		return nil, errors.New("no usable OpenLibrary dataset")
+	}
+	if conn == nil {
+		return nil, errors.New("nil database")
+	}
+	if q == nil {
+		return nil, errors.New("nil queries")
+	}
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	if opts.BatchSize <= 0 {
+		opts.BatchSize = 500
+	}
+	if err := cleanupNonConfirmed(ctx, conn, q); err != nil {
+		return nil, err
+	}
+	force := int64(0)
+	if opts.Force {
+		force = 1
+	}
+
+	targets, err := q.ListBookEnrichmentTargets(ctx, db.ListBookEnrichmentTargetsParams{
+		Force:          force,
+		MatcherVersion: opts.MatcherVersion,
+		DumpVersion:    opts.DumpVersion,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list enrichment targets: %w", err)
+	}
+	result := &Result{Targets: len(targets)}
+	if len(targets) == 0 {
+		return result, nil
+	}
+
+	editionKeys, workKeys, authorKeys := targetKeys(targets)
+	var editions map[string]*editionRecord
+	var works map[string]*workRecord
+	var authors map[string]*authorRecord
+
+	if dataset.EditionsFromCombined() {
+		reportProgress(opts, Progress{Phase: "reading editions"})
+		editions, works, err = scanCombinedEditionsWorks(ctx, dataset.Editions, editionKeys, workKeys, opts)
+		if err != nil {
+			return nil, err
+		}
+		fullAuthors := copySet(authorKeys)
+		for key := range authorKeysFromEditions(editions, fullAuthors) {
+			fullAuthors[key] = struct{}{}
+		}
+		for key := range authorKeysFromWorks(works, fullAuthors) {
+			fullAuthors[key] = struct{}{}
+		}
+		if len(fullAuthors) > 0 {
+			reportProgress(opts, Progress{Phase: "reading authors"})
+			authors, err = scanCombinedAuthors(ctx, dataset.Editions, fullAuthors, opts)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		reportProgress(opts, Progress{Phase: "reading editions"})
+		editions, err = scanEditions(ctx, dataset.Editions, editionKeys, opts)
+		if err != nil {
+			return nil, err
+		}
+		if dataset.Works != nil {
+			reportProgress(opts, Progress{Phase: "reading works"})
+			works, err = scanWorks(ctx, dataset.Works, workKeys, opts)
+			if err != nil {
+				return nil, err
+			}
+		}
+		allAuthors := copySet(authorKeys)
+		for key := range authorKeysFromEditions(editions, allAuthors) {
+			allAuthors[key] = struct{}{}
+		}
+		for key := range authorKeysFromWorks(works, allAuthors) {
+			allAuthors[key] = struct{}{}
+		}
+		if dataset.Authors != nil && len(allAuthors) > 0 {
+			reportProgress(opts, Progress{Phase: "reading authors"})
+			authors, err = scanAuthors(ctx, dataset.Authors, allAuthors, opts)
+			if err != nil {
+				return nil, err
+			}
+		}
+		authorKeys = allAuthors
+	}
+	for key := range authorKeys {
+		if _, ok := authors[key]; !ok {
+			result.MissingAuthors++
+		}
+	}
+	if editions == nil {
+		editions = map[string]*editionRecord{}
+	}
+	if works == nil {
+		works = map[string]*workRecord{}
+	}
+
+	enrichments := make([]*bookEnrichment, 0, len(targets))
+	reportProgress(opts, Progress{Phase: "enriching books", Total: len(targets)})
+	for processed, target := range targets {
+		edition := editions[target.EditionKey]
+		if edition == nil {
+			result.MissingEditions++
+		} else {
+			work := works[target.WorkKey]
+			if work == nil {
+				result.MissingWorks++
+			}
+			enrichment := buildEnrichment(
+				target.BookID, edition, work, authors,
+				opts.MatcherVersion, opts.DumpVersion, opts.Now.Unix(),
+			)
+			if enrichment.WorkKey == "" {
+				enrichment.WorkKey = target.WorkKey
+			}
+			enrichments = append(enrichments, enrichment)
+		}
+		reportProgress(opts, Progress{
+			Phase:         "enriching books",
+			Done:          processed + 1,
+			Total:         len(targets),
+			CurrentAuthor: target.Author,
+			CurrentTitle:  target.Title,
+		})
+	}
+	if err := persist(ctx, conn, q, enrichments, opts.BatchSize); err != nil {
+		return nil, err
+	}
+	result.Enriched = len(enrichments)
+	return result, nil
+}
+
+func cleanupNonConfirmed(ctx context.Context, conn *sql.DB, q *db.Queries) error {
+	err := tx.WithTx(ctx, conn, q, func(txCtx context.Context) error {
+		txq := tx.QueryFrom(txCtx, q)
+		if err := txq.DeleteNonConfirmedEnrichmentSubjects(txCtx); err != nil {
+			return err
+		}
+		if err := txq.DeleteNonConfirmedEnrichmentLanguages(txCtx); err != nil {
+			return err
+		}
+		if err := txq.DeleteNonConfirmedEnrichmentPublications(txCtx); err != nil {
+			return err
+		}
+		if err := txq.DeleteNonConfirmedEnrichmentIdentifiers(txCtx); err != nil {
+			return err
+		}
+		if err := txq.DeleteNonConfirmedEnrichmentAuthors(txCtx); err != nil {
+			return err
+		}
+		return txq.DeleteNonConfirmedEnrichment(txCtx)
+	})
+	if err != nil {
+		return fmt.Errorf("cleanup non-confirmed enrichment: %w", err)
+	}
+	return nil
+}
+
+func targetKeys(targets []db.ListBookEnrichmentTargetsRow) (map[string]struct{}, map[string]struct{}, map[string]struct{}) {
+	editionKeys := make(map[string]struct{})
+	workKeys := make(map[string]struct{})
+	authorKeys := make(map[string]struct{})
+	for _, target := range targets {
+		if target.EditionKey != "" {
+			editionKeys[target.EditionKey] = struct{}{}
+		}
+		if target.WorkKey != "" {
+			workKeys[target.WorkKey] = struct{}{}
+		}
+		for _, key := range decodeStringList(target.AuthorKeys) {
+			authorKeys[key] = struct{}{}
+		}
+	}
+	return editionKeys, workKeys, authorKeys
+}
+
+func scanEditions(ctx context.Context, file *openlibrary.File, keys map[string]struct{}, opts Options) (map[string]*editionRecord, error) {
+	out := make(map[string]*editionRecord, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	err := scanFile(ctx, file, "reading editions", opts, func(row openlibrary.Row) bool {
+		if row.Type != "/type/edition" {
+			return false
+		}
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			return false
+		}
+		var record editionRecord
+		if json.Unmarshal(row.Data, &record) != nil {
+			return false
+		}
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				return false
+			}
+			key = record.Key
+		}
+		record.Key = key
+		out[key] = &record
+		return len(out) == len(keys)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan editions: %w", err)
+	}
+	return out, nil
+}
+
+func scanWorks(ctx context.Context, file *openlibrary.File, keys map[string]struct{}, opts Options) (map[string]*workRecord, error) {
+	out := make(map[string]*workRecord, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	err := scanFile(ctx, file, "reading works", opts, func(row openlibrary.Row) bool {
+		if row.Type != "/type/work" {
+			return false
+		}
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			return false
+		}
+		var record workRecord
+		if json.Unmarshal(row.Data, &record) != nil {
+			return false
+		}
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				return false
+			}
+			key = record.Key
+		}
+		record.Key = key
+		out[key] = &record
+		return len(out) == len(keys)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan works: %w", err)
+	}
+	return out, nil
+}
+
+func scanAuthors(ctx context.Context, file *openlibrary.File, keys map[string]struct{}, opts Options) (map[string]*authorRecord, error) {
+	out := make(map[string]*authorRecord, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	err := scanFile(ctx, file, "reading authors", opts, func(row openlibrary.Row) bool {
+		if row.Type != "/type/author" {
+			return false
+		}
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			return false
+		}
+		var record authorRecord
+		if json.Unmarshal(row.Data, &record) != nil {
+			return false
+		}
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				return false
+			}
+			key = record.Key
+		}
+		record.Key = key
+		out[key] = &record
+		return len(out) == len(keys)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan authors: %w", err)
+	}
+	return out, nil
+}
+
+func scanCombinedEditionsWorks(ctx context.Context, file *openlibrary.File, editionKeys, workKeys map[string]struct{}, opts Options) (map[string]*editionRecord, map[string]*workRecord, error) {
+	editions := make(map[string]*editionRecord, len(editionKeys))
+	works := make(map[string]*workRecord, len(workKeys))
+	err := scanFile(ctx, file, "reading editions", opts, func(row openlibrary.Row) bool {
+		switch row.Type {
+		case "/type/edition":
+			key := row.Key
+			if _, ok := editionKeys[key]; !ok {
+				break
+			}
+			var record editionRecord
+			if json.Unmarshal(row.Data, &record) != nil {
+				return false
+			}
+			if record.Key != "" {
+				if _, ok := editionKeys[record.Key]; !ok {
+					return false
+				}
+				key = record.Key
+			}
+			record.Key = key
+			editions[key] = &record
+		case "/type/work":
+			key := row.Key
+			if _, ok := workKeys[key]; !ok {
+				break
+			}
+			var record workRecord
+			if json.Unmarshal(row.Data, &record) != nil {
+				return false
+			}
+			if record.Key != "" {
+				if _, ok := workKeys[record.Key]; !ok {
+					return false
+				}
+				key = record.Key
+			}
+			record.Key = key
+			works[key] = &record
+		}
+		return len(editions) == len(editionKeys) && len(works) == len(workKeys)
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan combined dump: %w", err)
+	}
+	return editions, works, nil
+}
+
+func scanCombinedAuthors(ctx context.Context, file *openlibrary.File, authorKeys map[string]struct{}, opts Options) (map[string]*authorRecord, error) {
+	authors := make(map[string]*authorRecord, len(authorKeys))
+	err := scanFile(ctx, file, "reading authors", opts, func(row openlibrary.Row) bool {
+		if row.Type != "/type/author" {
+			return false
+		}
+		key := row.Key
+		if _, ok := authorKeys[key]; !ok {
+			return false
+		}
+		var record authorRecord
+		if json.Unmarshal(row.Data, &record) != nil {
+			return false
+		}
+		if record.Key != "" {
+			if _, ok := authorKeys[record.Key]; !ok {
+				return false
+			}
+			key = record.Key
+		}
+		record.Key = key
+		authors[key] = &record
+		return len(authors) == len(authorKeys)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan authors: %w", err)
+	}
+	return authors, nil
+}
+
+func scanFile(ctx context.Context, file *openlibrary.File, phase string, opts Options, handle func(openlibrary.Row) bool) error {
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	totalBytes := openlibrary.DumpSize(file)
+	scanner := openlibrary.NewDumpScanner(reader)
+	var records int64
+	lastProgress := time.Now()
+	report := func(final bool) {
+		read := counter.Load()
+		if final && totalBytes > 0 {
+			read = totalBytes
+		}
+		reportProgress(opts, Progress{
+			Phase:      phase,
+			Records:    records,
+			BytesRead:  read,
+			BytesTotal: totalBytes,
+		})
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			report(true)
+			return nil
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		records++
+		if handle(row) {
+			report(true)
+			return nil
+		}
+		if time.Since(lastProgress) >= 250*time.Millisecond {
+			report(false)
+			lastProgress = time.Now()
+		}
+	}
+}
+
+func authorKeysFromEditions(editions map[string]*editionRecord, known map[string]struct{}) map[string]struct{} {
+	extra := make(map[string]struct{})
+	for _, edition := range editions {
+		for _, author := range edition.Authors {
+			key := author.authorKey()
+			if key == "" {
+				continue
+			}
+			if _, ok := known[key]; !ok {
+				extra[key] = struct{}{}
+			}
+		}
+	}
+	return extra
+}
+
+func authorKeysFromWorks(works map[string]*workRecord, known map[string]struct{}) map[string]struct{} {
+	extra := make(map[string]struct{})
+	for _, work := range works {
+		for _, author := range work.Authors {
+			key := author.authorKey()
+			if key == "" {
+				continue
+			}
+			if _, ok := known[key]; !ok {
+				extra[key] = struct{}{}
+			}
+		}
+	}
+	return extra
+}
+
+func copySet(values map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for value := range values {
+		out[value] = struct{}{}
+	}
+	return out
+}
+
+func decodeStringList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil
+	}
+	return values
+}
+
+func persist(ctx context.Context, conn *sql.DB, q *db.Queries, enrichments []*bookEnrichment, batchSize int) error {
+	for start := 0; start < len(enrichments); start += batchSize {
+		end := start + batchSize
+		if end > len(enrichments) {
+			end = len(enrichments)
+		}
+		batch := enrichments[start:end]
+		err := tx.WithTx(ctx, conn, q, func(txCtx context.Context) error {
+			txq := tx.QueryFrom(txCtx, q)
+			for _, enrichment := range batch {
+				if err := writeEnrichment(txCtx, txq, enrichment); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("persist enrichment: %w", err)
+		}
+	}
+	return nil
+}
+
+func writeEnrichment(ctx context.Context, q *db.Queries, enrichment *bookEnrichment) error {
+	bookID := enrichment.BookID
+	if err := q.DeleteBookEnrichmentSubjectsByBookID(ctx, bookID); err != nil {
+		return fmt.Errorf("delete enrichment subjects %d: %w", bookID, err)
+	}
+	if err := q.DeleteBookEnrichmentLanguagesByBookID(ctx, bookID); err != nil {
+		return fmt.Errorf("delete enrichment languages %d: %w", bookID, err)
+	}
+	if err := q.DeleteBookEnrichmentPublicationsByBookID(ctx, bookID); err != nil {
+		return fmt.Errorf("delete enrichment publications %d: %w", bookID, err)
+	}
+	if err := q.DeleteBookEnrichmentIdentifiersByBookID(ctx, bookID); err != nil {
+		return fmt.Errorf("delete enrichment identifiers %d: %w", bookID, err)
+	}
+	if err := q.DeleteBookEnrichmentAuthorsByBookID(ctx, bookID); err != nil {
+		return fmt.Errorf("delete enrichment authors %d: %w", bookID, err)
+	}
+	if err := q.DeleteBookEnrichmentByBookID(ctx, bookID); err != nil {
+		return fmt.Errorf("delete enrichment %d: %w", bookID, err)
+	}
+	if err := q.UpsertBookEnrichment(ctx, db.UpsertBookEnrichmentParams{
+		BookID:           bookID,
+		EditionKey:       enrichment.EditionKey,
+		WorkKey:          enrichment.WorkKey,
+		Source:           enrichment.Source,
+		Title:            enrichment.Title,
+		Subtitle:         enrichment.Subtitle,
+		Description:      enrichment.Description,
+		Series:           enrichment.Series,
+		SeriesIndex:      enrichment.SeriesIndex,
+		FirstPublishDate: enrichment.FirstPublishDate,
+		MatcherVersion:   enrichment.MatcherVersion,
+		DumpVersion:      enrichment.DumpVersion,
+		EnrichedAt:       enrichment.EnrichedAt,
+	}); err != nil {
+		return fmt.Errorf("upsert enrichment %d: %w", bookID, err)
+	}
+	for i, subject := range enrichment.Subjects {
+		if err := q.CreateBookEnrichmentSubject(ctx, db.CreateBookEnrichmentSubjectParams{
+			BookID:  bookID,
+			Name:    subject,
+			Ordinal: int64(i),
+		}); err != nil {
+			return fmt.Errorf("create enrichment subject %d: %w", bookID, err)
+		}
+	}
+	for i, language := range enrichment.Languages {
+		if err := q.CreateBookEnrichmentLanguage(ctx, db.CreateBookEnrichmentLanguageParams{
+			BookID:  bookID,
+			Name:    language,
+			Ordinal: int64(i),
+		}); err != nil {
+			return fmt.Errorf("create enrichment language %d: %w", bookID, err)
+		}
+	}
+	for i, publication := range enrichment.Publications {
+		if err := q.CreateBookEnrichmentPublication(ctx, db.CreateBookEnrichmentPublicationParams{
+			BookID:          bookID,
+			Publisher:       publication.Publisher,
+			PublicationDate: publication.PublicationDate,
+			Ordinal:         int64(i),
+		}); err != nil {
+			return fmt.Errorf("create enrichment publication %d: %w", bookID, err)
+		}
+	}
+	for i, identifier := range enrichment.Identifiers {
+		if err := q.CreateBookEnrichmentIdentifier(ctx, db.CreateBookEnrichmentIdentifierParams{
+			BookID:  bookID,
+			Scheme:  identifier.Scheme,
+			Value:   identifier.Value,
+			Source:  identifier.Source,
+			Ordinal: int64(i),
+		}); err != nil {
+			return fmt.Errorf("create enrichment identifier %d: %w", bookID, err)
+		}
+	}
+	for i, author := range enrichment.Authors {
+		alternate, err := jsonStringList(author.AlternateNames)
+		if err != nil {
+			return fmt.Errorf("encode alternate names %d: %w", bookID, err)
+		}
+		if err := q.CreateBookEnrichmentAuthor(ctx, db.CreateBookEnrichmentAuthorParams{
+			BookID:         bookID,
+			AuthorKey:      author.Key,
+			Name:           author.Name,
+			AlternateNames: alternate,
+			BirthDate:      author.BirthDate,
+			DeathDate:      author.DeathDate,
+			Bio:            author.Bio,
+			Ordinal:        int64(i),
+		}); err != nil {
+			return fmt.Errorf("create enrichment author %d: %w", bookID, err)
+		}
+	}
+	return nil
+}
+
+func jsonStringList(values []string) (string, error) {
+	if len(values) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}

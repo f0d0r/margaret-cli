@@ -81,12 +81,12 @@ func init() {
 	scanCmd.Flags().Int64Var(&spoolMemLimit, "spool-mem-limit", 0, "max bytes per member buffered in memory before spilling to a temp file (0 = 64 MiB default)")
 	scanCmd.Flags().Int64Var(&minDocSize, "min-doc-size", processor.DefaultMinDocumentSize, "minimum bytes for a document-format file (txt, rtf, pdf) and its extracted text to be treated as a book (0 = default, negative = disable)")
 	scanCmd.Flags().StringVar(&pdfToolsDir, "pdf-tools-dir", "", "directory containing poppler's pdftotext and pdfinfo (default: search PATH)")
-	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", "failures.json", "write a JSON report of the failed items to this file")
-	scanCmd.Flags().StringVar(&skippedOutPath, "skipped-out", "skipped.json", "write a JSON report of the skipped items to this file")
+	scanCmd.Flags().StringVar(&failuresOutPath, "failures-out", report.DefaultPath("failures.json"), "write a JSON report of the failed items to this file")
+	scanCmd.Flags().StringVar(&skippedOutPath, "skipped-out", report.DefaultPath("skipped.json"), "write a JSON report of the skipped items to this file")
 	scanCmd.Flags().StringVar(&ftpUser, "ftp-user", "", "FTP username (default: anonymous)")
 	scanCmd.Flags().StringVar(&ftpPass, "ftp-pass", "", "FTP password (default: anonymous)")
-	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
-	scanCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
+	scanCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", report.DefaultPath("duplicates.json"), "write a JSON report of the duplicate books to this file")
+	scanCmd.Flags().StringVar(&booksOut, "books-out", report.DefaultPath("books.json"), "write a JSON report of the grouped books to this file")
 	scanCmd.Flags().BoolVar(&reportEnabled, "report", false, "write the books and duplicates JSON reports (failures and skipped reports are always written)")
 	scanCmd.Flags().BoolVar(&freshFlag, "fresh", false, "delete existing scan data and start from a clean slate")
 	scanCmd.Flags().BoolVar(&resumeFlag, "resume", false, "keep existing scan data and only process new or changed files")
@@ -228,6 +228,11 @@ func runScan(ctx context.Context, root string, cfg processor.ScanProcessorConfig
 
 	err = proc.Process(ctx)
 	canceled := ctx.Err() != nil
+	if !canceled && err == nil {
+		if rerr := processor.ResolveStaleClaims(ctx, conn, q); rerr != nil {
+			err = fmt.Errorf("resolve stale title/author claims: %w", rerr)
+		}
+	}
 	if !canceled && err == nil {
 		// Persist the consensus washed title, cleaned authors and merged
 		// metadata so that books, book_* (and books_fts via triggers) are

@@ -43,6 +43,7 @@ type progressBar struct {
 	spin      int
 	active    bool
 	canceling bool
+	percent   bool
 	names     []string
 }
 
@@ -61,6 +62,49 @@ func newProgressBar() *progressBar {
 		cols:     cols,
 		throttle: 50 * time.Millisecond,
 	}
+}
+
+// update sets the phase description, counters and current item in one call.
+// It is used by the enrich progress reporter, whose phases do not share a
+// single monotonically growing maximum.
+func (b *progressBar) update(desc string, done, total int64, current string, active bool) {
+	b.updateMode(desc, done, total, current, active, false)
+}
+
+// updatePercent is update with a percentage display instead of cur/max.
+func (b *progressBar) updatePercent(desc string, done, total int64, current string, active bool) {
+	b.updateMode(desc, done, total, current, active, true)
+}
+
+func (b *progressBar) updateMode(desc string, done, total int64, current string, active, percent bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.done {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if done < 0 {
+		done = 0
+	}
+	if total > 0 && done > total {
+		done = total
+	}
+	if total == 0 {
+		done = 0
+	}
+	b.desc = desc
+	b.cur = done
+	b.max = total
+	b.active = active
+	b.percent = percent
+	if current == "" {
+		b.names = b.names[:0]
+	} else {
+		b.names = append(b.names[:0], current)
+	}
+	b.draw()
 }
 
 // setMax updates the bar's maximum. It never shrinks, and it never drops below
@@ -164,9 +208,25 @@ func (b *progressBar) render() {
 		cursor = rune(spinnerFrames[b.spin%len(spinnerFrames)])
 		b.spin++
 	}
-	bar := strings.Repeat("█", fill) + strings.Repeat("░", b.width-fill)
-
-	line := fmt.Sprintf("%s %c [%s] %d/%d", b.desc, cursor, bar, b.cur, b.max)
+	line := b.desc
+	if b.active || b.max > 0 {
+		line += " " + string(cursor)
+	}
+	if b.max > 0 {
+		bar := strings.Repeat("█", fill) + strings.Repeat("░", b.width-fill)
+		if b.percent {
+			percent := b.cur * 100 / b.max
+			if percent < 0 {
+				percent = 0
+			}
+			if percent > 100 {
+				percent = 100
+			}
+			line += fmt.Sprintf(" [%s] %d%%", bar, percent)
+		} else {
+			line += fmt.Sprintf(" [%s] %d/%d", bar, b.cur, b.max)
+		}
+	}
 	if len(b.names) > 0 {
 		line += "  " + b.names[len(b.names)-1]
 	}

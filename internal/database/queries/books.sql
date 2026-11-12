@@ -4,6 +4,34 @@ INSERT INTO books (title) VALUES (?) RETURNING id;
 -- name: CountBooks :one
 SELECT count(*) FROM books;
 
+-- name: ListBooksForMatching :many
+SELECT id, title FROM books ORDER BY id;
+
+-- name: ListBookAuthorsForMatching :many
+SELECT ba.book_id, a.name
+FROM book_authors ba
+JOIN authors a ON a.id = ba.author_id
+ORDER BY ba.book_id, a.name;
+
+-- name: ListBookIdentifiersForMatching :many
+SELECT book_id, scheme, value, source
+FROM book_identifiers
+ORDER BY book_id, ordinal;
+
+-- name: CountBooksWithISBN :one
+SELECT
+    CAST(count(DISTINCT book_id) AS INTEGER) AS books,
+    CAST(count(DISTINCT value) AS INTEGER) AS isbns
+FROM (
+    SELECT book_id, value FROM book_identifiers
+    WHERE upper(scheme) IN ('ISBN', 'ISBN-10', 'ISBN-13')
+    UNION
+    SELECT bbf.book_id AS book_id, bfi.value AS value
+    FROM book_file_identifiers bfi
+    JOIN book_book_files bbf ON bbf.book_file_id = bfi.book_file_id
+    WHERE upper(bfi.scheme) IN ('ISBN', 'ISBN-10', 'ISBN-13')
+);
+
 -- name: UpdateBookMetadata :exec
 UPDATE books
 SET title = ?,
@@ -32,6 +60,12 @@ SELECT
     bf.hash AS file_hash,
     bf.path AS file_path,
     bf.title AS file_title,
+    bf.legacy_title AS file_legacy_title,
+    bf.title_status AS file_title_status,
+    bf.author_status AS file_author_status,
+    bf.title_set AS file_title_set,
+    bf.author_set AS file_author_set,
+    bf.title_window AS file_title_window,
     CAST(IFNULL(GROUP_CONCAT(a.name, CHAR(31)), '') AS TEXT) AS file_authors
 FROM book_book_files bbf
 JOIN book_files bf ON bf.id = bbf.book_file_id
@@ -104,10 +138,20 @@ WHERE l.band_idx = ? AND l.bucket_hash = ?;
 SELECT
     b.id AS book_id,
     b.title AS book_title,
+    b.title_status AS book_title_status,
+    b.author_status AS book_author_status,
+    b.grouping_suspect AS book_grouping_suspect,
+    b.grouping_reason AS book_grouping_reason,
     bf.id AS file_id,
     bf.path AS file_path,
     bf.hash AS file_hash,
     bf.title AS file_title,
+    bf.legacy_title AS file_legacy_title,
+    bf.title_status AS file_title_status,
+    bf.author_status AS file_author_status,
+    bf.title_set AS file_title_set,
+    bf.author_set AS file_author_set,
+    bf.title_window AS file_title_window,
     bf.description AS file_description,
     bf.publisher AS file_publisher,
     bf.publication_date AS file_publication_date,
@@ -137,6 +181,16 @@ SELECT
 FROM book_file_languages bfl
 JOIN book_book_files bbf ON bbf.book_file_id = bfl.book_file_id
 ORDER BY bbf.book_id, bbf.book_file_id, bfl.ordinal, bfl.name;
+
+-- name: ListBookFileLegacyAuthorsWithBook :many
+SELECT
+    bbf.book_id AS book_id,
+    bbf.book_file_id AS book_file_id,
+    l.name AS name,
+    l.ordinal AS ordinal
+FROM book_file_legacy_authors l
+JOIN book_book_files bbf ON bbf.book_file_id = l.book_file_id
+ORDER BY bbf.book_id, bbf.book_file_id, l.ordinal, l.name;
 
 -- name: ListBookFileIdentifiersWithBook :many
 SELECT
@@ -171,6 +225,55 @@ SELECT scheme, value, source FROM book_identifiers WHERE book_id = ? ORDER BY or
 
 -- name: ListBookPublicationsByBookID :many
 SELECT publisher, publication_date FROM book_publications WHERE book_id = ? ORDER BY ordinal, publisher, publication_date;
+
+-- name: UpdateBookClaimResolution :exec
+UPDATE books
+SET title_status = ?,
+    author_status = ?,
+    grouping_suspect = ?,
+    grouping_reason = ?,
+    book_resolve_version = ?
+WHERE id = ?;
+
+-- name: DeleteBookClaimCandidatesByBookID :exec
+DELETE FROM book_claim_candidates WHERE book_id = ?;
+
+-- name: CreateBookClaimCandidate :exec
+INSERT INTO book_claim_candidates (
+    book_id,
+    field,
+    rank,
+    value,
+    authors,
+    status,
+    disposition,
+    reason,
+    supporting_witnesses,
+    strict_supporting_claims,
+    source_groups,
+    independent_witnesses,
+    attested,
+    suspicious,
+    attestation_level,
+    max_attestation,
+    found_in,
+    residual,
+    use_for_matching,
+    use_for_agreement,
+    evidence
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: ListBookClaimCandidatesByBookID :many
+SELECT *
+FROM book_claim_candidates
+WHERE book_id = ?
+ORDER BY field, rank;
+
+-- name: ListBookClaimCandidates :many
+SELECT *
+FROM book_claim_candidates
+ORDER BY book_id, field, rank;
 
 -- name: ListBookFileDuplicatesWithBook :many
 SELECT

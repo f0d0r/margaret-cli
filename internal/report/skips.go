@@ -3,7 +3,6 @@ package report
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/f0d0r/margaret-cli/internal/processor"
@@ -27,7 +26,7 @@ func WriteSkips(skips []processor.Skip, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	if err := writeFile(path, data); err != nil {
 		return fmt.Errorf("write skipped report: %w", err)
 	}
 	return nil

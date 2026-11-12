@@ -336,15 +336,27 @@ var expectedSchemaTables = []string{
 	"authors_fts_idx",
 	"book_authors",
 	"book_book_files",
+	"book_claim_candidates",
+	"book_conflicts",
+	"book_enrichment",
+	"book_enrichment_authors",
+	"book_enrichment_identifiers",
+	"book_enrichment_languages",
+	"book_enrichment_publications",
+	"book_enrichment_subjects",
 	"book_file_authors",
+	"book_file_claims",
 	"book_file_duplicates",
 	"book_file_identifiers",
 	"book_file_languages",
+	"book_file_legacy_authors",
 	"book_file_lsh_buckets",
 	"book_file_subjects",
 	"book_files",
 	"book_identifiers",
 	"book_languages",
+	"book_match_candidates",
+	"book_matches",
 	"book_publications",
 	"book_subjects",
 	"books",
@@ -422,6 +434,10 @@ func TestClearCoversEntireSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	peerID, err := q.CreateBook(ctx, "Moby Dick (copy)")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := q.CreateBookBookFile(ctx, db.CreateBookBookFileParams{
 		BookID:     bookID,
 		BookFileID: fileID,
@@ -458,6 +474,16 @@ func TestClearCoversEntireSchema(t *testing.T) {
 		{`INSERT INTO book_languages (book_id, name) VALUES (?, ?)`, []any{bookID, "en"}},
 		{`INSERT INTO book_identifiers (book_id, scheme, value) VALUES (?, ?, ?)`, []any{bookID, "ISBN", "9780000000000"}},
 		{`INSERT INTO book_publications (book_id, publisher, publication_date) VALUES (?, ?, ?)`, []any{bookID, "Test Press", "2020"}},
+		{`INSERT INTO book_matches (book_id, status, confidence, matched_at) VALUES (?, ?, ?, ?)`, []any{bookID, "confirmed", 0.95, 1}},
+		{`INSERT INTO book_match_candidates (book_id, rank, edition_key, created_at) VALUES (?, ?, ?, ?)`, []any{bookID, 1, "/books/OL1M", 1}},
+		{`INSERT INTO book_conflicts (book_id, peer_book_id, reason, score, created_at) VALUES (?, ?, ?, ?, ?)`, []any{bookID, peerID, "metadata_content_mismatch", 0.1, 1}},
+		{`INSERT INTO book_conflicts (book_id, peer_book_id, reason, score, created_at) VALUES (?, ?, ?, ?, ?)`, []any{peerID, bookID, "metadata_content_mismatch", 0.1, 1}},
+		{`INSERT INTO book_enrichment (book_id, edition_key, work_key, enriched_at) VALUES (?, ?, ?, ?)`, []any{bookID, "/books/OL1M", "/works/OL1W", 1}},
+		{`INSERT INTO book_enrichment_subjects (book_id, name) VALUES (?, ?)`, []any{bookID, "Fantasy"}},
+		{`INSERT INTO book_enrichment_languages (book_id, name) VALUES (?, ?)`, []any{bookID, "en"}},
+		{`INSERT INTO book_enrichment_publications (book_id, publisher, publication_date) VALUES (?, ?, ?)`, []any{bookID, "Test Press", "2020"}},
+		{`INSERT INTO book_enrichment_identifiers (book_id, scheme, value) VALUES (?, ?, ?)`, []any{bookID, "ISBN", "9780306406157"}},
+		{`INSERT INTO book_enrichment_authors (book_id, author_key, name) VALUES (?, ?, ?)`, []any{bookID, "/authors/OL1A", "Test Author"}},
 	}
 	for _, insert := range metadataInserts {
 		if _, err := conn.Exec(insert.query, insert.args...); err != nil {
@@ -480,8 +506,17 @@ func TestClearCoversEntireSchema(t *testing.T) {
 		"book_file_subjects",
 		"book_book_files",
 		"book_authors",
+		"book_conflicts",
 		"book_identifiers",
 		"book_languages",
+		"book_match_candidates",
+		"book_matches",
+		"book_enrichment",
+		"book_enrichment_authors",
+		"book_enrichment_identifiers",
+		"book_enrichment_languages",
+		"book_enrichment_publications",
+		"book_enrichment_subjects",
 		"book_publications",
 		"book_subjects",
 		"book_file_lsh_buckets",

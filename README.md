@@ -177,14 +177,14 @@ without hints still works.
 | `--pdf-tools-dir` | `string` | `""` | Directory containing Poppler's `pdftotext` and `pdfinfo` (default: search `PATH`). |
 | `--ftp-user` | `string` | `anonymous` | FTP username for `ftp://` scans. |
 | `--ftp-pass` | `string` | `anonymous` | FTP password for `ftp://` scans. |
-| `--failures-out` | `string` | `failures.json` | Path to write a JSON report of the failed items. |
-| `--skipped-out` | `string` | `skipped.json` | Path to write a JSON report of the skipped items. |
-| `--duplicates-out` | `string` | `duplicates.json` | Path to write a JSON report of the duplicate books. |
-| `--books-out` | `string` | `books.json` | Path to write a JSON report of the grouped books. |
+| `--failures-out` | `string` | `reports/failures.json` | Path to write a JSON report of the failed items. |
+| `--skipped-out` | `string` | `reports/skipped.json` | Path to write a JSON report of the skipped items. |
+| `--duplicates-out` | `string` | `reports/duplicates.json` | Path to write a JSON report of the duplicate books. |
+| `--books-out` | `string` | `reports/books.json` | Path to write a JSON report of the grouped books. |
 | `--report` | `bool` | `false` | Write the books and duplicates JSON reports (failures and skipped reports are always written). |
 | `--db` | `string` | `margaret.db` | SQLite database file to use. |
 | `--json` | `bool` | `false` | Write search results in JSON format (search only). |
-| `--json-out` | `string` | `search.json` | Path to write the JSON search results (search only). |
+| `--json-out` | `string` | `reports/search.json` | Path to write the JSON search results (search only). |
 | `--author` | `bool` | `false` | Search authors instead of both titles and authors (search only). |
 | `--title` | `bool` | `false` | Search titles instead of both titles and authors (search only). |
 | `--limit` | `int` | `0` | Limit the number of search results (`0` = unlimited, search only). |
@@ -264,12 +264,12 @@ standard `PATH`.
 ### `--failures-out`
 
 The path where the JSON report of failed items is written. Defaults to
-`failures.json` in the current directory.
+`reports/failures.json`.
 
 ### `--skipped-out`
 
 The path where the JSON report of skipped items is written. Defaults to
-`skipped.json` in the current directory. It lists the files that were passed
+`reports/skipped.json`. It lists the files that were passed
 over without being parsed because they are not books, are below
 `--min-doc-size`, or cannot be processed (for example PDFs while Poppler is
 unavailable). Files skipped by a resume run because they were already
@@ -279,7 +279,7 @@ They are counted separately as already processed.
 ### `--duplicates-out`
 
 The path where the JSON report of duplicate books is written. Defaults to
-`duplicates.json` in the current directory. Each entry lists the original book
+`reports/duplicates.json`. Each entry lists the original book
 (`authors`, `title`, `path`) and every other path that holds the same content
 (`duplicates`). When no duplicates are found the file is not created. Only
 written when `--report` is set.
@@ -287,7 +287,7 @@ written when `--report` is set.
 ### `--books-out`
 
 The path where the JSON report of the grouped books is written. Defaults to
-`books.json` in the current directory. See
+`reports/books.json`. See
 [How books are grouped and described](#how-books-are-grouped-and-described).
 When no books were found the file is not created. Only written when
 `--report` is set.
@@ -562,6 +562,14 @@ its own metadata:
 
 When no books were found the file is not created.
 
+File entries also carry the claim provenance: `legacy` (the pre-claim title
+and author list), `title_status`/`author_status`, `title_set`/`author_set`
+and the full `claims` object with source, trust, witness, junk, attested and
+attestation fields. Book entries carry the synthesized
+`title_status`/`author_status`, `title_candidates`/`author_candidates`,
+`grouping_suspect` and the runtime-only `legacy_book` object used for the
+transition diff.
+
 ---
 
 ## How books are grouped and described
@@ -678,6 +686,26 @@ comparisons below use normalized keys:
   `english`, and the meaningless bases `und`, `mul`, `zxx` and `mis` are
   dropped. The result is the union of the remaining tags in first-seen
   order.
+- **Title and author claims.** Each file stores every title and author
+  statement extracted from metadata, leading text and its file name in
+  `book_file_claims`, together with the source, the extraction hypothesis
+  (`set`), junk/attestation flags and the text-support score. The resolved
+  `book_files.title` and `book_file_authors` come from these claims; the
+  pre-claim values remain in `legacy_title` and `book_file_legacy_authors`
+  for comparison and rollback. A metadata title that appears as a
+  title-page-like phrase in the first 8 KiB of text is `attested`; a
+  filename-only title or author is `weak` and stays out of the stored
+  title/author fields, so the book-level filename fallback still applies.
+- **Book-level claim synthesis.** The book title and author list are resolved
+  from all file claims, not by voting the already-resolved file values. A
+  metadata agreement across independent content witnesses is `cross_file`;
+  a metadata claim attested in a title-page window is `corroborated`. Weak
+  filename or title-page evidence is accepted at book level with `weak`
+  status (the matcher treats it as neutral), and alternative hypotheses are
+  kept in `book_claim_candidates`. Conflicting metadata can set
+  `grouping_suspect` without splitting the book automatically. The old
+  `pickTitle`/`pickAuthors` result is still computed for the `legacy_book`
+  diff and used as a fallback when a book has no claims.
 - **Identifiers and source.** Every identifier carries a `source`:
   `METADATA`, `TEXT` or `METADATA_AND_TEXT`. Book-level identifiers store
   only ISBNs; file-level identifiers keep other schemes as well. Values are
@@ -709,18 +737,174 @@ Root-level commands:
 - `report` — regenerate JSON reports from the database.
 - `search` — search books and authors in the database (see
   [Searching](#searching)).
+- `enrich` — prepare local OpenLibrary dump data (see
+  [OpenLibrary data](#openlibrary-data)).
 - `help` — show help for any command.
 - `completion` — generate shell autocompletion scripts.
 
 Run `margaret --help` or `margaret scan --help` for details.
 
+---
+
+## OpenLibrary data
+
+`margaret enrich` prepares the local OpenLibrary bulk data dumps that are
+used to enrich scanned book metadata. The dumps are read from disk; no
+OpenLibrary web API calls are made.
+
+The dumps are published monthly on the
+[OpenLibrary dumps page](https://openlibrary.org/developers/dumps) as
+gzipped TSV. The three families used by Margaret are:
+
+| Dump | Approx. compressed size |
+| --- | --- |
+| editions | ~9.2 GB |
+| works | ~2.9 GB |
+| authors | ~0.5 GB |
+
+`enrich` searches for the dump in this order:
+
+1. `--openlibrary-dir DIR`
+2. `MARGARET_OPENLIBRARY_DIR`
+3. `./data/openlibrary`
+4. `$XDG_DATA_HOME/margaret/openlibrary` (default
+   `~/.local/share/margaret/openlibrary`)
+5. `data/openlibrary` next to the executable
+
+If several directories hold a valid dump, the newest one wins. A combined
+`ol_dump_latest.txt.gz` dump is also accepted and satisfies all three
+families.
+
+A combined dump is processed in one combined pass plus a small temporary
+author sidecar; work-level metadata is deferred in that mode. The sidecar is
+removed when the run finishes, but it may need about 1 GB of temporary disk.
+For full work-level enrichment, the three family dumps are recommended.
+
+Use `--status` to see the resolved paths, the ISBN and content-head coverage
+of the scan database, the in-memory matching cache and the stored match status
+counts:
+
+```sh
+margaret enrich --status
+```
+
+The cache summary counts the books that have a usable title, ISBN or author.
+Books without any of these will end up as `no_data` when matching runs.
+
+Use `--download` to fetch missing dumps. Without it, an interactive terminal
+is asked whether to download when no dump is found; scripts fail with an
+error instead of downloading implicitly.
+
+```sh
+margaret enrich --download
+margaret enrich --openlibrary-dir /mnt/dumps/openlibrary
+```
+
+Downloads are resumable: an interrupted transfer is kept as a `.part` file
+and continued from where it stopped. Existing valid dumps are skipped.
+
+The dumps are regenerated monthly. To move to the current month, run:
+
+```sh
+margaret enrich --refresh
+```
+
+`--refresh` re-resolves the rolling dump URLs, downloads the newer dated
+files, reprocesses every book against them, and refreshes the enrichment.
+Old dump files are not deleted automatically; the newest valid file in the
+dump directory is used.
+
+### License and attribution
+
+The OpenLibrary catalog is contributed by libraries and dedicated to the
+public domain. The Internet Archive does not assert new copyright or
+proprietary rights over the database, and contributions are provided under
+the [CC0 1.0 Universal license](https://creativecommons.org/publicdomain/zero/1.0/).
+Individual records may still carry rights in some jurisdictions, so review
+the [OpenLibrary licensing page](https://openlibrary.org/developers/licensing)
+and the dump page before redistributing derived data. Margaret only reads
+the dumps locally; it does not call the OpenLibrary web API.
+
+`enrich` matches the scanned books against the local dump, stores the match
+status, confidence and top candidates in `margaret.db`, applies OpenLibrary
+metadata to confirmed books, and runs a local metadata/content conflict
+check. Enriched values are stored in the separate `book_enrichment_*` tables;
+the raw scan metadata is left untouched. The enrichment pass reads the dump
+again, but only for the selected editions, works and authors.
+
+By default only books without a current match are processed. `--force`
+reprocesses every book and refreshes the enrichment.
+
+### Content confirmation
+
+Scanned metadata is often wrong even when the ISBN is right. The scanner
+stores a compact fingerprint of the first 64 KB of each book's text in
+`book_files.head_bloom`. When an ISBN match disagrees with the scanned title
+or author, `enrich` checks whether the OpenLibrary title and author appear in
+that head. If they do, the ISBN is trusted and the book is confirmed with
+method `isbn+content`; the scanned metadata is assumed to be wrong. The
+confirmation is positive-only: a missing head or a low score never rejects a
+candidate.
+
+The fingerprint is added during `scan`. Files scanned by an older version do
+not have one; run `margaret scan <path>` once more to backfill them. The
+resume pass re-parses only the files whose fingerprint is missing. Use
+`margaret enrich --status` to see how many are still missing.
+
+### `enrich` flags
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--db` | `string` | `margaret.db` | SQLite database file to read. |
+| `--openlibrary-dir` | `string` | `""` | Directory containing the dump files. |
+| `--download` | `bool` | `false` | Download missing dumps before enriching. |
+| `--refresh` | `bool` | `false` | Download the current dumps and reprocess every book (implies `--download` and `--force`). |
+| `--status` | `bool` | `false` | Show resolved dump files, scan statistics, content-head coverage and match status counts, then exit. |
+| `--force` | `bool` | `false` | Reprocess every book even when a stored match is current. |
+| `--enriched-out` | `string` | `reports/books_enriched.json` | Write a JSON report of confirmed enriched books. |
+| `--review-out` | `string` | `reports/review.json` | Write a JSON report of books needing review. |
+
+---
+
+## Reports
+
+Generated JSON reports are written under `reports/` by default, relative to
+the current directory. The parent directory is created automatically. Passing
+an explicit `--*-out` path writes there instead.
+
+| Report | Default path |
+| --- | --- |
+| failures | `reports/failures.json` |
+| skipped | `reports/skipped.json` |
+| duplicates | `reports/duplicates.json` |
+| grouped books | `reports/books.json` |
+| confirmed enriched books | `reports/books_enriched.json` |
+| books needing review | `reports/review.json` |
+| search hits | `reports/search.json` |
+
+`books_enriched.json` contains only confirmed matches. Its book fields are
+merged with the OpenLibrary work/edition/author metadata where available, and
+it carries `match` (including `content_score`), `enrichment` (source, keys,
+matcher/dump versions) and `author_details` objects for provenance.
+`review.json` groups the uncertain books into separate arrays: `probable`,
+`ambiguous`, `needs_review`, `not_found` and `no_data`. Empty categories are
+written as `[]`; when no book needs review, the file is not created.
+
+`enrich` also runs a local conflict check. Two books with the same normalized
+title and author whose content MinHash Jaccard is below 75% are marked
+`needs_review` with reason `metadata_content_mismatch`: the metadata claims
+they are the same book, but the content says otherwise. Both books appear in
+`review.json` with their peer IDs and content similarity, and they are
+excluded from `books_enriched.json` even when the OpenLibrary match itself was
+confirmed.
+
 ## Regenerating reports
 
 `scan` writes the `books.json` / `duplicates.json` reports only with
 `--report`, but the database always holds the full data. `report` regenerates
-both files from an existing database without scanning — after a report-less
-scan, when the JSON files were deleted, or when they are wanted at different
-paths:
+the book, duplicate, enriched and review reports from an existing database
+without scanning — after a report-less scan, when the JSON files were
+deleted, or when they are wanted at different paths:
 
 ```sh
 margaret report
@@ -771,7 +955,7 @@ alone finds nothing.
 The human-readable table (authors, title, file paths) goes to **stdout**.
 With `--json` the hits are written in the `books.json` shape (same entries,
 restricted to the hits in relevance order) to `--json-out` (default
-`search.json` in the current directory):
+`reports/search.json`):
 
 ```sh
 margaret search "Asimov" --json --json-out /tmp/hits.json

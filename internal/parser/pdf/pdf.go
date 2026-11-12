@@ -162,7 +162,12 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	}
 
 	head := gate.Head()
-	md := textdoc.ExtractMetadata(head)
+	textMD := textdoc.ExtractMetadata(head)
+	md := parser.Metadata{
+		Title:   textMD.Title,
+		Authors: textMD.Authors,
+		Claims:  append(metadataClaims(meta), textdoc.ExtractClaims(head)...),
+	}
 	applyMetadata(&md, meta)
 
 	detected, detectedOK := langid.DetectProse(head)
@@ -173,6 +178,7 @@ func (p PDFParser) Parse(ctx context.Context, ebookData book.Blob) (parser.Metad
 	md.Hash = hex.EncodeToString(sum.Sum(nil))
 	md.MinHash = fingerprint.MinHash
 	md.Identifiers = mergeIdentifierLists(md.Identifiers, textdoc.TextIdentifiers(head))
+	md.Head = head
 	return md, nil
 }
 

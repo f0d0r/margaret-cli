@@ -3,12 +3,9 @@ dist/
 internal/db/*.go
 !internal/db/*.fts.go
 !internal/db/*_test.go
-failures.json
-duplicates.json
-books.json
-search.json
-skipped.json
-margaret.db
+margaret.db*
 AGENTS.md
 skills/
 cpu.prof
+data/openlibrary/
+reports/

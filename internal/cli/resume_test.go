@@ -25,10 +25,12 @@ func fileScanSetup(t *testing.T, fresh, resume, term bool) (booksDir, dbFile, fa
 
 	oldDB, oldFailures, oldSkipped, oldDuplicates, oldBooks := dbPath, failuresOutPath, skippedOutPath, duplicatesOut, booksOut
 	oldReport, oldFresh, oldResume := reportEnabled, freshFlag, resumeFlag
+	oldEnriched, oldReview := enrichedOut, reviewOut
 	oldTerm := stdinIsTerminal
 	t.Cleanup(func() {
 		dbPath, failuresOutPath, skippedOutPath, duplicatesOut, booksOut = oldDB, oldFailures, oldSkipped, oldDuplicates, oldBooks
 		reportEnabled, freshFlag, resumeFlag = oldReport, oldFresh, oldResume
+		enrichedOut, reviewOut = oldEnriched, oldReview
 		stdinIsTerminal = oldTerm
 	})
 
@@ -48,6 +50,8 @@ func fileScanSetup(t *testing.T, fresh, resume, term bool) (booksDir, dbFile, fa
 	dbPath, failuresOutPath = dbFile, failures
 	duplicatesOut = filepath.Join(dir, "duplicates.json")
 	booksOut = filepath.Join(dir, "books.json")
+	enrichedOut = filepath.Join(dir, "books_enriched.json")
+	reviewOut = filepath.Join(dir, "review.json")
 	reportEnabled, freshFlag, resumeFlag = false, fresh, resume
 	stdinIsTerminal = func() bool { return term }
 	return booksDir, dbFile, failures

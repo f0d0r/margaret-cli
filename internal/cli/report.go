@@ -6,17 +6,24 @@ import (
 
 	"github.com/f0d0r/margaret-cli/internal/database"
 	"github.com/f0d0r/margaret-cli/internal/db"
+	"github.com/f0d0r/margaret-cli/internal/processor"
 	"github.com/f0d0r/margaret-cli/internal/report"
 	"github.com/spf13/cobra"
+)
+
+var (
+	enrichedOut string
+	reviewOut   string
 )
 
 // reportCmd regenerates the JSON reports from an existing database.
 var reportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Regenerate JSON reports from the database",
-	Long: `Regenerates the books and duplicates JSON reports from an existing
-database without scanning. Useful after a scan that ran without --report,
-or when the report files were deleted or are wanted at different paths.
+	Long: `Regenerates the books, duplicates, enriched books and review JSON
+reports from an existing database without scanning. Useful after a scan that
+ran without --report, or when the report files were deleted or are wanted at
+different paths.
 
 Failures and skipped items cannot be regenerated: they are produced during
 the scan and are not stored in the database.`,
@@ -28,8 +35,10 @@ the scan and are not stored in the database.`,
 
 func init() {
 	reportCmd.Flags().StringVar(&dbPath, "db", database.DefaultPath, "SQLite database file to read")
-	reportCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", "duplicates.json", "write a JSON report of the duplicate books to this file")
-	reportCmd.Flags().StringVar(&booksOut, "books-out", "books.json", "write a JSON report of the grouped books to this file")
+	reportCmd.Flags().StringVar(&duplicatesOut, "duplicates-out", report.DefaultPath("duplicates.json"), "write a JSON report of the duplicate books to this file")
+	reportCmd.Flags().StringVar(&booksOut, "books-out", report.DefaultPath("books.json"), "write a JSON report of the grouped books to this file")
+	reportCmd.Flags().StringVar(&enrichedOut, "enriched-out", report.DefaultPath("books_enriched.json"), "write a JSON report of confirmed enriched books to this file")
+	reportCmd.Flags().StringVar(&reviewOut, "review-out", report.DefaultPath("review.json"), "write a JSON report of books needing review to this file")
 	rootCmd.AddCommand(reportCmd)
 }
 
@@ -49,10 +58,22 @@ func runReport(ctx context.Context) error {
 	if err := requireScannedData(ctx, q, dbPath); err != nil {
 		return err
 	}
+	if err := processor.ResolveStaleClaims(ctx, conn, q); err != nil {
+		return err
+	}
+	if err := report.Consolidate(ctx, conn, q); err != nil {
+		return fmt.Errorf("consolidate books metadata: %w", err)
+	}
 	if err := report.WriteDuplicates(ctx, q, duplicatesOut); err != nil {
 		return err
 	}
 	if err := report.WriteBooks(ctx, q, booksOut); err != nil {
+		return err
+	}
+	if err := report.WriteEnrichedBooks(ctx, q, enrichedOut); err != nil {
+		return err
+	}
+	if err := report.WriteReview(ctx, q, reviewOut); err != nil {
 		return err
 	}
 	return nil

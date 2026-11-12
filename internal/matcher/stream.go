@@ -1,0 +1,1251 @@
+package matcher
+
+import (
+	"bufio"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/f0d0r/margaret-cli/internal/identifier"
+	"github.com/f0d0r/margaret-cli/internal/openlibrary"
+	"github.com/f0d0r/margaret-cli/internal/tempfile"
+	"github.com/f0d0r/margaret-cli/internal/textmatch"
+	"github.com/f0d0r/margaret-ebook-library/tools"
+)
+
+const progressInterval = 250 * time.Millisecond
+
+type linkedKey struct {
+	Key string `json:"key"`
+}
+
+// authorRef reads an author link from either the edition form (top-level key)
+// or the work form (nested author.key with an optional role).
+type authorRef struct {
+	Key    string     `json:"key"`
+	Author *linkedKey `json:"author"`
+}
+
+func (a authorRef) authorKey() string {
+	if a.Key != "" {
+		return a.Key
+	}
+	if a.Author != nil {
+		return a.Author.Key
+	}
+	return ""
+}
+
+type editionRecord struct {
+	Key      string      `json:"key"`
+	Title    string      `json:"title"`
+	Subtitle string      `json:"subtitle"`
+	ISBN10   []string    `json:"isbn_10"`
+	ISBN13   []string    `json:"isbn_13"`
+	Authors  []authorRef `json:"authors"`
+	Works    []linkedKey `json:"works"`
+}
+
+type authorRecord struct {
+	Key            string   `json:"key"`
+	Name           string   `json:"name"`
+	PersonalName   string   `json:"personal_name"`
+	AlternateNames []string `json:"alternate_names"`
+}
+
+type workRecord struct {
+	Key              string          `json:"key"`
+	Title            string          `json:"title"`
+	Description      json.RawMessage `json:"description"`
+	Subjects         []string        `json:"subjects"`
+	FirstPublishDate string          `json:"first_publish_date"`
+	Authors          []authorRef     `json:"authors"`
+}
+
+// forceLegacyScanOrder makes StreamDataset use the legacy
+// authors-before-works order. Tests use it to prove the fast path returns
+// identical results when the works cap does not bind.
+var forceLegacyScanOrder bool
+
+// StreamDataset runs the editions, authors and works passes over a dataset and
+// returns the collected candidates.
+func StreamDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cache, opts StreamOptions) (*StreamResult, error) {
+	if dataset == nil || !dataset.Usable() {
+		return nil, errors.New("no usable OpenLibrary dataset")
+	}
+	opts = opts.withDefaults()
+	if dataset.EditionsFromCombined() {
+		return streamCombinedDataset(ctx, dataset, cache, opts)
+	}
+
+	result := &StreamResult{
+		Candidates: map[int64][]Candidate{},
+		Authors:    map[string]AuthorRecord{},
+		Works:      map[string]WorkRecord{},
+	}
+	if cache == nil || len(cache.Books) == 0 {
+		return result, nil
+	}
+
+	stats := &result.Stats
+	candidates, err := streamEditions(ctx, dataset.Editions, cache, opts, stats)
+	if err != nil {
+		return nil, err
+	}
+	if candidates.total() == 0 {
+		return result, nil
+	}
+
+	// When no book exceeds the per-book works cap, the capped work-key
+	// selection is order independent, so the works pass can run before the
+	// authors pass and the authors dump is scanned exactly once. Otherwise
+	// the legacy order is kept so the capped selection sees author scores.
+	if !forceLegacyScanOrder && !candidates.exceedsWorksCap(opts.MaxWorksCandidatesPerBook) {
+		if dataset.Authors == nil {
+			result.Warnings = append(result.Warnings, "authors dump missing; author scores are unavailable")
+		}
+		if dataset.Works == nil {
+			result.Warnings = append(result.Warnings, "works dump missing; work metadata is unavailable")
+		}
+		if err := streamWorksPass(ctx, dataset, candidates, result, opts); err != nil {
+			return nil, err
+		}
+		if err := streamAuthorsPass(ctx, dataset, candidates, result, cache, opts); err != nil {
+			return nil, err
+		}
+		applyContentScores(candidates, cache)
+		candidates.sortAll()
+
+		result.Candidates = candidates.values()
+		result.Stats.Candidates = candidates.total()
+		result.Stats.BooksWithCandidates = candidates.bookCount()
+		return result, nil
+	}
+
+	if dataset.Authors == nil {
+		result.Warnings = append(result.Warnings, "authors dump missing; author scores are unavailable")
+	} else {
+		authorKeys := candidates.authorKeys()
+		if len(authorKeys) > 0 {
+			authors, err := streamAuthors(ctx, dataset.Authors, authorKeys, opts, stats)
+			if err != nil {
+				return nil, err
+			}
+			result.Authors = authors
+			applyAuthorScores(candidates, authors, cache)
+		}
+	}
+	candidates.sortAll()
+
+	if dataset.Works == nil {
+		result.Warnings = append(result.Warnings, "works dump missing; work metadata is unavailable")
+	} else {
+		workKeys := candidates.workKeys(opts.MaxWorksCandidatesPerBook)
+		if len(workKeys) > 0 {
+			works, err := streamWorks(ctx, dataset.Works, workKeys, opts, stats)
+			if err != nil {
+				return nil, err
+			}
+			result.Works = works
+			applyWorkTitles(candidates, works)
+			if err := applyMissingWorkAuthors(ctx, dataset, candidates, result, cache, opts); err != nil {
+				return nil, err
+			}
+		}
+	}
+	applyContentScores(candidates, cache)
+	candidates.sortAll()
+
+	result.Candidates = candidates.values()
+	result.Stats.Candidates = candidates.total()
+	result.Stats.BooksWithCandidates = candidates.bookCount()
+	return result, nil
+}
+
+func streamWorksPass(ctx context.Context, dataset *openlibrary.Dataset, candidates *candidateSet, result *StreamResult, opts StreamOptions) error {
+	if dataset.Works == nil {
+		return nil
+	}
+	workKeys := candidates.workKeys(opts.MaxWorksCandidatesPerBook)
+	if len(workKeys) == 0 {
+		return nil
+	}
+	works, err := streamWorks(ctx, dataset.Works, workKeys, opts, &result.Stats)
+	if err != nil {
+		return err
+	}
+	result.Works = works
+	applyWorkTitles(candidates, works)
+	applyWorkAuthors(candidates, works)
+	return nil
+}
+
+func streamAuthorsPass(ctx context.Context, dataset *openlibrary.Dataset, candidates *candidateSet, result *StreamResult, cache *Cache, opts StreamOptions) error {
+	if dataset.Authors == nil {
+		return nil
+	}
+	authorKeys := candidates.authorKeys()
+	if len(authorKeys) == 0 {
+		return nil
+	}
+	authors, err := streamAuthors(ctx, dataset.Authors, authorKeys, opts, &result.Stats)
+	if err != nil {
+		return err
+	}
+	result.Authors = authors
+	applyAuthorScores(candidates, authors, cache)
+	return nil
+}
+
+func streamCombinedDataset(ctx context.Context, dataset *openlibrary.Dataset, cache *Cache, opts StreamOptions) (*StreamResult, error) {
+	result := &StreamResult{
+		Candidates: map[int64][]Candidate{},
+		Authors:    map[string]AuthorRecord{},
+		Works:      map[string]WorkRecord{},
+	}
+	if cache == nil || len(cache.Books) == 0 {
+		return result, nil
+	}
+
+	stats := &result.Stats
+	candidates, authorSidecar, err := streamCombinedExtraction(ctx, dataset.Editions, cache, opts, stats)
+	if err != nil {
+		return nil, err
+	}
+	if authorSidecar != nil {
+		defer func() {
+			_ = authorSidecar.close()
+		}()
+	}
+	if candidates.total() == 0 {
+		return result, nil
+	}
+
+	authorKeys := candidates.authorKeys()
+	if len(authorKeys) > 0 {
+		authors, err := streamAuthorSidecar(ctx, authorSidecar, authorKeys, opts)
+		if err != nil {
+			return nil, err
+		}
+		result.Authors = authors
+		applyAuthorScores(candidates, authors, cache)
+	}
+	candidates.sortAll()
+
+	if dataset.Works != nil && dataset.Combined != nil && dataset.Works.Path != dataset.Combined.Path {
+		workKeys := candidates.workKeys(opts.MaxWorksCandidatesPerBook)
+		if len(workKeys) > 0 {
+			works, err := streamWorks(ctx, dataset.Works, workKeys, opts, stats)
+			if err != nil {
+				return nil, err
+			}
+			result.Works = works
+			applyWorkTitles(candidates, works)
+			if err := applyMissingWorkAuthorsCombined(ctx, dataset, candidates, result, authorSidecar, cache, opts); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		result.Warnings = append(result.Warnings, "works metadata deferred for combined dump")
+	}
+	applyContentScores(candidates, cache)
+	candidates.sortAll()
+
+	result.Candidates = candidates.values()
+	result.Stats.Candidates = candidates.total()
+	result.Stats.BooksWithCandidates = candidates.bookCount()
+	return result, nil
+}
+
+type editionProcessor struct {
+	cache         *Cache
+	opts          StreamOptions
+	stats         *StreamStats
+	candidates    *candidateSet
+	tracker       *editionTracker
+	maxCandidates int
+}
+
+func newEditionProcessor(cache *Cache, opts StreamOptions, stats *StreamStats, tracker *editionTracker, candidates *candidateSet) *editionProcessor {
+	return &editionProcessor{
+		cache:         cache,
+		opts:          opts,
+		stats:         stats,
+		candidates:    candidates,
+		tracker:       tracker,
+		maxCandidates: opts.MaxCandidatesPerBook,
+	}
+}
+
+func (p *editionProcessor) addCandidate(candidate Candidate) {
+	book := p.cache.Books[candidate.BookID]
+	p.tracker.addIfPending(book, func() {
+		p.candidates.add(candidate, p.maxCandidates)
+	})
+	p.tracker.mark(book, bookLabel(book))
+}
+
+func (p *editionProcessor) process(row openlibrary.Row) {
+	p.processRecord(row.Key, row.Data)
+}
+
+func (p *editionProcessor) processRecord(rowKey string, data []byte) {
+	p.stats.Editions++
+
+	var record editionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		p.stats.Malformed++
+		return
+	}
+	key := record.Key
+	if key == "" {
+		key = rowKey
+	}
+	if key == "" {
+		p.stats.Malformed++
+		return
+	}
+	title := record.Title
+	if title == "" {
+		title = record.Subtitle
+	}
+	var titleKey string
+	titleKeyReady := false
+	var titleHashes []uint64
+	titleHashesReady := false
+	cachedKey := func() string {
+		if !titleKeyReady {
+			if title != "" {
+				titleKey = textmatch.TitleKey(title)
+			}
+			titleKeyReady = true
+		}
+		return titleKey
+	}
+	cachedHashes := func() []uint64 {
+		if !titleHashesReady {
+			if key := cachedKey(); key != "" {
+				titleHashes = textmatch.HashTokens(textmatch.TokensFromKey(key))
+			}
+			titleHashesReady = true
+		}
+		return titleHashes
+	}
+	workKey := ""
+	if len(record.Works) > 0 {
+		workKey = record.Works[0].Key
+	}
+	authorKeys := uniqueKeys(record.Authors)
+
+	handleISBN := func(raw string) {
+		isbn13, ok := normalizeISBN(raw)
+		if !ok {
+			return
+		}
+		for _, bookID := range p.cache.ByISBN[isbn13] {
+			book := p.cache.Books[bookID]
+			if book == nil || !p.tracker.has(book) {
+				continue
+			}
+			source, priority, ok := findBookISBN(book, isbn13)
+			if !ok {
+				continue
+			}
+			titleScore := 0.0
+			if hashes := cachedHashes(); len(hashes) > 0 && len(book.TitleHashes) > 0 {
+				titleScore = textmatch.JaccardHashed(hashes, book.TitleHashes)
+			}
+			p.addCandidate(Candidate{
+				BookID:       bookID,
+				EditionKey:   key,
+				WorkKey:      workKey,
+				EditionTitle: title,
+				AuthorKeys:   authorKeys,
+				ISBN:         isbn13,
+				ISBNSource:   source,
+				ISBNPriority: priority,
+				TitleScore:   titleScore,
+				Methods:      []string{"isbn"},
+			})
+			p.stats.ISBNMatches++
+			if priority <= 1 && (len(book.TitleHashes) == 0 || titleScore >= p.opts.ISBNTitleConfirm) {
+				p.tracker.remove(book)
+			}
+		}
+	}
+	for _, raw := range record.ISBN13 {
+		handleISBN(raw)
+	}
+	for _, raw := range record.ISBN10 {
+		handleISBN(raw)
+	}
+
+	if p.tracker.remainingCount() > 0 {
+		if titleKey := cachedKey(); titleKey != "" {
+			matchedExact := false
+			for _, bookID := range p.cache.ByTitle[titleKey] {
+				book := p.cache.Books[bookID]
+				if book == nil || !p.tracker.has(book) {
+					continue
+				}
+				matchedExact = true
+				p.addCandidate(Candidate{
+					BookID:       bookID,
+					EditionKey:   key,
+					WorkKey:      workKey,
+					EditionTitle: title,
+					AuthorKeys:   authorKeys,
+					TitleScore:   1,
+					Methods:      []string{"title_exact"},
+				})
+				p.stats.TitleExactMatches++
+			}
+			if !matchedExact {
+				if hashes := cachedHashes(); len(hashes) > 0 {
+					for _, bookID := range p.cache.RareTokenCandidatesByHash(hashes, p.opts.MaxPosting) {
+						book := p.cache.Books[bookID]
+						if book == nil || !p.tracker.has(book) {
+							continue
+						}
+						if jaccardBound(len(hashes), len(book.TitleHashes)) < p.opts.MinTitleScore {
+							continue
+						}
+						titleScore := textmatch.JaccardHashed(hashes, book.TitleHashes)
+						if titleScore < p.opts.MinTitleScore {
+							continue
+						}
+						p.addCandidate(Candidate{
+							BookID:       bookID,
+							EditionKey:   key,
+							WorkKey:      workKey,
+							EditionTitle: title,
+							AuthorKeys:   authorKeys,
+							TitleScore:   titleScore,
+							Methods:      []string{"title_fuzzy"},
+						})
+						p.stats.TitleFuzzyMatches++
+					}
+				}
+			}
+		}
+	}
+}
+
+func streamEditions(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats) (*candidateSet, error) {
+	tracker := newEditionTracker(cache)
+	candidates := newCandidateSet()
+	if tracker.totalCount() == 0 {
+		return candidates, nil
+	}
+	if opts.Workers > 1 {
+		return streamEditionsParallel(ctx, file, cache, opts, stats, tracker, candidates)
+	}
+
+	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
+	if err != nil {
+		return nil, fmt.Errorf("open editions dump: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	totalBytes := openlibrary.DumpSize(file)
+	scanner := openlibrary.NewDumpScanner(reader)
+	lastProgress := time.Now()
+	emit := func(final bool) {
+		if opts.Progress == nil {
+			return
+		}
+		read := counter.Load()
+		if final && totalBytes > 0 {
+			read = totalBytes
+		}
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "editions",
+			Lines:      stats.Lines,
+			Records:    stats.Editions,
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			BytesRead:  read,
+			BytesTotal: totalBytes,
+			Pending:    total - done,
+		})
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			stats.Malformed++
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		stats.Lines++
+		if row.Type != "/type/edition" {
+			continue
+		}
+		processor.process(row)
+		if tracker.remainingCount() == 0 {
+			break
+		}
+		if time.Since(lastProgress) >= progressInterval {
+			emit(false)
+			lastProgress = time.Now()
+		}
+	}
+	emit(true)
+	return candidates, nil
+}
+
+func streamCombinedExtraction(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats) (*candidateSet, *authorSidecar, error) {
+	tracker := newEditionTracker(cache)
+	candidates := newCandidateSet()
+	if tracker.totalCount() == 0 {
+		return candidates, nil, nil
+	}
+	if opts.Workers > 1 {
+		return streamCombinedExtractionParallel(ctx, file, cache, opts, stats, tracker, candidates)
+	}
+	processor := newEditionProcessor(cache, opts, stats, tracker, candidates)
+
+	authors, err := newAuthorSidecar()
+	if err != nil {
+		return nil, nil, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = authors.close()
+		}
+	}()
+
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open combined dump: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	totalBytes := openlibrary.DumpSize(file)
+	scanner := openlibrary.NewDumpScanner(reader)
+	lastProgress := time.Now()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			stats.Malformed++
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		stats.Lines++
+
+		switch row.Type {
+		case "/type/edition":
+			if tracker.remainingCount() > 0 {
+				processor.process(row)
+			}
+		case "/type/author":
+			var record authorRecord
+			if err := json.Unmarshal(row.Data, &record); err != nil {
+				stats.Malformed++
+				continue
+			}
+			key := record.Key
+			if key == "" {
+				key = row.Key
+			}
+			if key == "" {
+				stats.Malformed++
+				continue
+			}
+			if err := authors.write(key, authorNames(record)); err != nil {
+				return nil, nil, fmt.Errorf("write author sidecar: %w", err)
+			}
+			stats.Authors++
+		}
+
+		if tracker.remainingCount() == 0 && candidates.total() == 0 {
+			break
+		}
+		if opts.Progress != nil && time.Since(lastProgress) >= progressInterval {
+			total := tracker.totalCount()
+			done := tracker.matchedCount()
+			opts.Progress(StreamProgress{
+				Pass:       "combined",
+				Lines:      stats.Lines,
+				Records:    stats.Editions,
+				Candidates: candidates.total(),
+				Total:      total,
+				Done:       done,
+				Current:    tracker.currentLabel(),
+				BytesRead:  counter.Load(),
+				BytesTotal: totalBytes,
+				Pending:    total - done,
+			})
+			lastProgress = time.Now()
+		}
+	}
+	if opts.Progress != nil {
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "combined",
+			Lines:      stats.Lines,
+			Records:    stats.Editions,
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			BytesRead:  totalBytes,
+			BytesTotal: totalBytes,
+			Pending:    total - done,
+		})
+	}
+	if err := authors.finish(); err != nil {
+		return nil, nil, fmt.Errorf("close author sidecar: %w", err)
+	}
+	success = true
+	return candidates, authors, nil
+}
+
+// streamCombinedExtractionParallel runs the combined-dump extraction pass
+// with worker goroutines for edition records. Author sidecar writes stay on
+// the reading goroutine, so the sidecar keeps file order.
+func streamCombinedExtractionParallel(ctx context.Context, file *openlibrary.File, cache *Cache, opts StreamOptions, stats *StreamStats, tracker *editionTracker, candidates *candidateSet) (*candidateSet, *authorSidecar, error) {
+	workers := opts.Workers
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan editionJob, workers*64)
+	localStats := make([]StreamStats, workers)
+	var sent, processed atomic.Int64
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			processor := newEditionProcessor(cache, opts, &localStats[index], tracker, candidates)
+			for job := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				processor.processRecord(job.key, job.data)
+				processed.Add(1)
+			}
+		}(i)
+	}
+
+	authors, err := newAuthorSidecar()
+	if err != nil {
+		close(jobs)
+		wg.Wait()
+		return nil, nil, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			_ = authors.close()
+		}
+	}()
+
+	emit := func(read int64, final bool) {
+		if opts.Progress == nil {
+			return
+		}
+		totalBytes := openlibrary.DumpSize(file)
+		if final && totalBytes > 0 {
+			read = totalBytes
+		}
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "combined",
+			Lines:      stats.Lines,
+			Records:    processed.Load(),
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			BytesRead:  read,
+			BytesTotal: totalBytes,
+			Pending:    total - done,
+		})
+	}
+
+	readErr := readCombinedParallel(ctx, file, jobs, tracker, candidates, authors, stats, &sent, &processed, func(read int64) {
+		emit(read, false)
+	})
+	close(jobs)
+	wg.Wait()
+	for i := range localStats {
+		stats.Editions += localStats[i].Editions
+		stats.Malformed += localStats[i].Malformed
+		stats.ISBNMatches += localStats[i].ISBNMatches
+		stats.TitleExactMatches += localStats[i].TitleExactMatches
+		stats.TitleFuzzyMatches += localStats[i].TitleFuzzyMatches
+	}
+	if readErr != nil {
+		return nil, nil, readErr
+	}
+	if opts.Progress != nil {
+		total := tracker.totalCount()
+		done := tracker.matchedCount()
+		opts.Progress(StreamProgress{
+			Pass:       "combined",
+			Lines:      stats.Lines,
+			Records:    processed.Load(),
+			Candidates: candidates.total(),
+			Total:      total,
+			Done:       done,
+			Current:    tracker.currentLabel(),
+			BytesRead:  openlibrary.DumpSize(file),
+			BytesTotal: openlibrary.DumpSize(file),
+			Pending:    total - done,
+		})
+	}
+	if err := authors.finish(); err != nil {
+		return nil, nil, fmt.Errorf("close author sidecar: %w", err)
+	}
+	success = true
+	return candidates, authors, nil
+}
+
+func readCombinedParallel(ctx context.Context, file *openlibrary.File, jobs chan<- editionJob, tracker *editionTracker, candidates *candidateSet, authors *authorSidecar, stats *StreamStats, sent, processed *atomic.Int64, emit func(int64)) error {
+	reader, counter, err := openlibrary.OpenDumpWithCounter(file)
+	if err != nil {
+		return fmt.Errorf("open combined dump: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	scanner := openlibrary.NewDumpScanner(reader)
+	lastProgress := time.Now()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			emit(counter.Load())
+			return nil
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			stats.Malformed++
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		stats.Lines++
+
+		switch row.Type {
+		case "/type/edition":
+			if tracker.remainingCount() > 0 {
+				data := append([]byte(nil), row.Data...)
+				select {
+				case jobs <- editionJob{key: row.Key, data: data}:
+					sent.Add(1)
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		case "/type/author":
+			var record authorRecord
+			if err := json.Unmarshal(row.Data, &record); err != nil {
+				stats.Malformed++
+				continue
+			}
+			key := record.Key
+			if key == "" {
+				key = row.Key
+			}
+			if key == "" {
+				stats.Malformed++
+				continue
+			}
+			if err := authors.write(key, authorNames(record)); err != nil {
+				return fmt.Errorf("write author sidecar: %w", err)
+			}
+			stats.Authors++
+		}
+
+		// Stop only when every sent job finished without producing a
+		// candidate; the single-threaded pass observes the same state
+		// synchronously.
+		if tracker.remainingCount() == 0 && sent.Load() == processed.Load() && candidates.total() == 0 {
+			emit(counter.Load())
+			return nil
+		}
+		if time.Since(lastProgress) >= progressInterval {
+			emit(counter.Load())
+			lastProgress = time.Now()
+		}
+	}
+}
+
+type authorSidecar struct {
+	temp     *tempfile.Temp
+	gzip     *gzip.Writer
+	buffer   *bufio.Writer
+	finished bool
+	closed   bool
+}
+
+func newAuthorSidecar() (*authorSidecar, error) {
+	temp, err := tempfile.New("margaret-authors-*.tsv.gz")
+	if err != nil {
+		return nil, fmt.Errorf("create author sidecar: %w", err)
+	}
+	writer := gzip.NewWriter(temp.File())
+	return &authorSidecar{
+		temp:   temp,
+		gzip:   writer,
+		buffer: bufio.NewWriter(writer),
+	}, nil
+}
+
+func (s *authorSidecar) write(key string, names []string) error {
+	if s.closed || s.finished {
+		return errors.New("author sidecar is closed")
+	}
+	var line strings.Builder
+	line.WriteString(sanitizeSidecar(key))
+	line.WriteByte('\t')
+	for i, name := range names {
+		if i > 0 {
+			line.WriteByte(0x1f)
+		}
+		line.WriteString(sanitizeSidecar(name))
+	}
+	line.WriteByte('\n')
+	_, err := s.buffer.WriteString(line.String())
+	return err
+}
+
+// finish flushes the compressed stream but keeps the descriptor open so the
+// collected records can be read back.
+func (s *authorSidecar) finish() error {
+	if s.finished {
+		return nil
+	}
+	s.finished = true
+	var err error
+	if flushErr := s.buffer.Flush(); flushErr != nil {
+		err = flushErr
+	}
+	if gzipErr := s.gzip.Close(); err == nil {
+		err = gzipErr
+	}
+	return err
+}
+
+func (s *authorSidecar) close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	err := s.finish()
+	if closeErr := s.temp.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func streamAuthorSidecar(ctx context.Context, sidecar *authorSidecar, keys map[string]struct{}, opts StreamOptions) (map[string]AuthorRecord, error) {
+	found := make(map[string]AuthorRecord, len(keys))
+	if sidecar == nil || len(keys) == 0 {
+		return found, nil
+	}
+
+	raw, err := sidecar.temp.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("open author sidecar: %w", err)
+	}
+	reader, err := gzip.NewReader(raw)
+	if err != nil {
+		return nil, fmt.Errorf("open gzip author sidecar: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	lastProgress := time.Now()
+	var lines int64
+
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		lines++
+		key, names, ok := strings.Cut(scanner.Text(), "\t")
+		if !ok {
+			continue
+		}
+		if _, needed := keys[key]; !needed {
+			continue
+		}
+		found[key] = AuthorRecord{Key: key, Names: splitSidecarNames(names)}
+		if len(found) == len(keys) {
+			break
+		}
+		if opts.Progress != nil && time.Since(lastProgress) >= progressInterval {
+			opts.Progress(StreamProgress{
+				Pass:    "authors",
+				Lines:   lines,
+				Records: int64(len(found)),
+				Total:   len(keys),
+				Done:    len(found),
+			})
+			lastProgress = time.Now()
+		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(StreamProgress{
+			Pass:    "authors",
+			Lines:   lines,
+			Records: int64(len(found)),
+			Total:   len(keys),
+			Done:    len(found),
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read author sidecar: %w", err)
+	}
+	return found, nil
+}
+
+func sanitizeSidecar(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\t', '\n', '\r', 0x1f:
+			return ' '
+		default:
+			return r
+		}
+	}, value)
+}
+
+func splitSidecarNames(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, string(rune(0x1f)))
+}
+
+func streamAuthors(ctx context.Context, file *openlibrary.File, keys map[string]struct{}, opts StreamOptions, stats *StreamStats) (map[string]AuthorRecord, error) {
+	found := make(map[string]AuthorRecord, len(keys))
+	if len(keys) == 0 {
+		return found, nil
+	}
+	reader, err := openlibrary.OpenDump(file)
+	if err != nil {
+		return nil, fmt.Errorf("open authors dump: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	scanner := openlibrary.NewDumpScanner(reader)
+	lastProgress := time.Now()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			stats.Malformed++
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		stats.Lines++
+		if row.Type != "/type/author" {
+			continue
+		}
+		stats.Authors++
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			continue
+		}
+
+		var record authorRecord
+		if err := json.Unmarshal(row.Data, &record); err != nil {
+			stats.Malformed++
+			continue
+		}
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				continue
+			}
+			key = record.Key
+		}
+		found[key] = AuthorRecord{Key: key, Names: authorNames(record)}
+		if len(found) == len(keys) {
+			break
+		}
+		if opts.Progress != nil && time.Since(lastProgress) >= progressInterval {
+			opts.Progress(StreamProgress{
+				Pass:    "authors",
+				Lines:   stats.Lines,
+				Records: stats.Authors,
+				Total:   len(keys),
+				Done:    len(found),
+			})
+			lastProgress = time.Now()
+		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(StreamProgress{
+			Pass:    "authors",
+			Lines:   stats.Lines,
+			Records: stats.Authors,
+			Total:   len(keys),
+			Done:    len(found),
+		})
+	}
+	return found, nil
+}
+
+func streamWorks(ctx context.Context, file *openlibrary.File, keys map[string]struct{}, opts StreamOptions, stats *StreamStats) (map[string]WorkRecord, error) {
+	found := make(map[string]WorkRecord, len(keys))
+	if len(keys) == 0 {
+		return found, nil
+	}
+	reader, err := openlibrary.OpenDump(file)
+	if err != nil {
+		return nil, fmt.Errorf("open works dump: %w", err)
+	}
+	defer func() {
+		_ = reader.Close()
+	}()
+	scanner := openlibrary.NewDumpScanner(reader)
+	lastProgress := time.Now()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		row, err := openlibrary.ReadRow(scanner)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if errors.Is(err, openlibrary.ErrMalformedRow) {
+			stats.Malformed++
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		stats.Lines++
+		if row.Type != "/type/work" {
+			continue
+		}
+		stats.Works++
+		key := row.Key
+		if _, ok := keys[key]; !ok {
+			continue
+		}
+
+		var record workRecord
+		if err := json.Unmarshal(row.Data, &record); err != nil {
+			stats.Malformed++
+			continue
+		}
+		if record.Key != "" {
+			if _, ok := keys[record.Key]; !ok {
+				continue
+			}
+			key = record.Key
+		}
+		found[key] = WorkRecord{
+			Key:              key,
+			Title:            record.Title,
+			Description:      descriptionText(record.Description),
+			Subjects:         record.Subjects,
+			FirstPublishDate: record.FirstPublishDate,
+			AuthorKeys:       uniqueKeys(record.Authors),
+		}
+		if len(found) == len(keys) {
+			break
+		}
+		if opts.Progress != nil && time.Since(lastProgress) >= progressInterval {
+			opts.Progress(StreamProgress{
+				Pass:    "works",
+				Lines:   stats.Lines,
+				Records: stats.Works,
+				Total:   len(keys),
+				Done:    len(found),
+			})
+			lastProgress = time.Now()
+		}
+	}
+	if opts.Progress != nil {
+		opts.Progress(StreamProgress{
+			Pass:    "works",
+			Lines:   stats.Lines,
+			Records: stats.Works,
+			Total:   len(keys),
+			Done:    len(found),
+		})
+	}
+	return found, nil
+}
+
+func applyAuthorScores(candidates *candidateSet, authors map[string]AuthorRecord, cache *Cache) {
+	for bookID, list := range candidates.byBook {
+		book := cache.Books[bookID]
+		if book == nil {
+			continue
+		}
+		for _, candidate := range list {
+			var names []string
+			best := 0.0
+			for _, key := range candidate.AuthorKeys {
+				record, ok := authors[key]
+				if !ok {
+					continue
+				}
+				for _, name := range record.Names {
+					names = append(names, name)
+					tokens := textmatch.AuthorTokens(name)
+					if len(tokens) == 0 {
+						continue
+					}
+					for _, bookTokens := range book.AuthorTokens {
+						if score := textmatch.Jaccard(tokens, bookTokens); score > best {
+							best = score
+						}
+					}
+				}
+			}
+			candidate.AuthorNames = uniqueStrings(names)
+			candidate.AuthorScore = best
+			candidate.Score = candidate.computeScore()
+		}
+	}
+}
+
+func normalizeISBN(raw string) (string, bool) {
+	isbn, ok := tools.ValidateBookISBN(raw)
+	if !ok {
+		return "", false
+	}
+	isbn13, ok := isbn.ToISBN13()
+	if !ok {
+		return "", false
+	}
+	return isbn13.String(), true
+}
+
+func findBookISBN(book *Book, value string) (identifier.Source, int, bool) {
+	for _, isbn := range book.ISBNs {
+		if isbn.Value == value {
+			return isbn.Source, isbn.Priority, true
+		}
+	}
+	return "", 0, false
+}
+
+func jaccardBound(a, b int) float64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > b {
+		a, b = b, a
+	}
+	return float64(a) / float64(b)
+}
+
+func uniqueKeys(keys []authorRef) []string {
+	out := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, item := range keys {
+		key := item.authorKey()
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+func authorNames(record authorRecord) []string {
+	names := make([]string, 0, 1+len(record.AlternateNames))
+	if record.Name != "" {
+		names = append(names, record.Name)
+	}
+	if record.PersonalName != "" {
+		names = append(names, record.PersonalName)
+	}
+	names = append(names, record.AlternateNames...)
+	return uniqueStrings(names)
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func descriptionText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var object struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &object); err == nil {
+		return object.Value
+	}
+	return ""
+}

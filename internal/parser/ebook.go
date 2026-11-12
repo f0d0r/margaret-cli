@@ -3,7 +3,9 @@ package parser
 import (
 	"context"
 
+	"github.com/f0d0r/margaret-cli/internal/claim"
 	"github.com/f0d0r/margaret-cli/internal/langid"
+	"github.com/f0d0r/margaret-cli/internal/parser/textdoc"
 	ebook "github.com/f0d0r/margaret-ebook-library"
 	"github.com/f0d0r/margaret-ebook-library/book"
 	"github.com/f0d0r/margaret-ebook-library/tools"
@@ -38,8 +40,12 @@ func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata,
 		return Metadata{}, ContextError(ctx, err)
 	}
 	textISBN := ""
-	if len(isbn) > 0 {
-		if isbn13, ok := isbn[0].ToISBN13(); ok {
+	if ids := textdoc.TextIdentifiers(head); len(ids) > 0 {
+		textISBN = ids[0].Value
+	} else if len(isbn) > 0 {
+		if isbn13, ok := isbn[0].ToISBN13(); ok && !textdoc.ContainsISBN(head, isbn13.String()) {
+			// Keep a non-linear fallback only when it does not come from the
+			// linear head; an ISBN found in head prose is not trusted.
 			textISBN = isbn13.String()
 		}
 	}
@@ -48,9 +54,32 @@ func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata,
 	detected, detectedOK := langid.DetectProse(head)
 	languages := ApplyDetectedLanguage(md.Languages, detected, detectedOK)
 
+	claims := make([]claim.Set, 0, 2)
+	if md.Title != "" || len(md.Authors) > 0 {
+		claims = append(claims, claim.Set{
+			Key:     "metadata",
+			Source:  claim.SourceMetadata,
+			Origin:  "ebook",
+			Title:   md.Title,
+			Authors: md.Authors,
+			Trust:   claim.TrustStrong,
+			Witness: claim.WitnessIndependent,
+		})
+	}
+	// The text heuristics are tuned for plain text and a converter-generated
+	// EPUB title page can repeat the metadata, so these claims are weak and
+	// never count as independent confirmation.
+	textSets := textdoc.ExtractClaims(head)
+	for i := range textSets {
+		textSets[i].Trust = claim.TrustWeak
+		textSets[i].Witness = claim.WitnessDerived
+	}
+	claims = append(claims, textSets...)
+
 	return Metadata{
 		Authors:         md.Authors,
 		Title:           md.Title,
+		Claims:          claims,
 		Description:     md.Description,
 		Subjects:        md.Subjects,
 		Languages:       languages,
@@ -61,6 +90,7 @@ func (ep EbookParser) Parse(ctx context.Context, ebookData book.Blob) (Metadata,
 		SeriesIndex:     md.SeriesIndex,
 		Hash:            hash,
 		MinHash:         fingerprint.MinHash,
+		Head:            head,
 	}, nil
 }
 

@@ -12,7 +12,7 @@ const (
 	// titlePageCandidateLimit bounds how many leading lines the title-page
 	// fallback considers. Title pages are short; body text must never be
 	// scanned.
-	titlePageCandidateLimit = 6
+	titlePageCandidateLimit = 12
 	// pairScoreThreshold is the minimum combined name and title score.
 	pairScoreThreshold = 6
 )
@@ -63,9 +63,38 @@ func titlePagePair(lines []string) (title string, authors []string, ok bool) {
 		}
 	}
 
-	// Two-line author/title forms in either order.
-	if len(candidates) >= 2 {
+	// Two-line author/title forms in either order. An edition line is not an
+	// author, so it must not win an orientation vote.
+	if len(candidates) >= 2 && !isEditionLine(candidates[1]) {
 		if authors, title, score, ok := orientPair(candidates[0], candidates[1]); ok {
+			consider(title, authors, score)
+		}
+	}
+
+	// Title plus a subtitle or edition line, followed by one or more author
+	// lines. This is the common PDF title page: title, subtitle, then a list
+	// of authors. A single author after a subtitle is accepted; without a
+	// subtitle at least two authors are required so the ambiguous two-line
+	// title/name case stays unguessed.
+	if len(candidates) >= 2 {
+		subtitle := ""
+		authorStart := 1
+		skippedEdition := false
+		switch {
+		case isEditionLine(candidates[1]):
+			skippedEdition = true
+			authorStart = 2
+		case isSubtitleLine(candidates[1]):
+			subtitle = candidates[1]
+			authorStart = 2
+		}
+		authors := titlePageAuthorRun(candidates[authorStart:])
+		if len(authors) > 0 && (subtitle != "" || skippedEdition || len(authors) >= 2) {
+			title := joinTitleSubtitle(candidates[0], subtitle)
+			score := metaheur.ScoreTitle(title)
+			for _, author := range authors {
+				score += metaheur.ScoreName(author)
+			}
 			consider(title, authors, score)
 		}
 	}
@@ -119,6 +148,79 @@ func titlePageCandidates(lines []string) []string {
 		}
 	}
 	return out
+}
+
+// isSubtitleLine reports a title-page subtitle: title-like text that is not a
+// personal name, credit or edition statement.
+func isSubtitleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" || metaheur.IsName(line) || metaheur.IsCredit(line) || metaheur.IsJunkValue(line) {
+		return false
+	}
+	return metaheur.IsTitle(line)
+}
+
+// isEditionLine reports an edition or volume statement, which is not part of
+// the title but may sit between the title and the author list.
+func isEditionLine(line string) bool {
+	for _, word := range strings.Fields(metaheur.Fold(line)) {
+		switch strings.Trim(word, ".,;:()[]") {
+		case "edition", "editions", "kiadas", "version", "verzio", "volume", "kotet":
+			return true
+		}
+	}
+	return false
+}
+
+// titlePageAuthorRun collects the consecutive personal-name lines at the start
+// of lines and stops at the first non-name.
+func titlePageAuthorRun(lines []string) []string {
+	var authors []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if len(line) > 3 && strings.EqualFold(line[:3], "by ") {
+			line = strings.TrimSpace(line[3:])
+		}
+		if line == "" {
+			continue
+		}
+		if metaheur.IsCredit(line) || metaheur.IsJunkValue(line) || !metaheur.IsName(line) {
+			break
+		}
+		parts := SplitAuthors(line)
+		if len(parts) == 0 {
+			break
+		}
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" || !metaheur.IsName(part) || containsAuthorName(authors, part) {
+				continue
+			}
+			authors = append(authors, part)
+		}
+	}
+	return authors
+}
+
+func containsAuthorName(authors []string, value string) bool {
+	for _, author := range authors {
+		if strings.EqualFold(author, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func joinTitleSubtitle(title, subtitle string) string {
+	title = strings.TrimSpace(title)
+	subtitle = strings.TrimSpace(subtitle)
+	if subtitle == "" {
+		return title
+	}
+	if strings.HasSuffix(title, ":") || strings.HasSuffix(title, "?") || strings.HasSuffix(title, "!") {
+		return title + " " + subtitle
+	}
+	return title + ": " + subtitle
 }
 
 func isTitlePageNoise(line string) bool {
